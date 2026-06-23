@@ -81,9 +81,7 @@ class SentenceTransformerEmbeddingProvider(EmbeddingRepository):
         try:
             from sentence_transformers import SentenceTransformer  # lazy import
 
-            model = SentenceTransformer(
-                self.model_path, device=self.device, trust_remote_code=True
-            )
+            model = SentenceTransformer(self.model_path, device=self.device, trust_remote_code=True)
             logger.info(
                 "%s loaded from %s on %s", type(self).__name__, self.model_path, self.device
             )
