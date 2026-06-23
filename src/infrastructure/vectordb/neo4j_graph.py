@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Any
+from typing import Any, cast
 
 from src.core.exceptions import RetrievalError
 
@@ -83,7 +83,7 @@ class Neo4jGraphRepository:
         try:
             with driver.session() as session:  # type: ignore[attr-defined]
                 result = session.execute_read(_search_chunks, entity_names, top_k)
-            return result
+            return cast(list[tuple[str, float]], result)
         except Exception as exc:
             raise RetrievalError("Neo4j search failed", cause=exc) from exc
 

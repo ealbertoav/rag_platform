@@ -82,15 +82,13 @@ class SentenceTransformerEmbeddingProvider(EmbeddingRepository):
             from sentence_transformers import SentenceTransformer  # lazy import
 
             model = SentenceTransformer(
-                self.model_path,
-                device=self.device,
-                trust_remote_code=True,
+                self.model_path, device=self.device, trust_remote_code=True
             )
             logger.info(
                 "%s loaded from %s on %s", type(self).__name__, self.model_path, self.device
             )
             self._model = model
-            return model
+            return model  # type: ignore[no-any-return]
         except (ImportError, OSError, ValueError) as exc:
             raise EmbeddingError(
                 f"Cannot load {type(self).__name__} from {self.model_path!r}", cause=exc
