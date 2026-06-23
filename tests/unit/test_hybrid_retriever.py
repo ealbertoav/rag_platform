@@ -1,0 +1,116 @@
+"""T-022 — HybridRetriever tests."""
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.domain.entities.chunk import Chunk
+from src.domain.entities.query import Query
+from src.rag.retrieval.hybrid_retriever import HybridRetriever
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+
+def _chunk(i: int) -> Chunk:
+    return Chunk(id=f"c{i}", document_id="doc", text=f"chunk {i}")
+
+
+def _query(text: str = "What is EKS?") -> Query:
+    return Query(text=text)
+
+
+def _retriever(
+    dense_results: list[tuple[Chunk, float]] | None = None,
+    bm25_results: list[tuple[Chunk, float]] | None = None,
+    alpha: float = 0.7,
+) -> HybridRetriever:
+    dense_mock = MagicMock()
+    dense_mock.retrieve.return_value = (
+        dense_results if dense_results is not None else [(_chunk(0), 0.9), (_chunk(1), 0.7)]
+    )
+    bm25_mock = MagicMock()
+    bm25_mock.search.return_value = (
+        bm25_results if bm25_results is not None else [(_chunk(1), 1.2), (_chunk(2), 0.8)]
+    )
+    return HybridRetriever(dense=dense_mock, bm25=bm25_mock, alpha=alpha)
+
+
+# ── async retrieve ────────────────────────────────────────────────────────────
+
+
+class TestHybridRetrieverAsync:
+    @pytest.mark.asyncio
+    async def test_returns_list(self):
+        result = await _retriever().retrieve(_query(), top_k=3)
+        assert isinstance(result, list)
+
+    @pytest.mark.asyncio
+    async def test_chunk_and_score_types(self):
+        results = await _retriever().retrieve(_query(), top_k=3)
+        for chunk, score in results:
+            assert isinstance(chunk, Chunk)
+            assert isinstance(score, float)
+
+    @pytest.mark.asyncio
+    async def test_top_k_respected(self):
+        result = await _retriever().retrieve(_query(), top_k=2)
+        assert len(result) <= 2
+
+    @pytest.mark.asyncio
+    async def test_calls_dense_retrieve(self):
+        hr = _retriever()
+        await hr.retrieve(_query(), top_k=3)
+        hr._dense.retrieve.assert_called_once()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_calls_bm25_search(self):
+        hr = _retriever()
+        await hr.retrieve(_query("my query"), top_k=3)
+        hr._bm25.search.assert_called_once_with("my query", 9)  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_shared_chunk(self):
+        shared = _chunk(0)
+        hr = _retriever(
+            dense_results=[(shared, 0.9)],
+            bm25_results=[(shared, 1.2)],
+        )
+        results = await hr.retrieve(_query(), top_k=5)
+        assert sum(1 for c, _ in results if c.id == shared.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_shared_chunk_gets_boost(self):
+        c0 = _chunk(0)  # in both lists
+        c1 = _chunk(1)  # dense only, higher raw score
+        hr = _retriever(
+            dense_results=[(c1, 0.99), (c0, 0.5)],
+            bm25_results=[(c0, 1.5)],
+        )
+        results = await hr.retrieve(_query(), top_k=2)
+        assert results[0][0].id == c0.id
+
+    @pytest.mark.asyncio
+    async def test_empty_results_returns_empty(self):
+        hr = _retriever(dense_results=[], bm25_results=[])
+        assert await hr.retrieve(_query(), top_k=5) == []
+
+
+# ── retrieve_sync ─────────────────────────────────────────────────────────────
+
+
+class TestRetrieveSync:
+    def test_returns_same_as_async(self):
+        hr = _retriever()
+        results = hr.retrieve_sync(_query(), top_k=3)
+        assert isinstance(results, list)
+        assert all(isinstance(c, Chunk) for c, _ in results)
+
+
+# ── alpha stored ──────────────────────────────────────────────────────────────
+
+
+class TestAlpha:
+    def test_alpha_stored(self):
+        hr = _retriever(alpha=0.3)
+        assert hr.alpha == pytest.approx(0.3)

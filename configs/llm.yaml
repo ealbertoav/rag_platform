@@ -1,0 +1,8 @@
+llm:
+  provider: llama_cpp          # llama_cpp | ollama | mlx | vllm
+  model_path: models/llm/qwen3-30b.gguf
+  context_size: 32768
+  n_gpu_layers: -1             # -1 = all on Metal
+  temperature: 0.1
+  max_tokens: 2048
+  stop_tokens: ["<|im_end|>"]

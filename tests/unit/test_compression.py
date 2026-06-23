@@ -1,0 +1,163 @@
+"""T-024 — ContextualCompressor and token_reducer tests."""
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+from src.domain.entities.chunk import Chunk
+from src.rag.compression.contextual_compression import ContextualCompressor
+from src.rag.compression.token_reducer import (
+    count_tokens,
+    total_tokens,
+    truncate_to_tokens,
+)
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+
+def _chunk(i: int, text: str = "") -> Chunk:
+    return Chunk(id=f"c{i}", document_id="doc", text=text or f"chunk {i} text")
+
+
+def _chunks(n: int, text: str = "word " * 20) -> list[Chunk]:
+    return [_chunk(i, text) for i in range(n)]
+
+
+def _compressor(
+    response: str = "Extracted relevant sentence.",
+    max_tokens: int = 500,
+    enabled: bool = True,
+) -> ContextualCompressor:
+    llm = MagicMock()
+    llm.generate.return_value = response
+    return ContextualCompressor(llm=llm, max_tokens=max_tokens, enabled=enabled)
+
+
+# ── token_reducer ──────────────────────────────────────────────────────────────
+
+
+class TestCountTokens:
+    def test_positive_for_nonempty(self):
+        assert count_tokens("hello") >= 1
+
+    def test_longer_text_more_tokens(self):
+        assert count_tokens("a" * 400) > count_tokens("a" * 40)
+
+    def test_empty_string_returns_one(self):
+        assert count_tokens("") == 1
+
+
+class TestTotalTokens:
+    def test_sums_chunk_tokens(self):
+        chunks = [_chunk(0, "a" * 40), _chunk(1, "b" * 40)]
+        assert total_tokens(chunks) == count_tokens("a" * 40) + count_tokens("b" * 40)
+
+    def test_empty_list_returns_zero(self):
+        assert total_tokens([]) == 0
+
+
+class TestTruncateToTokens:
+    def test_short_text_unchanged(self):
+        text = "Short sentence."
+        assert truncate_to_tokens(text, 100) == text
+
+    def test_long_text_truncated(self):
+        long_text = "word " * 200
+        result = truncate_to_tokens(long_text, 50)
+        assert count_tokens(result) <= 50
+
+    def test_prefers_sentence_boundary(self):
+        # With a period near the start, the result should end at the period.
+        text = "Good sentence. " + "x" * 400
+        result = truncate_to_tokens(text, 10)
+        assert result.endswith(".")
+
+    def test_zero_max_returns_empty(self):
+        assert truncate_to_tokens("some text", 0) == ""
+
+    def test_result_within_budget(self):
+        long_text = "x" * 800
+        assert count_tokens(truncate_to_tokens(long_text, 100)) <= 100
+
+
+# ── ContextualCompressor ───────────────────────────────────────────────────────
+
+
+class TestCompressDisabled:
+    def test_returns_chunks_unchanged(self):
+        chunks = _chunks(3)
+        comp = _compressor(enabled=False)
+        result = comp.compress("q", chunks)
+        assert result is chunks
+
+    def test_no_llm_call(self):
+        comp = _compressor(enabled=False)
+        comp.compress("q", _chunks(2))
+        comp._llm.generate.assert_not_called()  # type: ignore[attr-defined]
+
+    def test_empty_chunks_returns_empty(self):
+        assert _compressor().compress("q", []) == []
+
+
+class TestCompressEnabled:
+    def test_returns_list_of_chunks(self):
+        result = _compressor().compress("q", _chunks(2))
+        assert isinstance(result, list)
+        assert all(isinstance(c, Chunk) for c in result)
+
+    def test_text_replaced_with_extraction(self):
+        result = _compressor("Relevant extract.").compress("q", [_chunk(0)])
+        assert result[0].text == "Relevant extract."
+
+    def test_chunk_id_preserved(self):
+        chunks = [_chunk(7, "some text")]
+        result = _compressor("extracted").compress("q", chunks)
+        assert result[0].id == "c7"
+
+    def test_original_chunk_immutable(self):
+        original = _chunk(0, "original text")
+        _compressor("new text").compress("q", [original])
+        assert original.text == "original text"
+
+    def test_output_respects_max_tokens(self):
+        long_extract = "word " * 200  # ~50 tokens
+        comp = _compressor(response=long_extract, max_tokens=30)
+        result = comp.compress("q", _chunks(5, text="word " * 40))
+        assert total_tokens(result) <= 30
+
+    def test_chunks_beyond_budget_dropped(self):
+        # Each chunk extraction is ~50 tokens; budget = 60 → only 1 fits
+        comp = _compressor(response="word " * 200, max_tokens=60)
+        result = comp.compress("q", _chunks(5))
+        assert len(result) < 5
+
+    def test_llm_failure_falls_back_to_original(self):
+        comp = _compressor()
+        comp._llm.generate.side_effect = RuntimeError("LLM down")  # type: ignore[attr-defined]
+        original_text = "original chunk text"
+        result = comp.compress("q", [_chunk(0, original_text)])
+        assert result[0].text == original_text
+
+    def test_empty_llm_response_falls_back_to_original(self):
+        result = _compressor(response="").compress("q", [_chunk(0, "original")])
+        assert result[0].text == "original"
+
+    def test_calls_llm_once_per_chunk(self):
+        comp = _compressor()
+        comp.compress("q", _chunks(3))
+        assert comp._llm.generate.call_count == 3  # type: ignore[attr-defined]
+
+
+# ── from_settings ──────────────────────────────────────────────────────────────
+
+
+class TestFromSettings:
+    def test_returns_compressor(self):
+        llm = MagicMock()
+        comp = ContextualCompressor.from_settings(llm)
+        assert isinstance(comp, ContextualCompressor)
+
+    def test_uses_settings_max_tokens(self):
+        from src.core.settings import settings
+        llm = MagicMock()
+        comp = ContextualCompressor.from_settings(llm)
+        assert comp._max_tokens == settings.compression.max_tokens

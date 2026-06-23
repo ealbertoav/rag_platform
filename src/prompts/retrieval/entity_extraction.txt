@@ -1,0 +1,13 @@
+Given the following text, extract named entities and their relationships as triples.
+
+Rules:
+- subject and object must be specific named entities (technology, product, organization, concept, person, or location)
+- relation must be a concise verb phrase describing the relationship (e.g., "uses", "manages", "requires", "implements", "integrates with")
+- Include a type for each entity: Technology | Organization | Concept | Person | Location | Product
+- Output ONLY valid JSON — a list of objects, nothing else
+- If no clear relationships exist, output an empty list []
+
+Text:
+$text
+
+JSON output:

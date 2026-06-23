@@ -1,0 +1,17 @@
+evals:
+  dataset_path: datasets/goldens/qa_dataset.json
+  retrieval_dataset_path: datasets/goldens/retrieval_dataset.json
+  synthetic_dataset_path: datasets/synthetic/generated_qa.json
+
+  retrieval:
+    recall_k: [1, 3, 5, 10]
+    precision_k: [3, 5]
+
+  generation:
+    faithfulness_threshold: 0.8
+    relevance_threshold: 0.75
+    hallucination_threshold: 0.1
+
+  tools:
+    ragas: true
+    deepeval: true
