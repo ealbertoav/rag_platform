@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import dataclasses
-import enum
 import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from enum import StrEnum
 from pathlib import Path
 from string import Template
 
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
-from src.domain.repositories.llm_repository import LLMRepository
 from src.rag.pipelines.chat_pipeline import ChatPipeline
-from src.rag.pipelines.retrieval_pipeline import RetrievalPipeline
 from src.rag.ranking.score_fusion import rrf_fuse
 
 logger = logging.getLogger(__name__)
@@ -23,7 +21,7 @@ _DECISION_PROMPT = Path(__file__).parents[2] / "prompts" / "system" / "agent_dec
 _DEFAULT_MAX_ITERATIONS = 3
 
 
-class AgentAction(str, enum.Enum):
+class AgentAction(StrEnum):
     ANSWER = "ANSWER"
     RETRIEVE_MORE = "RETRIEVE_MORE"
     GRAPH_LOOKUP = "GRAPH_LOOKUP"

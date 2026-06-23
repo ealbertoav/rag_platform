@@ -10,13 +10,32 @@ from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.rag.pipelines.agent_pipeline import (
     AgentAction,
-    AgentDecision,
     AgentPipeline,
     _parse_decision,
 )
 
-
 # ── helpers ────────────────────────────────────────────────────────────────────
+
+_ANSWER = (
+    '{"action":"ANSWER","reasoning":"ok",'
+    '"refined_query":"","entities":[],"clarification":""}'
+)
+_RETRIEVE_MORE = (
+    '{"action":"RETRIEVE_MORE","reasoning":"need more",'
+    '"refined_query":"refined q","entities":[],"clarification":""}'
+)
+_CLARIFY = (
+    '{"action":"CLARIFY","reasoning":"ambig","refined_query":"",'
+    '"entities":[],"clarification":"Which region?"}'
+)
+_GRAPH_LOOKUP = (
+    '{"action":"GRAPH_LOOKUP","reasoning":"entities needed",'
+    '"refined_query":"","entities":["EKS","IAM"],"clarification":""}'
+)
+_RETRIEVE_MORE_LOOP = (
+    '{"action":"RETRIEVE_MORE","reasoning":"still need more",'
+    '"refined_query":"q2","entities":[],"clarification":""}'
+)
 
 
 def _chunk(i: int) -> Chunk:
@@ -24,8 +43,8 @@ def _chunk(i: int) -> Chunk:
 
 
 def _retrieval_result(chunks: list[Chunk] | None = None):
-    from src.domain.services.retrieval_service import RetrievalResult
     from src.domain.entities.query import Query
+    from src.domain.services.retrieval_service import RetrievalResult
 
     chunks = chunks or [_chunk(0), _chunk(1)]
     context = "\n\n".join(c.text for c in chunks)
@@ -38,7 +57,7 @@ async def _token_stream(*tokens: str) -> AsyncIterator[str]:
 
 
 def _chat_mock(
-    decision_response: str = '{"action":"ANSWER","reasoning":"ok","refined_query":"","entities":[],"clarification":""}',
+    decision_response: str = _ANSWER,
     retrieval_chunks: list[Chunk] | None = None,
 ) -> MagicMock:
     m = MagicMock()
@@ -56,7 +75,7 @@ def _chat_mock(
 
 
 def _pipeline(
-    decision: str = '{"action":"ANSWER","reasoning":"ok","refined_query":"","entities":[],"clarification":""}',
+    decision: str = _ANSWER,
     chunks: list[Chunk] | None = None,
     max_iterations: int = 3,
 ) -> AgentPipeline:
@@ -72,17 +91,20 @@ class TestParseDecision:
         assert d.action == AgentAction.ANSWER
 
     def test_retrieve_more(self):
-        d = _parse_decision('{"action":"RETRIEVE_MORE","reasoning":"need more","refined_query":"EKS IAM"}')
+        raw = '{"action":"RETRIEVE_MORE","reasoning":"need more","refined_query":"EKS IAM"}'
+        d = _parse_decision(raw)
         assert d.action == AgentAction.RETRIEVE_MORE
         assert d.refined_query == "EKS IAM"
 
     def test_graph_lookup(self):
-        d = _parse_decision('{"action":"GRAPH_LOOKUP","reasoning":"entities","entities":["EKS","IAM"]}')
+        raw = '{"action":"GRAPH_LOOKUP","reasoning":"entities","entities":["EKS","IAM"]}'
+        d = _parse_decision(raw)
         assert d.action == AgentAction.GRAPH_LOOKUP
         assert "EKS" in d.entities
 
     def test_clarify(self):
-        d = _parse_decision('{"action":"CLARIFY","reasoning":"ambiguous","clarification":"Which region?"}')
+        raw = '{"action":"CLARIFY","reasoning":"ambiguous","clarification":"Which region?"}'
+        d = _parse_decision(raw)
         assert d.action == AgentAction.CLARIFY
         assert d.clarification == "Which region?"
 
@@ -133,19 +155,16 @@ class TestAgentPipelineChat:
 
     @pytest.mark.asyncio
     async def test_retrieve_more_triggers_second_retrieval(self):
-        retrieve_more = '{"action":"RETRIEVE_MORE","reasoning":"need more","refined_query":"refined q","entities":[],"clarification":""}'
-        answer = '{"action":"ANSWER","reasoning":"ok","refined_query":"","entities":[],"clarification":""}'
         chat = _chat_mock()
         # First decision: RETRIEVE_MORE, then ANSWER
-        chat._generation._llm.generate.side_effect = [retrieve_more, answer]
+        chat._generation._llm.generate.side_effect = [_RETRIEVE_MORE, _ANSWER]
         p = AgentPipeline(chat=chat)
         await p.chat_full("q")
         assert chat._retrieval.retrieve.call_count == 2
 
     @pytest.mark.asyncio
     async def test_clarify_returns_empty_context(self):
-        clarify = '{"action":"CLARIFY","reasoning":"ambig","refined_query":"","entities":[],"clarification":"Which region?"}'
-        p = _pipeline(decision=clarify)
+        p = _pipeline(decision=_CLARIFY)
         # With no context, generation falls back to no-info reply
         await p.chat_full("ambiguous question")
         # Generation is still called (with empty context)
@@ -153,8 +172,7 @@ class TestAgentPipelineChat:
 
     @pytest.mark.asyncio
     async def test_max_iterations_limits_loop(self):
-        retrieve_more = '{"action":"RETRIEVE_MORE","reasoning":"still need more","refined_query":"q2","entities":[],"clarification":""}'
-        chat = _chat_mock(decision_response=retrieve_more)
+        chat = _chat_mock(decision_response=_RETRIEVE_MORE_LOOP)
         # Always returns RETRIEVE_MORE — should stop at max_iterations
         p = AgentPipeline(chat=chat, max_iterations=2)
         await p.chat_full("q")
@@ -171,8 +189,7 @@ class TestAgentPipelineChat:
 
     @pytest.mark.asyncio
     async def test_graph_lookup_uses_graph_retriever(self):
-        graph_decision = '{"action":"GRAPH_LOOKUP","reasoning":"entities needed","refined_query":"","entities":["EKS","IAM"],"clarification":""}'
-        chat = _chat_mock(decision_response=graph_decision)
+        chat = _chat_mock(decision_response=_GRAPH_LOOKUP)
         # Wire in a graph retriever mock
         graph_mock = MagicMock()
         graph_mock.search.return_value = [(_chunk(99), 1.0)]
