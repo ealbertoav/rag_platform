@@ -1,4 +1,4 @@
-"""T-071 — AgentPipeline and _parse_decision tests."""
+"""T-071 — AgentPipeline and parse_decision tests."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -11,7 +11,7 @@ from src.domain.entities.chunk import Chunk
 from src.rag.pipelines.agent_pipeline import (
     AgentAction,
     AgentPipeline,
-    _parse_decision,
+    parse_decision,
 )
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -61,16 +61,13 @@ def _chat_mock(
     retrieval_chunks: list[Chunk] | None = None,
 ) -> MagicMock:
     m = MagicMock()
-    # retrieval pipeline
-    m._retrieval.retrieve = AsyncMock(return_value=_retrieval_result(retrieval_chunks))
-    # generation service
-    m._generation.stream.return_value = _token_stream("answer token")
-    m._generation.generate.return_value = Answer(
+    m.retrieval.retrieve = AsyncMock(return_value=_retrieval_result(retrieval_chunks))
+    m.generation.stream.return_value = _token_stream("answer token")
+    m.generation.generate.return_value = Answer(
         query_id="q1", text="final answer", sources=["c0"]
     )
-    m._generation._llm.generate.return_value = decision_response
-    # no graph retriever by default
-    m._retrieval._service._hybrid._graph = None
+    m.generation.call_llm.return_value = decision_response
+    m.retrieval.service.hybrid.graph = None
     return m
 
 
@@ -79,47 +76,47 @@ def _pipeline(
     chunks: list[Chunk] | None = None,
     max_iterations: int = 3,
 ) -> AgentPipeline:
-    return AgentPipeline(chat=_chat_mock(decision, chunks), max_iterations=max_iterations)
+    return AgentPipeline(pipeline=_chat_mock(decision, chunks), max_iterations=max_iterations)
 
 
-# ── _parse_decision ────────────────────────────────────────────────────────────
+# ── parse_decision ─────────────────────────────────────────────────────────────
 
 
 class TestParseDecision:
     def test_valid_answer(self):
-        d = _parse_decision('{"action":"ANSWER","reasoning":"enough context"}')
+        d = parse_decision('{"action":"ANSWER","reasoning":"enough context"}')
         assert d.action == AgentAction.ANSWER
 
     def test_retrieve_more(self):
         raw = '{"action":"RETRIEVE_MORE","reasoning":"need more","refined_query":"EKS IAM"}'
-        d = _parse_decision(raw)
+        d = parse_decision(raw)
         assert d.action == AgentAction.RETRIEVE_MORE
         assert d.refined_query == "EKS IAM"
 
     def test_graph_lookup(self):
         raw = '{"action":"GRAPH_LOOKUP","reasoning":"entities","entities":["EKS","IAM"]}'
-        d = _parse_decision(raw)
+        d = parse_decision(raw)
         assert d.action == AgentAction.GRAPH_LOOKUP
         assert "EKS" in d.entities
 
     def test_clarify(self):
         raw = '{"action":"CLARIFY","reasoning":"ambiguous","clarification":"Which region?"}'
-        d = _parse_decision(raw)
+        d = parse_decision(raw)
         assert d.action == AgentAction.CLARIFY
         assert d.clarification == "Which region?"
 
     def test_embedded_json(self):
         text = 'Here is my decision:\n{"action":"ANSWER","reasoning":"ok"}\nDone.'
-        d = _parse_decision(text)
+        d = parse_decision(text)
         assert d.action == AgentAction.ANSWER
 
     def test_invalid_json_fallback(self):
-        d = _parse_decision("not valid json")
+        d = parse_decision("not valid json")
         assert d.action == AgentAction.ANSWER
         assert "fallback" in d.reasoning
 
     def test_unknown_action_raises_fallback(self):
-        d = _parse_decision('{"action":"UNKNOWN","reasoning":"x"}')
+        d = parse_decision('{"action":"UNKNOWN","reasoning":"x"}')
         assert d.action == AgentAction.ANSWER
 
 
@@ -149,18 +146,18 @@ class TestAgentPipelineChat:
     @pytest.mark.asyncio
     async def test_answer_decision_calls_generation(self):
         chat = _chat_mock('{"action":"ANSWER","reasoning":"enough"}')
-        p = AgentPipeline(chat=chat)
+        p = AgentPipeline(pipeline=chat)
         await p.chat_full("q")
-        chat._generation.generate.assert_called_once()
+        chat.generation.generate.assert_called_once()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_retrieve_more_triggers_second_retrieval(self):
         chat = _chat_mock()
         # First decision: RETRIEVE_MORE, then ANSWER
-        chat._generation._llm.generate.side_effect = [_RETRIEVE_MORE, _ANSWER]
-        p = AgentPipeline(chat=chat)
+        chat.generation.call_llm.side_effect = [_RETRIEVE_MORE, _ANSWER]
+        p = AgentPipeline(pipeline=chat)
         await p.chat_full("q")
-        assert chat._retrieval.retrieve.call_count == 2
+        assert chat.retrieval.retrieve.call_count == 2  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_clarify_returns_empty_context(self):
@@ -168,22 +165,22 @@ class TestAgentPipelineChat:
         # With no context, generation falls back to no-info reply
         await p.chat_full("ambiguous question")
         # Generation is still called (with empty context)
-        p._chat._generation.generate.assert_called_once()
+        p._pipeline.generation.generate.assert_called_once()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_max_iterations_limits_loop(self):
         chat = _chat_mock(decision_response=_RETRIEVE_MORE_LOOP)
         # Always returns RETRIEVE_MORE — should stop at max_iterations
-        p = AgentPipeline(chat=chat, max_iterations=2)
+        p = AgentPipeline(pipeline=chat, max_iterations=2)
         await p.chat_full("q")
         # Initial + 2 re-retrievals capped by max_iterations
-        assert chat._retrieval.retrieve.call_count <= 3
+        assert chat.retrieval.retrieve.call_count <= 3  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_llm_decision_failure_defaults_to_answer(self):
         chat = _chat_mock()
-        chat._generation._llm.generate.side_effect = RuntimeError("LLM down")
-        p = AgentPipeline(chat=chat)
+        chat.generation.call_llm.side_effect = RuntimeError("LLM down")
+        p = AgentPipeline(pipeline=chat)
         result = await p.chat_full("q")
         assert isinstance(result, Answer)
 
@@ -193,7 +190,7 @@ class TestAgentPipelineChat:
         # Wire in a graph retriever mock
         graph_mock = MagicMock()
         graph_mock.search.return_value = [(_chunk(99), 1.0)]
-        chat._retrieval._service._hybrid._graph = graph_mock
-        p = AgentPipeline(chat=chat)
+        chat.retrieval.service.hybrid.graph = graph_mock
+        p = AgentPipeline(pipeline=chat)
         await p.chat_full("EKS IAM question")
         graph_mock.search.assert_called_once()

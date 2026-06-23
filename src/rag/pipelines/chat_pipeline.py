@@ -29,6 +29,14 @@ class ChatPipeline:
         self._retrieval = retrieval
         self._generation = generation
 
+    @property
+    def retrieval(self) -> RetrievalPipeline:
+        return self._retrieval
+
+    @property
+    def generation(self) -> GenerationService:
+        return self._generation
+
     # ── Public ─────────────────────────────────────────────────────────────────
 
     async def chat(self, question: str) -> AsyncIterator[str]:

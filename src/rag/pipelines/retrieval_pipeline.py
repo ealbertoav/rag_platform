@@ -23,6 +23,10 @@ class RetrievalPipeline:
     def __init__(self, service: RetrievalService) -> None:
         self._service = service
 
+    @property
+    def service(self) -> RetrievalService:
+        return self._service
+
     # ── Public ─────────────────────────────────────────────────────────────────
 
     async def retrieve(self, query: Query) -> RetrievalResult:

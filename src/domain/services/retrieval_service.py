@@ -55,6 +55,10 @@ class RetrievalService:
         self._top_k_retrieval = top_k_retrieval
         self._top_k_rerank = top_k_rerank
 
+    @property
+    def hybrid(self) -> HybridRetriever:
+        return self._hybrid
+
     # ── Public ─────────────────────────────────────────────────────────────────
 
     async def retrieve(self, query: Query) -> RetrievalResult:

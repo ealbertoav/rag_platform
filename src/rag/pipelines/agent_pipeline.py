@@ -47,16 +47,16 @@ class AgentPipeline:
          Neo4j, ask the user a clarifying question, or generate the final answer.
 
     Iteration is capped at *max_iterations* to prevent runaway loops.  On any
-    LLM decision parse failure the agent falls back to answering with whatever
+    LLM decision parse failure, the agent falls back to answering with whatever
     context is available.
     """
 
     def __init__(
         self,
-        chat: ChatPipeline,
+        pipeline: ChatPipeline,
         max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     ) -> None:
-        self._chat = chat
+        self._pipeline = pipeline
         self._max_iterations = max_iterations
         self._decision_template: Template | None = None
 
@@ -66,7 +66,7 @@ class AgentPipeline:
         """Run the agentic loop and stream the final answer."""
         chunks = await self._agentic_retrieve(question)
         context = "\n\n".join(c.text for c in chunks)
-        return self._chat._generation.stream(question, context)
+        return self._pipeline.generation.stream(question, context)
 
     async def chat_full(self, question: str) -> Answer:
         """Run the agentic loop and return a complete Answer."""
@@ -76,7 +76,7 @@ class AgentPipeline:
         chunks = await self._agentic_retrieve(question)
         context = "\n\n".join(c.text for c in chunks)
         sources = [c.id for c in chunks]
-        answer = self._chat._generation.generate(question, context, sources)
+        answer = self._pipeline.generation.generate(question, context, sources)
         elapsed = (time.monotonic() - t0) * 1000
         return answer.model_copy(
             update={
@@ -90,14 +90,14 @@ class AgentPipeline:
 
     @classmethod
     def from_settings(cls, max_iterations: int = _DEFAULT_MAX_ITERATIONS) -> AgentPipeline:
-        return cls(chat=ChatPipeline.from_settings(), max_iterations=max_iterations)
+        return cls(pipeline=ChatPipeline.from_settings(), max_iterations=max_iterations)
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
     async def _agentic_retrieve(self, question: str) -> list[Chunk]:
         """Iterative retrieval loop — returns the final merged chunk list."""
         query = Query(text=question)
-        retrieval = await self._chat._retrieval.retrieve(query)
+        retrieval = await self._pipeline.retrieval.retrieve(query)
         chunks: list[Chunk] = list(retrieval.chunks)
 
         for iteration in range(self._max_iterations):
@@ -123,7 +123,7 @@ class AgentPipeline:
 
             if decision.action == AgentAction.RETRIEVE_MORE and decision.refined_query:
                 refined_query = Query(text=decision.refined_query)
-                refined = await self._chat._retrieval.retrieve(refined_query)
+                refined = await self._pipeline.retrieval.retrieve(refined_query)
                 # Merge via RRF: existing chunks + new results
                 from src.domain.repositories.vector_store_repository import SearchResult
                 existing: list[SearchResult] = [(c, 1.0) for c in chunks]
@@ -149,8 +149,8 @@ class AgentPipeline:
         template = self._get_decision_template()
         prompt = template.substitute(question=question, context=context)
         try:
-            raw = self._chat._generation._llm.generate(prompt=prompt, context="")
-            return _parse_decision(raw)
+            raw = self._pipeline.generation.call_llm(prompt)
+            return parse_decision(raw)
         except Exception as exc:
             logger.warning("Agent decision parsing failed: %s — defaulting to ANSWER", exc)
             return AgentDecision(action=AgentAction.ANSWER, reasoning="fallback")
@@ -158,7 +158,7 @@ class AgentPipeline:
     def _graph_lookup(self, entities: list[str], existing: list[Chunk]) -> list[Chunk]:
         """Try graph retrieval if a GraphRetriever is wired into the hybrid retriever."""
         try:
-            graph_retriever = self._chat._retrieval._service._hybrid._graph
+            graph_retriever = self._pipeline.retrieval.service.hybrid.graph
             if graph_retriever is None:
                 return []
             existing_ids = {c.id for c in existing}
@@ -179,7 +179,7 @@ class AgentPipeline:
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
-def _parse_decision(text: str) -> AgentDecision:
+def parse_decision(text: str) -> AgentDecision:
     """Parse the LLM's JSON decision output."""
     def _try(src: str) -> AgentDecision | None:
         try:
@@ -200,7 +200,7 @@ def _parse_decision(text: str) -> AgentDecision:
 
     if (d := _try(text)) is not None:
         return d
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    match = re.search(r"\{.*}", text, re.DOTALL)
     if match and (d := _try(match.group())) is not None:
         return d
     return AgentDecision(action=AgentAction.ANSWER, reasoning="parse-fallback")

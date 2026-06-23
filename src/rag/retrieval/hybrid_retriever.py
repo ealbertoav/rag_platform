@@ -73,3 +73,7 @@ class HybridRetriever:
     def retrieve_sync(self, query: Query, top_k: int) -> list[SearchResult]:
         """Synchronous wrapper for contexts that cannot await."""
         return asyncio.run(self.retrieve(query, top_k))
+
+    @property
+    def graph(self) -> GraphRetriever | None:
+        return self._graph

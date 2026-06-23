@@ -55,6 +55,13 @@ class GenerationService:
         prompt = self._build_prompt(context)
         return self._llm.generate_stream(prompt=prompt, context=question)
 
+    def call_llm(self, prompt: str) -> str:
+        """Call the LLM directly with a raw prompt (no RAG context wrapping).
+
+        Used by callers that need bare LLM inference (e.g. agent decision loop).
+        """
+        return self._llm.generate(prompt=prompt, context="")
+
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
