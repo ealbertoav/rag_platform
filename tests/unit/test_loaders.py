@@ -3,6 +3,7 @@
 PDF is tested via mocking (pypdf is a unit boundary, not under test here).
 DOCX, HTML, and Markdown use real fixture files created in tmp_path.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -151,10 +152,13 @@ class TestPdfLoader:
     def test_wraps_exception_as_document_load_error(self, tmp_path: Path):
         path = tmp_path / "bad.pdf"
         path.write_bytes(b"not a pdf")
-        with patch(
-            "src.infrastructure.loaders.pdf_loader.PdfReader",
-            side_effect=ValueError("bad pdf"),
-        ), pytest.raises(DocumentLoadError) as exc_info:
+        with (
+            patch(
+                "src.infrastructure.loaders.pdf_loader.PdfReader",
+                side_effect=ValueError("bad pdf"),
+            ),
+            pytest.raises(DocumentLoadError) as exc_info,
+        ):
             PdfLoader().load(path)
         assert exc_info.value.cause is not None
 

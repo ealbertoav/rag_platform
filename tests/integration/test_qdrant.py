@@ -4,6 +4,7 @@ Run with:
     make qdrant-up   # start Qdrant via Docker
     uv run pytest tests/integration/test_qdrant.py -v
 """
+
 from __future__ import annotations
 
 import pytest
@@ -17,6 +18,7 @@ _COLLECTION = "test_integration"
 def _reachable() -> bool:
     try:
         from qdrant_client import QdrantClient
+
         QdrantClient(url=_QDRANT_URL, timeout=2).get_collections()
         return True
     except Exception:
@@ -44,6 +46,7 @@ def store():
     s = QdrantVectorStore(url=_QDRANT_URL, collection=_COLLECTION, dense_dim=4)
     yield s
     import contextlib
+
     with contextlib.suppress(Exception):
         s._client.delete_collection(_COLLECTION)
 

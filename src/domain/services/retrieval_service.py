@@ -22,9 +22,9 @@ _tracer = trace.get_tracer("rag-platform.retrieval")
 class RetrievalResult:
     """Full output of one retrieval run."""
 
-    query: Query                 # with embedding (and expanded_texts) populated
-    chunks: list[Chunk]          # final, compressed chunks ready for the LLM
-    context: str                 # chunks joined for direct injection into the prompt
+    query: Query  # with embedding (and expanded_texts) populated
+    chunks: list[Chunk]  # final, compressed chunks ready for the LLM
+    context: str  # chunks joined for direct injection into the prompt
     latency_ms: float = 0.0
 
 
@@ -94,7 +94,9 @@ class RetrievalService:
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(
             "Retrieval: %d chunks, %d context chars, %.1fms",
-            len(chunks), len(context), elapsed,
+            len(chunks),
+            len(context),
+            elapsed,
         )
         return RetrievalResult(query=query, chunks=chunks, context=context, latency_ms=elapsed)
 

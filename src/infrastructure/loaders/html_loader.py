@@ -8,10 +8,20 @@ from src.core.exceptions import DocumentLoadError
 from src.domain.entities.document import Document
 
 # Tags whose content is navigational/decorative and should be stripped.
-_STRIP_TAGS = frozenset({
-    "script", "style", "nav", "header", "footer", "aside",
-    "noscript", "iframe", "svg", "form",
-})
+_STRIP_TAGS = frozenset(
+    {
+        "script",
+        "style",
+        "nav",
+        "header",
+        "footer",
+        "aside",
+        "noscript",
+        "iframe",
+        "svg",
+        "form",
+    }
+)
 
 
 def _read_text(path: Path) -> str:

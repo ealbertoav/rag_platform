@@ -1,4 +1,5 @@
 """T-051 — Prometheus metrics tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -10,33 +11,41 @@ from prometheus_client import REGISTRY
 
 class TestMetricDefinitions:
     def test_request_latency_registered(self):
-        assert REGISTRY.get_sample_value(
-            "rag_request_latency_seconds_count", {"stage": "chat"}
-        ) is not None or True  # metric exists once observed
+        assert (
+            REGISTRY.get_sample_value("rag_request_latency_seconds_count", {"stage": "chat"})
+            is not None
+            or True
+        )  # metric exists once observed
 
     def test_record_request_does_not_raise(self):
         from src.observability.metrics import record_request
+
         record_request("test_stage", 0.123, success=True)
         record_request("test_stage", 0.456, success=False)
 
     def test_record_retrieval_does_not_raise(self):
         from src.observability.metrics import record_retrieval
+
         record_retrieval(chunk_count=5, latency_seconds=0.25)
 
     def test_record_generation_does_not_raise(self):
         from src.observability.metrics import record_generation
+
         record_generation(token_count=128, latency_seconds=1.5)
 
     def test_request_counter_increments(self):
         from src.observability.metrics import REQUESTS_TOTAL
+
         before = REQUESTS_TOTAL.labels(status="success")._value.get()
         from src.observability.metrics import record_request
+
         record_request("counter_test", 0.1, success=True)
         after = REQUESTS_TOTAL.labels(status="success")._value.get()
         assert after > before
 
     def test_llm_tokens_counter_increments(self):
         from src.observability.metrics import LLM_TOKENS_TOTAL, record_generation
+
         before = LLM_TOKENS_TOTAL._value.get()
         record_generation(token_count=50, latency_seconds=0.5)
         after = LLM_TOKENS_TOTAL._value.get()

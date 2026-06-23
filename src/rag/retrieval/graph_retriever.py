@@ -100,9 +100,7 @@ class GraphRetriever:
             if isinstance(chunk, Chunk):
                 results.append((chunk, score))
 
-        logger.debug(
-            "Graph retrieval: %d entities → %d chunks", len(entity_names), len(results)
-        )
+        logger.debug("Graph retrieval: %d entities → %d chunks", len(entity_names), len(results))
         return results
 
     @classmethod
@@ -123,6 +121,7 @@ class GraphRetriever:
 
 def _parse_relations(text: str) -> list[GraphRelation]:
     """Parse LLM JSON output into GraphRelation objects."""
+
     def _try(src: str) -> list[GraphRelation] | None:
         try:
             parsed: object = json.loads(src.strip())
@@ -136,13 +135,15 @@ def _parse_relations(text: str) -> list[GraphRelation]:
                 rel = item.get("relation")
                 obj = item.get("object")
                 if isinstance(subj, str) and isinstance(rel, str) and isinstance(obj, str):
-                    result.append(GraphRelation(
-                        subject=subj.strip(),
-                        relation=rel.strip(),
-                        object=obj.strip(),
-                        subject_type=str(item.get("subject_type", "Entity")),
-                        object_type=str(item.get("object_type", "Entity")),
-                    ))
+                    result.append(
+                        GraphRelation(
+                            subject=subj.strip(),
+                            relation=rel.strip(),
+                            object=obj.strip(),
+                            subject_type=str(item.get("subject_type", "Entity")),
+                            object_type=str(item.get("object_type", "Entity")),
+                        )
+                    )
             return result
         except (json.JSONDecodeError, TypeError):
             return None

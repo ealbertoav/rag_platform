@@ -3,6 +3,7 @@
 Run with:
     uv run pytest tests/integration/test_reranker.py -v
 """
+
 from __future__ import annotations
 
 import pytest
@@ -40,15 +41,14 @@ def provider():
 @pytest.fixture(scope="module")
 def chunks():
     from src.domain.entities.chunk import Chunk
-    return [
-        Chunk(id=f"c{i}", document_id="doc", text=text)
-        for i, text in enumerate(_CHUNKS_TEXT)
-    ]
+
+    return [Chunk(id=f"c{i}", document_id="doc", text=text) for i, text in enumerate(_CHUNKS_TEXT)]
 
 
 class TestBGERerankerIntegration:
     def test_rerank_returns_list(self, provider, chunks):
         from src.domain.entities.chunk import Chunk
+
         result = provider.rerank(_QUERY, chunks, top_k=3)
         assert isinstance(result, list)
         assert all(isinstance(c, Chunk) for c in result)
@@ -68,9 +68,7 @@ class TestBGERerankerIntegration:
 
     def test_batching_produces_same_result(self, provider, chunks):
         result_small_batch = provider.rerank(_QUERY, chunks, top_k=3)
-        large_provider = type(provider)(
-            model_path=str(_MODEL_PATH), device="mps", batch_size=32
-        )
+        large_provider = type(provider)(model_path=str(_MODEL_PATH), device="mps", batch_size=32)
         large_provider._model = provider._model
         result_large_batch = large_provider.rerank(_QUERY, chunks, top_k=3)
         assert [c.id for c in result_small_batch] == [c.id for c in result_large_batch]

@@ -1,4 +1,5 @@
 """T-070 — Knowledge Graph (EntityExtractor, GraphRetriever, Neo4jGraphRepository)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -57,7 +58,7 @@ class TestRelationParsing:
 
     def test_embedded_json_found(self):
         text = (
-            'Here are the triples:\n'
+            "Here are the triples:\n"
             '[{"subject":"A","relation":"r","object":"B","subject_type":"T","object_type":"T"}]'
         )
         result = _extractor(text).extract_relations("input")
@@ -199,10 +200,12 @@ class TestNeo4jGraphRepository:
 
     def test_connection_failure_raises_retrieval_error(self):
         from src.core.exceptions import RetrievalError
+
         repo = Neo4jGraphRepository(uri="bolt://localhost:9999")
-        with patch("src.infrastructure.vectordb.neo4j_graph.GraphDatabase",
-                   create=True) as mock_gdb, \
-                pytest.raises(RetrievalError):
+        with (
+            patch("src.infrastructure.vectordb.neo4j_graph.GraphDatabase", create=True) as mock_gdb,
+            pytest.raises(RetrievalError),
+        ):
             mock_gdb.driver.side_effect = Exception("refused")
             repo._get_driver()
 

@@ -34,8 +34,7 @@ def _discover(path: Path) -> list[Path]:
     if path.is_file():
         return [path] if path.suffix.lower() in SUPPORTED_EXTENSIONS else []
     return sorted(
-        f for f in path.rglob("*")
-        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+        f for f in path.rglob("*") if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
     )
 
 
@@ -71,17 +70,13 @@ class IngestionPipeline:
 
         chunks = self._service.prepare(document)
         if not chunks:
-            return IngestionResult(
-                source=str(path), chunk_count=0, content_hash=content_hash
-            )
+            return IngestionResult(source=str(path), chunk_count=0, content_hash=content_hash)
 
         self._vector_store.upsert(chunks)
         self._bm25.add(chunks)
 
         logger.info("Ingested %s → %d chunks", path.name, len(chunks))
-        return IngestionResult(
-            source=str(path), chunk_count=len(chunks), content_hash=content_hash
-        )
+        return IngestionResult(source=str(path), chunk_count=len(chunks), content_hash=content_hash)
 
     def ingest_directory(self, path: Path) -> list[IngestionResult]:
         """Ingest all supported files under a *path*.

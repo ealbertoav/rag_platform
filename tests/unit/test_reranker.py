@@ -1,4 +1,5 @@
 """T-023 unit tests — BGERerankerProvider and CrossEncoder (model mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -98,8 +99,14 @@ class TestBGERerankerProvider:
 
     def test_model_load_error_raises_retrieval_error(self):
         p = BGERerankerProvider(model_path="bad/path", device="cpu")
-        with patch("src.infrastructure.rerankers.bge_reranker.FlagReranker",
-                   side_effect=OSError("not found"), create=True), pytest.raises(RetrievalError):
+        with (
+            patch(
+                "src.infrastructure.rerankers.bge_reranker.FlagReranker",
+                side_effect=OSError("not found"),
+                create=True,
+            ),
+            pytest.raises(RetrievalError),
+        ):
             p._get_model()
 
     def test_from_settings_returns_instance(self):

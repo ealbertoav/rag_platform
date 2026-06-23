@@ -1,4 +1,5 @@
 """T-021 — DenseRetriever tests."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

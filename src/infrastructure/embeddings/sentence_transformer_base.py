@@ -1,4 +1,5 @@
 """Base class for sentence-transformer embedding providers (dense-only)."""
+
 from __future__ import annotations
 
 import logging
@@ -61,7 +62,8 @@ class SentenceTransformerEmbeddingProvider(EmbeddingRepository):
         if texts:
             logger.debug(
                 "%s: sparse vectors not supported; returning empty dicts for %d texts",
-                type(self).__name__, len(texts),
+                type(self).__name__,
+                len(texts),
             )
         return [{} for _ in texts]
 

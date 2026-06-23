@@ -18,8 +18,13 @@ class EvalResult:
 
     @classmethod
     def make(
-        cls, metric: str, score: float, threshold: float,
-        *, higher_is_better: bool = True, details: str = "",
+        cls,
+        metric: str,
+        score: float,
+        threshold: float,
+        *,
+        higher_is_better: bool = True,
+        details: str = "",
     ) -> EvalResult:
         passed = (score > threshold) if higher_is_better else (score < threshold)
         return cls(metric=metric, score=score, threshold=threshold, passed=passed, details=details)

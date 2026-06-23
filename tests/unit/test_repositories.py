@@ -6,6 +6,7 @@ Verifies that:
 - A subclass missing any abstract method CANNOT be instantiated (TypeError).
 - No infrastructure imports leak into the domain layer.
 """
+
 from __future__ import annotations
 
 from abc import ABC
@@ -90,6 +91,7 @@ class TestLLMRepository:
         class _Incomplete(LLMRepository, ABC):  # type: ignore[abstract]
             def generate(self, prompt: str, context: str, **kwargs: Any) -> str:
                 return ""
+
             # generate_stream missing
 
         with pytest.raises(TypeError):
@@ -119,6 +121,7 @@ class TestEmbeddingRepository:
         class _Incomplete(EmbeddingRepository, ABC):  # type: ignore[abstract]
             def embed(self, texts: list[str]) -> list[DenseVector]:
                 return []
+
             # embed_sparse missing
 
         with pytest.raises(TypeError):
@@ -183,13 +186,27 @@ class TestVectorStoreRepository:
 
     def test_incomplete_subclass_missing_count(self):
         class _Incomplete(VectorStoreRepository, ABC):  # type: ignore[abstract]
-            def upsert(self, chunks: list[Chunk]) -> None: pass
-            def search_dense(self, qv: DenseVector, top_k: int) -> list[SearchResult]: return []
-            def search_sparse(self, qs: SparseVector, top_k: int) -> list[SearchResult]: return []
+            def upsert(self, chunks: list[Chunk]) -> None:
+                pass
+
+            def search_dense(self, qv: DenseVector, top_k: int) -> list[SearchResult]:
+                return []
+
+            def search_sparse(self, qs: SparseVector, top_k: int) -> list[SearchResult]:
+                return []
+
             def search_hybrid(  # noqa: E704
-                self, qv: DenseVector, qs: SparseVector, alpha: float, top_k: int,
-            ) -> list[SearchResult]: return []
-            def delete(self, ids: list[str]) -> None: pass
+                self,
+                qv: DenseVector,
+                qs: SparseVector,
+                alpha: float,
+                top_k: int,
+            ) -> list[SearchResult]:
+                return []
+
+            def delete(self, ids: list[str]) -> None:
+                pass
+
             # count missing
 
         with pytest.raises(TypeError):

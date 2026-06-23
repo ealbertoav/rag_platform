@@ -27,9 +27,7 @@ def ndcg_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> floa
     relevant = set(relevant_ids)
 
     dcg = sum(
-        1.0 / math.log2(i + 2)
-        for i, doc_id in enumerate(retrieved_ids[:k])
-        if doc_id in relevant
+        1.0 / math.log2(i + 2) for i, doc_id in enumerate(retrieved_ids[:k]) if doc_id in relevant
     )
 
     # Ideal DCG: place as many relevant docs as possible in the top-K slots.

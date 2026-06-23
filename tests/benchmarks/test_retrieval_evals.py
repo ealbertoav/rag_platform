@@ -6,6 +6,7 @@ Run with:
 The tests are skipped when the golden retrieval dataset is empty (default state
 before documents are ingested and the dataset is populated).
 """
+
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,5 @@
 """Tests for Nomic and Qwen3 embedding providers (models mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -75,8 +76,10 @@ class TestNomicProvider:
     def test_model_load_error_raises_embedding_error(self):
         p = NomicEmbeddingProvider(model_path="bad/path")
         _ST = "src.infrastructure.embeddings.sentence_transformer_base.SentenceTransformer"
-        with patch(_ST, side_effect=OSError("not found"), create=True), \
-                pytest.raises(EmbeddingError):
+        with (
+            patch(_ST, side_effect=OSError("not found"), create=True),
+            pytest.raises(EmbeddingError),
+        ):
             p._get_model()
 
     def test_encode_failure_raises_embedding_error(self):
@@ -121,8 +124,10 @@ class TestQwenProvider:
     def test_model_load_error_raises_embedding_error(self):
         p = QwenEmbeddingProvider(model_path="bad/path")
         _ST = "src.infrastructure.embeddings.sentence_transformer_base.SentenceTransformer"
-        with patch(_ST, side_effect=OSError("not found"), create=True), \
-                pytest.raises(EmbeddingError):
+        with (
+            patch(_ST, side_effect=OSError("not found"), create=True),
+            pytest.raises(EmbeddingError),
+        ):
             p._get_model()
 
     def test_from_settings_returns_instance(self):
@@ -135,6 +140,7 @@ class TestQwenProvider:
 class TestGetEmbeddingProvider:
     def test_bge_m3_default(self):
         from src.infrastructure.embeddings.bge_m3 import BGEM3EmbeddingProvider
+
         provider = get_embedding_provider()
         assert isinstance(provider, BGEM3EmbeddingProvider)
 
@@ -142,26 +148,36 @@ class TestGetEmbeddingProvider:
         monkeypatch.setenv("EMBEDDINGS__PROVIDER", "nomic")
         monkeypatch.setenv("EMBEDDINGS__MODEL_PATH", "nomic-ai/nomic-embed-text-v1.5")
         # Force re-evaluation of settings inside the factory
-        with patch("src.core.settings.settings",
-                   **{"embeddings.provider": "nomic",
-                      "embeddings.model_path": "nomic-ai/nomic-embed-text-v1.5",
-                      "embeddings.device": "cpu",
-                      "embeddings.batch_size": 32,
-                      "embeddings.normalize": True}):
+        with patch(
+            "src.core.settings.settings",
+            **{
+                "embeddings.provider": "nomic",
+                "embeddings.model_path": "nomic-ai/nomic-embed-text-v1.5",
+                "embeddings.device": "cpu",
+                "embeddings.batch_size": 32,
+                "embeddings.normalize": True,
+            },
+        ):
             provider = get_embedding_provider()
         assert isinstance(provider, NomicEmbeddingProvider)
 
     def test_qwen_provider(self):
-        with patch("src.core.settings.settings",
-                   **{"embeddings.provider": "qwen_embedding",
-                      "embeddings.model_path": "Qwen/Qwen3-Embedding-0.6B",
-                      "embeddings.device": "cpu",
-                      "embeddings.batch_size": 32,
-                      "embeddings.normalize": True}):
+        with patch(
+            "src.core.settings.settings",
+            **{
+                "embeddings.provider": "qwen_embedding",
+                "embeddings.model_path": "Qwen/Qwen3-Embedding-0.6B",
+                "embeddings.device": "cpu",
+                "embeddings.batch_size": 32,
+                "embeddings.normalize": True,
+            },
+        ):
             provider = get_embedding_provider()
         assert isinstance(provider, QwenEmbeddingProvider)
 
     def test_unknown_provider_raises(self):
-        with patch("src.core.settings.settings", **{"embeddings.provider": "openai"}), \
-                pytest.raises(ValueError, match="Unknown"):
+        with (
+            patch("src.core.settings.settings", **{"embeddings.provider": "openai"}),
+            pytest.raises(ValueError, match="Unknown"),
+        ):
             get_embedding_provider()

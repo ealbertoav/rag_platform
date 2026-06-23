@@ -1,4 +1,5 @@
 """T-005 — exception hierarchy tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -47,9 +48,16 @@ class TestInheritance:
 
     def test_all_are_exceptions(self):
         for cls in (
-            RAGPlatformError, IngestionError, DocumentLoadError, ChunkingError,
-            RetrievalError, EmbeddingError, VectorStoreError,
-            GenerationError, LLMTimeoutError, EvaluationError,
+            RAGPlatformError,
+            IngestionError,
+            DocumentLoadError,
+            ChunkingError,
+            RetrievalError,
+            EmbeddingError,
+            VectorStoreError,
+            GenerationError,
+            LLMTimeoutError,
+            EvaluationError,
         ):
             assert issubclass(cls, Exception)
 
@@ -106,6 +114,7 @@ class TestRaiseable:
 
     def test_fastapi_handler_pattern(self):
         """Simulate a FastAPI exception handler catching RAGPlatformError."""
+
         def handler(exc: RAGPlatformError) -> dict:
             return {"error": exc.message}
 

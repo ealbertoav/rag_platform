@@ -39,8 +39,17 @@ class TestJsonFormatter:
 
     def test_required_keys_present(self):
         parsed = json.loads(JsonFormatter().format(_make_record()))
-        required = ("timestamp", "level", "logger", "message", "module", "function",
-                    "line", "trace_id", "span_id")
+        required = (
+            "timestamp",
+            "level",
+            "logger",
+            "message",
+            "module",
+            "function",
+            "line",
+            "trace_id",
+            "span_id",
+        )
         for key in required:
             assert key in parsed, f"missing key: {key}"
 

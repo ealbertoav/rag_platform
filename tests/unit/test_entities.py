@@ -3,6 +3,7 @@
 Covers: round-trip serialisation, auto-generated defaults, immutability,
 model_copy updates, and absence of circular imports.
 """
+
 from __future__ import annotations
 
 import pytest

@@ -36,9 +36,7 @@ class ParentChildChunker:
 
         for parent in parents:
             # Synthesize a temporary Document so the child splitter can use it.
-            parent_doc = document.model_copy(
-                update={"id": document.id, "content": parent.text}
-            )
+            parent_doc = document.model_copy(update={"id": document.id, "content": parent.text})
             children = self._child_splitter.chunk(parent_doc)
 
             # Tag each child with a reference to its parent.

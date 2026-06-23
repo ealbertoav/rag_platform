@@ -42,6 +42,7 @@ def traced(
     The span automatically records "latency_ms" and, on error, the exception
     and sets the span status to ERROR.
     """
+
     def decorator(fn: _F) -> _F:
         module = str(getattr(fn, "__module__", None) or __name__)
         qualname = str(getattr(fn, "__qualname__", None) or repr(fn))
@@ -49,6 +50,7 @@ def traced(
         tracer = get_tracer(module)
 
         if inspect.iscoroutinefunction(fn):
+
             @functools.wraps(fn)
             async def async_wrapper(*args: object, **kwargs: object) -> object:
                 with tracer.start_as_current_span(name) as span:
@@ -62,6 +64,7 @@ def traced(
                             span.record_exception(exc)
                             span.set_status(StatusCode.ERROR, str(exc))
                         raise
+
             return async_wrapper  # type: ignore[return-value]
 
         @functools.wraps(fn)
@@ -77,6 +80,7 @@ def traced(
                         span.record_exception(exc)
                         span.set_status(StatusCode.ERROR, str(exc))
                     raise
+
         return sync_wrapper  # type: ignore[return-value]
 
     return decorator

@@ -99,7 +99,9 @@ class LlamaCppProvider(LLMRepository):
             )
             logger.info(
                 "llama.cpp model loaded: %s (ctx=%d, gpu_layers=%d)",
-                self.model_path, self.context_size, self.n_gpu_layers,
+                self.model_path,
+                self.context_size,
+                self.n_gpu_layers,
             )
             self._model = llama
             return llama
@@ -108,9 +110,7 @@ class LlamaCppProvider(LLMRepository):
                 f"Cannot load llama.cpp model from {self.model_path!r}", cause=exc
             ) from exc
 
-    async def _stream_tokens(
-        self, prompt: str, context: str, **kwargs: Any
-    ) -> AsyncIterator[str]:
+    async def _stream_tokens(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Async generator: yields tokens from a sync llama.cpp stream via a thread."""
         full_prompt = _join(prompt, context)
         token_queue: queue.Queue[object] = queue.Queue()
@@ -144,9 +144,7 @@ class LlamaCppProvider(LLMRepository):
                 if item is _SENTINEL:
                     break
                 if isinstance(item, Exception):
-                    raise GenerationError(
-                        "llama.cpp stream failed", cause=item
-                    ) from item
+                    raise GenerationError("llama.cpp stream failed", cause=item) from item
                 if isinstance(item, str):
                     yield item
         finally:

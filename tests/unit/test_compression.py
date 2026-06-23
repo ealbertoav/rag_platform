@@ -1,4 +1,5 @@
 """T-024 — ContextualCompressor and token_reducer tests."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -158,6 +159,7 @@ class TestFromSettings:
 
     def test_uses_settings_max_tokens(self):
         from src.core.settings import settings
+
         llm = MagicMock()
         comp = ContextualCompressor.from_settings(llm)
         assert comp._max_tokens == settings.compression.max_tokens

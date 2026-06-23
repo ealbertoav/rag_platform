@@ -9,12 +9,32 @@ from typing import Any
 from opentelemetry import trace
 
 # Standard LogRecord attributes that should NOT be forwarded as extra fields.
-_BUILTIN_ATTRS: frozenset[str] = frozenset({
-    "args", "created", "exc_info", "exc_text", "filename", "funcName",
-    "levelname", "levelno", "lineno", "message", "module", "msecs", "msg",
-    "name", "pathname", "process", "processName", "relativeCreated",
-    "stack_info", "taskName", "thread", "threadName",
-})
+_BUILTIN_ATTRS: frozenset[str] = frozenset(
+    {
+        "args",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
+    }
+)
 
 # Marker attribute placed on the handler we install so configure_logging()
 # can detect and replace it instead of stacking duplicates.
@@ -123,9 +143,7 @@ def configure_logging() -> None:
 
     cfg = settings.logging
     level = getattr(logging, cfg.level, logging.INFO)
-    formatter: logging.Formatter = (
-        JsonFormatter() if cfg.format == "json" else TextFormatter()
-    )
+    formatter: logging.Formatter = JsonFormatter() if cfg.format == "json" else TextFormatter()
 
     root = logging.getLogger()
 

@@ -1,4 +1,5 @@
 """T-071 — AgentPipeline and parse_decision tests."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -16,10 +17,7 @@ from src.rag.pipelines.agent_pipeline import (
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-_ANSWER = (
-    '{"action":"ANSWER","reasoning":"ok",'
-    '"refined_query":"","entities":[],"clarification":""}'
-)
+_ANSWER = '{"action":"ANSWER","reasoning":"ok","refined_query":"","entities":[],"clarification":""}'
 _RETRIEVE_MORE = (
     '{"action":"RETRIEVE_MORE","reasoning":"need more",'
     '"refined_query":"refined q","entities":[],"clarification":""}'
@@ -63,9 +61,7 @@ def _chat_mock(
     m = MagicMock()
     m.retrieval.retrieve = AsyncMock(return_value=_retrieval_result(retrieval_chunks))
     m.generation.stream.return_value = _token_stream("answer token")
-    m.generation.generate.return_value = Answer(
-        query_id="q1", text="final answer", sources=["c0"]
-    )
+    m.generation.generate.return_value = Answer(query_id="q1", text="final answer", sources=["c0"])
     m.generation.call_llm.return_value = decision_response
     m.retrieval.service.hybrid.graph = None
     return m

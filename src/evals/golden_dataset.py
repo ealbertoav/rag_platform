@@ -21,6 +21,7 @@ _PROMPT_PATH = Path(__file__).parents[1] / "prompts" / "evaluation" / "generate_
 
 class _RawPair(TypedDict):
     """Expected JSON structure returned by the LLM for each QA pair."""
+
     question: str
     answer: str
 
@@ -77,7 +78,9 @@ class SyntheticDatasetBuilder:
         deduped = self._deduplicate(all_pairs)
         logger.info(
             "Generated %d pairs from %d chunks → %d after dedup",
-            len(all_pairs), len(chunks), len(deduped),
+            len(all_pairs),
+            len(chunks),
+            len(deduped),
         )
         return deduped
 
@@ -151,15 +154,14 @@ class SyntheticDatasetBuilder:
 
 def _parse_json_pairs(text: str) -> list[_RawPair]:
     """Extract a JSON array of {question, answer} dicts from LLM output."""
+
     def _to_raw_pairs(obj: object) -> list[_RawPair] | None:
         if not isinstance(obj, list):
             return None
         result: list[_RawPair] = []
         for item in obj:
             if isinstance(item, dict) and "question" in item and "answer" in item:
-                result.append(
-                    _RawPair(question=str(item["question"]), answer=str(item["answer"]))
-                )
+                result.append(_RawPair(question=str(item["question"]), answer=str(item["answer"])))
         return result
 
     # Try the whole response first.

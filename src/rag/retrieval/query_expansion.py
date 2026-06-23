@@ -100,9 +100,7 @@ class QueryExpander:
             prompt = self._build_prompt(query_text)
             response = self._llm.generate(prompt=prompt, context="")
             variants = _parse_variants(response, self._n_variants)
-            logger.debug(
-                "Query expanded: %d variants for %r", len(variants), query_text[:60]
-            )
+            logger.debug("Query expanded: %d variants for %r", len(variants), query_text[:60])
             return variants
         except Exception as exc:
             logger.warning("Query expansion failed for %r: %s", query_text[:60], exc)

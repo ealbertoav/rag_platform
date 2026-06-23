@@ -17,9 +17,16 @@ CHUNK_HASH_KEY = "content_hash"
 CHUNK_INDEX_KEY = "chunk_index"
 
 # ── Supported document types ───────────────────────────────────────────────────
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
-    ".pdf", ".docx", ".html", ".htm", ".md", ".markdown",
-})
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".pdf",
+        ".docx",
+        ".html",
+        ".htm",
+        ".md",
+        ".markdown",
+    }
+)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 DATA_DIR = ROOT / "data"

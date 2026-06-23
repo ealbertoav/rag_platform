@@ -1,4 +1,5 @@
 """T-042 — Generation metric unit tests (Ragas/DeepEval mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -106,8 +107,7 @@ class TestFaithfulnessMetric:
         assert result.score == pytest.approx(0.0)
 
     def test_ragas_failure_returns_zero(self):
-        with patch(_FAITH,
-                   side_effect=RuntimeError("API error")):
+        with patch(_FAITH, side_effect=RuntimeError("API error")):
             result = FaithfulnessMetric().score(_sample())
         assert result.score == pytest.approx(0.0)
         assert result.passed is False
@@ -138,8 +138,7 @@ class TestRelevanceMetric:
         assert result.score == pytest.approx(0.0)
 
     def test_ragas_failure_returns_zero(self):
-        with patch(_RELEV,
-                   side_effect=ImportError("ragas not installed")):
+        with patch(_RELEV, side_effect=ImportError("ragas not installed")):
             result = RelevanceMetric().score(_sample())
         assert result.score == pytest.approx(0.0)
 
@@ -154,14 +153,12 @@ class TestRelevanceMetric:
 
 class TestHallucinationMetric:
     def test_passes_below_threshold(self):
-        with patch(_HALLU,
-                   return_value=0.05):
+        with patch(_HALLU, return_value=0.05):
             result = HallucinationMetric(threshold=0.1).score(_sample())
         assert result.passed is True
 
     def test_fails_above_threshold(self):
-        with patch(_HALLU,
-                   return_value=0.4):
+        with patch(_HALLU, return_value=0.4):
             result = HallucinationMetric(threshold=0.1).score(_sample())
         assert result.passed is False
 
@@ -176,14 +173,12 @@ class TestHallucinationMetric:
         assert result.passed is False
 
     def test_deepeval_failure_returns_one(self):
-        with patch(_HALLU,
-                   side_effect=ImportError("deepeval not installed")):
+        with patch(_HALLU, side_effect=ImportError("deepeval not installed")):
             result = HallucinationMetric().score(_sample())
         assert result.score == pytest.approx(1.0)
         assert result.passed is False
 
     def test_metric_name(self):
-        with patch(_HALLU,
-                   return_value=0.05):
+        with patch(_HALLU, return_value=0.05):
             result = HallucinationMetric().score(_sample())
         assert result.metric == "hallucination"

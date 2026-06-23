@@ -1,4 +1,5 @@
 """T-020 — QueryExpander tests."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -151,6 +152,7 @@ class TestFromSettings:
 
     def test_uses_settings_n_variants(self):
         from src.core.settings import settings
+
         llm = _llm("\n".join(f"v{i}" for i in range(10)))
         exp = QueryExpander.from_settings(llm)
         result = exp.expand(_query())

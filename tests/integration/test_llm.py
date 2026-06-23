@@ -5,6 +5,7 @@ Run with:
 
 The tests are skipped when no model file is found under models/llm/.
 """
+
 from __future__ import annotations
 
 import pytest

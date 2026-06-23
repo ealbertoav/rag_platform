@@ -5,6 +5,7 @@ Run with:
     # Download BGE-M3 model to models/embeddings/bge-m3
     uv run pytest tests/integration/test_ingestion_pipeline.py -v
 """
+
 from __future__ import annotations
 
 import pytest
@@ -18,6 +19,7 @@ _QDRANT_URL = "http://localhost:6333"
 def _qdrant_reachable() -> bool:
     try:
         from qdrant_client import QdrantClient
+
         QdrantClient(url=_QDRANT_URL, timeout=2, check_compatibility=False).get_collections()
         return True
     except Exception:
@@ -62,6 +64,7 @@ def sample_md_file(tmp_path_factory):
 class TestIngestionPipelineIntegration:
     def test_ingest_file_returns_result(self, pipeline, sample_md_file):
         from src.rag.pipelines.ingestion_pipeline import IngestionResult
+
         result = pipeline.ingest_file(sample_md_file)
         assert isinstance(result, IngestionResult)
 

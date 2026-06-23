@@ -48,6 +48,7 @@ def weighted_linear_fuse(
     Both score lists are min-max normalized to [0, 1] before combining so that
     the raw score scales (cosine similarity vs. BM25) don't dominate.
     """
+
     def _normalise(results: list[SearchResult]) -> dict[str, float]:
         if not results:
             return {}

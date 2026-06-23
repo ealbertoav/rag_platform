@@ -1,4 +1,5 @@
 """T-032 — FastAPI application tests."""
+
 from __future__ import annotations
 
 import json
@@ -203,12 +204,15 @@ class TestEvals:
             relevance_threshold=0.75,
             passed=True,
         )
-        with patch(
-            "src.domain.services.evaluation_service.EvaluationService.run",
-            new_callable=AsyncMock,
-            return_value=report,
-        ), patch(
-            "src.evals.e2e.rag_benchmark.BenchmarkReport.save",
+        with (
+            patch(
+                "src.domain.services.evaluation_service.EvaluationService.run",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "src.evals.e2e.rag_benchmark.BenchmarkReport.save",
+            ),
         ):
             async with _client(app_client) as c:
                 resp = await c.post("/evals/run")

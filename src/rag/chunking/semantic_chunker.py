@@ -88,7 +88,9 @@ class SemanticChunker:
         if self._encode is not None:
             return self._encode
         from sentence_transformers import SentenceTransformer  # lazy import
+
         model = SentenceTransformer(self.model_name)
+
         def encode(texts: list[str]) -> Any:
             return model.encode(texts)
 

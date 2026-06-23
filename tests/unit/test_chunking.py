@@ -1,4 +1,5 @@
 """T-011 — chunking strategy tests."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -205,10 +206,7 @@ class TestParentChildChunker:
 
     def test_no_child_exceeds_child_chunk_size(self):
         chunker = ParentChildChunker(parent_chunk_size=400, child_chunk_size=100, overlap=10)
-        children = [
-            c for c in chunker.chunk(self._long_doc())
-            if CHUNK_PARENT_ID_KEY in c.metadata
-        ]
+        children = [c for c in chunker.chunk(self._long_doc()) if CHUNK_PARENT_ID_KEY in c.metadata]
         assert _max_tokens(children) <= 100
 
     def test_document_id_set_on_all_chunks(self):

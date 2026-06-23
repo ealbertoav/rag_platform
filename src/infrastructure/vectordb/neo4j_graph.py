@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 @dataclasses.dataclass
 class GraphRelation:
     """A knowledge-graph triple extracted from a document chunk."""
+
     subject: str
     relation: str
     object: str
@@ -67,9 +68,7 @@ class Neo4jGraphRepository:
         try:
             with driver.session() as session:  # type: ignore[attr-defined]
                 for rel in relations:
-                    session.execute_write(
-                        _upsert_relation, rel, chunk_id, document_id
-                    )
+                    session.execute_write(_upsert_relation, rel, chunk_id, document_id)
         except Exception as exc:
             raise RetrievalError("Neo4j upsert failed", cause=exc) from exc
 
@@ -101,22 +100,19 @@ class Neo4jGraphRepository:
             return self._driver
         try:
             from neo4j import GraphDatabase  # type: ignore[import-untyped]
+
             driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
             self._driver = driver
             logger.info("Neo4j driver connected to %s", self.uri)
             return driver
         except (ImportError, Exception) as exc:
-            raise RetrievalError(
-                f"Cannot connect to Neo4j at {self.uri!r}", cause=exc
-            ) from exc
+            raise RetrievalError(f"Cannot connect to Neo4j at {self.uri!r}", cause=exc) from exc
 
 
 # ── Cypher helpers ─────────────────────────────────────────────────────────────
 
 
-def _upsert_relation(
-    tx: Any, rel: GraphRelation, chunk_id: str, document_id: str
-) -> None:
+def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: str) -> None:
     tx.run(
         """
         MERGE (s:Entity {name: $subject})

@@ -1,4 +1,5 @@
 """T-030 unit tests — LlamaCppProvider (Llama model mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -25,9 +26,7 @@ def _provider(model: MagicMock | None = None) -> LlamaCppProvider:
 
 def _llama_mock(response: str = "test response") -> MagicMock:
     m = MagicMock()
-    m.create_chat_completion.return_value = {
-        "choices": [{"message": {"content": response}}]
-    }
+    m.create_chat_completion.return_value = {"choices": [{"message": {"content": response}}]}
     return m
 
 
@@ -102,8 +101,14 @@ class TestGenerate:
 
     def test_model_load_error_raises_generation_error(self):
         p = LlamaCppProvider(model_path="bad.gguf")
-        with patch("src.infrastructure.llm.llama_cpp_provider.Llama",
-                   side_effect=OSError("not found"), create=True), pytest.raises(GenerationError):
+        with (
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.Llama",
+                side_effect=OSError("not found"),
+                create=True,
+            ),
+            pytest.raises(GenerationError),
+        ):
             p._get_model()
 
     def test_model_loaded_once(self):
@@ -153,11 +158,13 @@ class TestGenerateStream:
     @pytest.mark.asyncio
     async def test_skips_empty_delta(self):
         mock = MagicMock()
-        mock.create_chat_completion.return_value = iter([
-            {"choices": [{"delta": {"content": ""}}]},
-            {"choices": [{"delta": {"content": "real"}}]},
-            {"choices": [{"delta": {}}]},
-        ])
+        mock.create_chat_completion.return_value = iter(
+            [
+                {"choices": [{"delta": {"content": ""}}]},
+                {"choices": [{"delta": {"content": "real"}}]},
+                {"choices": [{"delta": {}}]},
+            ]
+        )
         p = _provider(mock)
         tokens = [t async for t in p.generate_stream("q", "")]
         assert tokens == ["real"]

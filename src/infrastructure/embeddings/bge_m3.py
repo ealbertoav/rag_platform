@@ -92,9 +92,7 @@ class BGEM3EmbeddingProvider(EmbeddingRepository):
             self._model = model
             return model
         except (ImportError, OSError, ValueError) as exc:
-            raise EmbeddingError(
-                f"Cannot load BGE-M3 from {self.model_path!r}", cause=exc
-            ) from exc
+            raise EmbeddingError(f"Cannot load BGE-M3 from {self.model_path!r}", cause=exc) from exc
 
     def _call_model(
         self,
@@ -114,9 +112,7 @@ class BGEM3EmbeddingProvider(EmbeddingRepository):
                 return_colbert_vecs=False,
             )
         except Exception as exc:
-            raise EmbeddingError(
-                f"BGE-M3 encode failed for {len(texts)} texts", cause=exc
-            ) from exc
+            raise EmbeddingError(f"BGE-M3 encode failed for {len(texts)} texts", cause=exc) from exc
 
     @staticmethod
     def _normalise_sparse(lexical_weights: list[dict[Any, Any]]) -> list[SparseVector]:

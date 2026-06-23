@@ -41,6 +41,7 @@ class RetrievalPipeline:
     def retrieve_sync(self, query: Query) -> RetrievalResult:
         """Synchronous wrapper for callers that cannot "await"."""
         import asyncio
+
         return asyncio.run(self.retrieve(query))
 
     # ── Factory ────────────────────────────────────────────────────────────────

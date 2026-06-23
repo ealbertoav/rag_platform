@@ -1,4 +1,5 @@
 """T-015 unit tests — IngestionService and IngestionPipeline (all deps mocked)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -105,6 +106,7 @@ class TestIngestionService:
         svc = self._service()
         svc._embedder.embed_both.side_effect = RuntimeError("GPU OOM")  # type: ignore[attr-defined]
         import logging
+
         with caplog.at_level(logging.ERROR):
             result = svc.prepare(_doc())
         assert result == []
@@ -231,6 +233,7 @@ class TestEmbedBothDefault:
         class _Minimal(EmbeddingRepository):
             def embed(self, texts):
                 return [[0.1] for _ in texts]
+
             def embed_sparse(self, texts):
                 return [{1: 0.5} for _ in texts]
 

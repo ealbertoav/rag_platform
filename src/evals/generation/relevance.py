@@ -38,11 +38,13 @@ class RelevanceMetric:
 
         from datasets import Dataset  # type: ignore[import-untyped]
 
-        dataset = Dataset.from_dict({
-            "question": [sample.question],
-            "answer": [sample.generated_answer],
-            "contexts": [list(sample.retrieved_chunks)],
-            "ground_truth": [sample.expected_answer],
-        })
+        dataset = Dataset.from_dict(
+            {
+                "question": [sample.question],
+                "answer": [sample.generated_answer],
+                "contexts": [list(sample.retrieved_chunks)],
+                "ground_truth": [sample.expected_answer],
+            }
+        )
         result = evaluate(dataset, metrics=[answer_relevancy])
         return float(result[_METRIC])

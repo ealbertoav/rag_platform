@@ -10,9 +10,7 @@ from src.rag.compression.token_reducer import count_tokens, truncate_to_tokens
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_PATH = (
-    Path(__file__).parents[2] / "prompts" / "compression" / "extract_relevant.txt"
-)
+_PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "compression" / "extract_relevant.txt"
 
 
 class ContextualCompressor:
@@ -90,13 +88,9 @@ class ContextualCompressor:
     def _extract(self, query: str, chunk: Chunk) -> str:
         """Ask the LLM to extract relevant sentences; fall back to the full text."""
         try:
-            prompt = self._load_template().substitute(
-                query=query, passage=chunk.text
-            )
+            prompt = self._load_template().substitute(query=query, passage=chunk.text)
             response = self._llm.generate(prompt=prompt, context="").strip()
             return response if response else chunk.text
         except Exception as exc:
-            logger.warning(
-                "Compression failed for chunk %r, using original: %s", chunk.id, exc
-            )
+            logger.warning("Compression failed for chunk %r, using original: %s", chunk.id, exc)
             return chunk.text

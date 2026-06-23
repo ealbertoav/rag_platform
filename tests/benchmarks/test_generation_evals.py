@@ -9,6 +9,7 @@ Requires:
 
 Skipped automatically when dependencies or data are missing.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,6 +26,7 @@ def _ragas_available() -> bool:
         import ragas  # noqa: F401
 
         import datasets  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -33,6 +35,7 @@ def _ragas_available() -> bool:
 def _deepeval_available() -> bool:
     try:
         import deepeval  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -90,7 +93,9 @@ class TestFaithfulnessBenchmark:
         results = [metric.score(s) for s in samples]
         scores = [r.score for r in results]
         passed = sum(1 for r in results if r.passed)
-        print(f"\nFaithfulness: mean={sum(scores)/len(scores):.3f}, passed={passed}/{len(results)}")
+        print(
+            f"\nFaithfulness: mean={sum(scores) / len(scores):.3f}, passed={passed}/{len(results)}"
+        )
         assert len(results) == len(samples)
 
     def test_relevance_scores_all_samples(self, samples):

@@ -1,4 +1,5 @@
 """T-043 — RAGBenchmark and BenchmarkReport unit tests."""
+
 from __future__ import annotations
 
 import json
@@ -28,8 +29,11 @@ def _pipeline_mock(
     return m
 
 
-def _qa(question: str = "What is EKS?", answer: str = "It is Kubernetes.",
-        relevant: list[str] | None = None) -> dict[str, object]:
+def _qa(
+    question: str = "What is EKS?",
+    answer: str = "It is Kubernetes.",
+    relevant: list[str] | None = None,
+) -> dict[str, object]:
     return {
         "question": question,
         "answer": answer,

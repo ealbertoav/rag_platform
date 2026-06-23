@@ -1,4 +1,5 @@
 """T-022 — score_fusion tests with mock data."""
+
 from __future__ import annotations
 
 from src.domain.entities.chunk import Chunk
@@ -65,7 +66,7 @@ class TestRrfFuse:
     def test_custom_k_parameter(self):
         # Lower k → bigger score boost for top-ranked items
         high_k = rrf_fuse([_r(0)], top_k=1, k=120)[0][1]
-        low_k  = rrf_fuse([_r(0)], top_k=1, k=10)[0][1]
+        low_k = rrf_fuse([_r(0)], top_k=1, k=10)[0][1]
         assert low_k > high_k
 
     def test_chunk_instance_from_first_occurrence(self):
@@ -114,7 +115,5 @@ class TestWeightedLinearFuse:
 
     def test_deduplicates_by_id(self):
         chunk = _chunk(0)
-        results = weighted_linear_fuse(
-            [(chunk, 0.9)], [(chunk, 0.8)], alpha=0.7, top_k=5
-        )
+        results = weighted_linear_fuse([(chunk, 0.9)], [(chunk, 0.8)], alpha=0.7, top_k=5)
         assert sum(1 for c, _ in results if c.id == chunk.id) == 1

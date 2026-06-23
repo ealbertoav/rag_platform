@@ -6,6 +6,7 @@ Run with:
 The entire module is skipped when the model directory does not exist, so CI
 passes without downloaded weights.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -79,9 +80,7 @@ class TestBGEM3Integration:
         import numpy as np
 
         vecs = provider.embed(_TEXTS)
-        cos = np.dot(vecs[0], vecs[1]) / (
-            np.linalg.norm(vecs[0]) * np.linalg.norm(vecs[1])
-        )
+        cos = np.dot(vecs[0], vecs[1]) / (np.linalg.norm(vecs[0]) * np.linalg.norm(vecs[1]))
         assert cos < 0.999  # not identical
 
     def test_mps_device_no_error(self, provider):

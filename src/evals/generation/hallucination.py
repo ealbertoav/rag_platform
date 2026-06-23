@@ -24,18 +24,29 @@ class HallucinationMetric:
     def score(self, sample: EvalSample) -> EvalResult:
         if not sample.generated_answer:
             # No answer → cannot hallucinate; score 0 (perfect, passes).
-            return EvalResult.make(_METRIC, 0.0, self.threshold, higher_is_better=False,
-                                   details="Empty generated answer")
+            return EvalResult.make(
+                _METRIC,
+                0.0,
+                self.threshold,
+                higher_is_better=False,
+                details="Empty generated answer",
+            )
         if not sample.retrieved_chunks:
-            return EvalResult.make(_METRIC, 1.0, self.threshold, higher_is_better=False,
-                                   details="No context to verify against")
+            return EvalResult.make(
+                _METRIC,
+                1.0,
+                self.threshold,
+                higher_is_better=False,
+                details="No context to verify against",
+            )
         try:
             raw = self._deepeval_score(sample)
             return EvalResult.make(_METRIC, raw, self.threshold, higher_is_better=False)
         except Exception as exc:
             logger.warning("Hallucination scoring failed: %s", exc)
-            return EvalResult.make(_METRIC, 1.0, self.threshold, higher_is_better=False,
-                                   details=str(exc))
+            return EvalResult.make(
+                _METRIC, 1.0, self.threshold, higher_is_better=False, details=str(exc)
+            )
 
     # ── internal ───────────────────────────────────────────────────────────────
 

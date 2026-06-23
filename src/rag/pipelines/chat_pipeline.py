@@ -92,8 +92,11 @@ class ChatPipeline:
 
         elapsed = (time.monotonic() - t0) * 1000
         answer = answer.model_copy(
-            update={"query_id": query.id, "latency_ms": elapsed,
-                    "token_count": len(answer.text.split())}
+            update={
+                "query_id": query.id,
+                "latency_ms": elapsed,
+                "token_count": len(answer.text.split()),
+            }
         )
         return answer, context_texts
 

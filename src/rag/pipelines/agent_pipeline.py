@@ -107,7 +107,9 @@ class AgentPipeline:
             decision = self._decide(question, chunks)
             logger.debug(
                 "Agent iteration %d: %s — %s",
-                iteration + 1, decision.action, decision.reasoning,
+                iteration + 1,
+                decision.action,
+                decision.reasoning,
             )
 
             if decision.action == AgentAction.ANSWER:
@@ -126,6 +128,7 @@ class AgentPipeline:
                 refined = await self._pipeline.retrieval.retrieve(refined_query)
                 # Merge via RRF: existing chunks + new results
                 from src.domain.repositories.vector_store_repository import SearchResult
+
                 existing: list[SearchResult] = [(c, 1.0) for c in chunks]
                 new_results: list[SearchResult] = [(c, 1.0) for c in refined.chunks]
                 merged = rrf_fuse(existing, new_results, top_k=len(chunks))
@@ -135,6 +138,7 @@ class AgentPipeline:
                 graph_chunks = self._graph_lookup(decision.entities, chunks)
                 if graph_chunks:
                     from src.domain.repositories.vector_store_repository import SearchResult
+
                     existing = [(c, 1.0) for c in chunks]
                     graph_sr: list[SearchResult] = [(c, 1.0) for c in graph_chunks]
                     merged = rrf_fuse(existing, graph_sr, top_k=len(chunks) + len(graph_chunks))
@@ -181,6 +185,7 @@ class AgentPipeline:
 
 def parse_decision(text: str) -> AgentDecision:
     """Parse the LLM's JSON decision output."""
+
     def _try(src: str) -> AgentDecision | None:
         try:
             data: object = json.loads(src.strip())

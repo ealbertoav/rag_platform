@@ -1,4 +1,5 @@
 """T-041 — Retrieval metric unit tests (pure functions, no I/O)."""
+
 from __future__ import annotations
 
 import math
@@ -145,8 +146,8 @@ class TestRetrievalEvaluator:
 
     def test_averages_across_samples(self):
         samples = [
-            RetrievalSample("q1", ["a", "x"], ["a"]),   # perfect
-            RetrievalSample("q2", ["x", "y"], ["a"]),   # zero
+            RetrievalSample("q1", ["a", "x"], ["a"]),  # perfect
+            RetrievalSample("q2", ["x", "y"], ["a"]),  # zero
         ]
         ev = RetrievalEvaluator(k_values=[2])
         m = ev.evaluate(samples)[0]

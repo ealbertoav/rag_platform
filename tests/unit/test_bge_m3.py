@@ -1,4 +1,5 @@
 """T-012 unit tests — BGE-M3 provider (model mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -166,8 +167,13 @@ class TestEmbedBoth:
 
 class TestErrorHandling:
     def test_missing_model_raises_embedding_error(self, provider: BGEM3EmbeddingProvider):
-        with patch("src.infrastructure.embeddings.bge_m3.BGEM3EmbeddingProvider._get_model",
-                   side_effect=EmbeddingError("model not found")), pytest.raises(EmbeddingError):
+        with (
+            patch(
+                "src.infrastructure.embeddings.bge_m3.BGEM3EmbeddingProvider._get_model",
+                side_effect=EmbeddingError("model not found"),
+            ),
+            pytest.raises(EmbeddingError),
+        ):
             provider.embed(["text"])
 
     def test_encode_failure_raises_embedding_error(self, provider: BGEM3EmbeddingProvider):

@@ -1,4 +1,5 @@
 """T-025 — RetrievalService and RetrievalPipeline tests."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock

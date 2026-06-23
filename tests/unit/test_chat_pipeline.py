@@ -1,4 +1,5 @@
 """T-031 — GenerationService and ChatPipeline tests."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator

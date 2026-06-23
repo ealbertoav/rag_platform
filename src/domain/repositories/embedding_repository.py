@@ -4,8 +4,8 @@ from abc import ABC, abstractmethod
 
 # Domain-layer type aliases — kept here so both repositories and infrastructure
 # share the same definitions without any external dependency.
-DenseVector = list[float]          # e.g. 1024-dim BGE-M3 output
-SparseVector = dict[int, float]    # token_id → weight (BGE-M3 lexical head)
+DenseVector = list[float]  # e.g. 1024-dim BGE-M3 output
+SparseVector = dict[int, float]  # token_id → weight (BGE-M3 lexical head)
 
 
 class EmbeddingRepository(ABC):

@@ -1,4 +1,5 @@
 """T-014 — BM25 index and retriever tests."""
+
 from __future__ import annotations
 
 from pathlib import Path

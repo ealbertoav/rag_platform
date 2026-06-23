@@ -16,8 +16,8 @@ from src.evals.retrieval.recall_at_k import recall_at_k
 @dataclasses.dataclass
 class RetrievalSample:
     query_id: str
-    retrieved_ids: list[str]   # system output ranked best-first
-    relevant_ids: list[str]    # ground-truth
+    retrieved_ids: list[str]  # system output ranked best-first
+    relevant_ids: list[str]  # ground-truth
 
 
 @dataclasses.dataclass
@@ -42,9 +42,7 @@ class RetrievalEvaluator:
         results: list[MetricsAtK] = []
         for k in self.k_values:
             recall = _mean(recall_at_k(s.retrieved_ids, s.relevant_ids, k) for s in samples)
-            precision = _mean(
-                precision_at_k(s.retrieved_ids, s.relevant_ids, k) for s in samples
-            )
+            precision = _mean(precision_at_k(s.retrieved_ids, s.relevant_ids, k) for s in samples)
             ndcg_score = _mean(ndcg_at_k(s.retrieved_ids, s.relevant_ids, k) for s in samples)
             results.append(MetricsAtK(k=k, recall=recall, precision=precision, ndcg=ndcg_score))
 
@@ -86,12 +84,15 @@ def load_retrieval_dataset(path: Path) -> list[RetrievalSample]:
             continue
         query_id = entry.get("id", "")
         raw_ids = entry.get("relevant_chunk_ids", [])
-        samples.append(RetrievalSample(
-            query_id=query_id if isinstance(query_id, str) else "",
-            retrieved_ids=[],
-            relevant_ids=[r for r in (raw_ids if isinstance(raw_ids, list) else [])
-                          if isinstance(r, str)],
-        ))
+        samples.append(
+            RetrievalSample(
+                query_id=query_id if isinstance(query_id, str) else "",
+                retrieved_ids=[],
+                relevant_ids=[
+                    r for r in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(r, str)
+                ],
+            )
+        )
     return samples
 
 

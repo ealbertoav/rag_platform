@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_EXPANSION = 3   # candidate multiplier fed to each retriever before fusion
+_EXPANSION = 3  # candidate multiplier fed to each retriever before fusion
 _MAX_CANDIDATES = 50
 
 
@@ -66,7 +66,10 @@ class HybridRetriever:
         fused = rrf_fuse(dense_results, bm25_results, graph_results, top_k=top_k)
         logger.debug(
             "Hybrid retrieval: %d dense + %d bm25 + %d graph → %d fused",
-            len(dense_results), len(bm25_results), len(graph_results), len(fused),
+            len(dense_results),
+            len(bm25_results),
+            len(graph_results),
+            len(fused),
         )
         return fused
 

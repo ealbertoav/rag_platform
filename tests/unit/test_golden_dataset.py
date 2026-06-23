@@ -1,4 +1,5 @@
 """T-040 — SyntheticDatasetBuilder tests."""
+
 from __future__ import annotations
 
 import json
@@ -153,8 +154,7 @@ class TestDeduplicate:
 
     def test_dissimilar_questions_kept(self):
         pairs_json = (
-            '[{"question":"What is A?","answer":"A."},'
-            '{"question":"Why does B?","answer":"B."}]'
+            '[{"question":"What is A?","answer":"A."},{"question":"Why does B?","answer":"B."}]'
         )
         llm = _llm_mock(pairs_json)
         embedder = MagicMock()

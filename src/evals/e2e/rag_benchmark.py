@@ -112,11 +112,18 @@ class RAGBenchmark:
                 answer, context_texts = await pipeline.benchmark(question)  # type: ignore[attr-defined]
             except Exception as exc:
                 logger.error("Pipeline failed for question %d: %s", i, exc)
-                results.append(SampleResult(
-                    question=question, expected_answer=expected,
-                    generated_answer="", retrieved_ids=[], relevant_ids=relevant_ids,
-                    recall_at_5=0.0, faithfulness=0.0, relevance=0.0,
-                ))
+                results.append(
+                    SampleResult(
+                        question=question,
+                        expected_answer=expected,
+                        generated_answer="",
+                        retrieved_ids=[],
+                        relevant_ids=relevant_ids,
+                        recall_at_5=0.0,
+                        faithfulness=0.0,
+                        relevance=0.0,
+                    )
+                )
                 continue
 
             retrieved_ids = list(answer.sources)
@@ -131,19 +138,25 @@ class RAGBenchmark:
             faith_score = self._faith.score(sample).score
             relev_score = self._relev.score(sample).score
 
-            results.append(SampleResult(
-                question=question,
-                expected_answer=expected,
-                generated_answer=answer.text,
-                retrieved_ids=retrieved_ids,
-                relevant_ids=relevant_ids,
-                recall_at_5=r5,
-                faithfulness=faith_score,
-                relevance=relev_score,
-            ))
+            results.append(
+                SampleResult(
+                    question=question,
+                    expected_answer=expected,
+                    generated_answer=answer.text,
+                    retrieved_ids=retrieved_ids,
+                    relevant_ids=relevant_ids,
+                    recall_at_5=r5,
+                    faithfulness=faith_score,
+                    relevance=relev_score,
+                )
+            )
             logger.debug(
                 "[%d/%d] R@5=%.2f faith=%.2f relev=%.2f",
-                i + 1, len(qa_pairs), r5, faith_score, relev_score,
+                i + 1,
+                len(qa_pairs),
+                r5,
+                faith_score,
+                relev_score,
             )
 
         n = len(results) or 1

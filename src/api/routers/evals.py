@@ -58,7 +58,8 @@ async def run_evals(
         passed=report.passed,
         report_path=report_path,
         message=(
-            "All metrics above threshold ✓" if report.passed
+            "All metrics above threshold ✓"
+            if report.passed
             else "One or more metrics below threshold — see report for details."
         ),
     )

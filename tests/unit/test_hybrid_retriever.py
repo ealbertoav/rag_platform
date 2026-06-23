@@ -1,4 +1,5 @@
 """T-022 — HybridRetriever tests."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

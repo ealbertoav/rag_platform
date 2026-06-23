@@ -1,4 +1,5 @@
 """T-013 unit tests — QdrantVectorStore (Qdrant client mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -216,9 +217,11 @@ class TestSearchHybrid:
 
     def test_respects_top_k(self, store: QdrantVectorStore, mock_client: MagicMock):
         chunks = [_chunk(i) for i in range(6)]
+
         def _pts(cs):
             pts = [_scored_point(c.id, 0.9 - i * 0.1, c) for i, c in enumerate(cs)]
             return _query_response(pts)
+
         mock_client.query_points.side_effect = [_pts(chunks[:3]), _pts(chunks[3:])]
         results = store.search_hybrid([0.1] * 4, {1: 0.9}, alpha=0.7, top_k=2)
         assert len(results) == 2
@@ -240,5 +243,3 @@ class TestDeleteAndCount:
         mock_client.count.side_effect = RuntimeError("down")
         with pytest.raises(VectorStoreError):
             store.count()
-
-
