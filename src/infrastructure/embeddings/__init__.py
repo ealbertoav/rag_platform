@@ -8,8 +8,6 @@ from src.infrastructure.embeddings.qwen_embedding import QwenEmbeddingProvider
 # API providers — imported lazily inside get_embedding_provider() to avoid
 # importing optional libraries at module load time.
 
-_API_PROVIDERS = {"openai", "voyage", "cohere", "gemini"}
-
 # ENV_VAR names shown in ConfigurationError messages
 _API_KEY_ENV: dict[str, str] = {
     "openai": "EMBEDDINGS__OPENAI__API_KEY",
@@ -39,8 +37,8 @@ def get_embedding_provider() -> EmbeddingRepository:
     When switching providers, update "embeddings.dense_dim" to match the new
     model and run "python scripts/rebuild_embeddings.py --recreate-collection".
 
-    When "embeddings.cache.enabled = true" (default), the returned provider is
-    wrapped in a Redis cache decorator.
+    When "embeddings.cache.enabled = true", the returned provider is
+    wrapped in a Redis cache decorator (disabled by default).
     """
     from src.core.settings import settings
 
@@ -111,6 +109,7 @@ def _wrap_with_cache(
     return CachedEmbeddingProvider(
         inner=inner,
         redis_url=s.redis.url,
+        redis_password=s.redis.password,
         ttl_seconds=s.embeddings.cache.ttl_seconds,
         model_identifier=provider_name,
     )

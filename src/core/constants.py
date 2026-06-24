@@ -42,3 +42,6 @@ PROMPTS_DIR = ROOT / "src" / "prompts"
 
 # ── Retrieval ──────────────────────────────────────────────────────────────────
 RRF_K = 60  # constant in Reciprocal Rank Fusion: score = Σ 1/(k + rank_i)
+
+# ── Embedding providers ─────────────────────────────────────────────────────────
+API_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"openai", "voyage", "cohere", "gemini"})

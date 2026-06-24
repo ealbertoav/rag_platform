@@ -47,9 +47,6 @@ _COST_PER_1K: dict[str, float] = {
     "gemini": 0.025,   # text-embedding-004
 }
 
-_AVG_TOKENS_PER_TEXT = 100  # rough estimate for cost projection
-
-
 @dataclasses.dataclass
 class ProviderResult:
     name: str
@@ -66,7 +63,14 @@ class ProviderResult:
 
 
 def _set_provider_env(provider: str) -> None:
-    """Override EMBEDDINGS__PROVIDER env var and reload settings."""
+    """Override EMBEDDINGS__PROVIDER and reload the settings singleton.
+
+    Limitation: singleton objects (Qdrant client, embedder) that were already
+    constructed before this reload still reference the previous settings. Each
+    call to _run_provider() creates fresh infrastructure objects after the
+    reload, which is why providers are benchmarked sequentially rather than
+    concurrently in this script.
+    """
     import importlib
 
     os.environ["EMBEDDINGS__PROVIDER"] = provider

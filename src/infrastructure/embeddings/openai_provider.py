@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
+
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from src.core.exceptions import EmbeddingError
 from src.domain.repositories.embedding_repository import (
@@ -19,12 +26,17 @@ _MAX_BATCH = 2048
 _SUPPORTS_DIM_TRUNCATION = {"text-embedding-3-large", "text-embedding-3-small"}
 
 
+def _is_rate_limit(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))
+
+
 class OpenAIEmbeddingProvider(EmbeddingRepository):
     """OpenAI text-embedding API provider.
 
     Dense only — sparse vectors fall back to BM25.
     Supports dimension truncation for the text-embedding-3 model family.
-    Retries automatically on HTTP 429 (rate limit) with exponential backoff.
+    Retries automatically on HTTP 429 (rate limit) with exponential backoff via tenacity.
     """
 
     def __init__(
@@ -64,22 +76,20 @@ class OpenAIEmbeddingProvider(EmbeddingRepository):
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _embed_batch(self, texts: list[str]) -> list[DenseVector]:
-        for attempt in range(5):
-            try:
-                return self._call_api(texts)
-            except Exception as exc:
-                if _is_rate_limit(exc) and attempt < 4:
-                    wait = min(2**attempt * 2, 60)
-                    logger.warning(
-                        "OpenAI rate limit on attempt %d, retrying in %ds", attempt + 1, wait
-                    )
-                    time.sleep(wait)
-                    continue
-                raise EmbeddingError(
-                    f"OpenAI embed failed for {len(texts)} texts after {attempt + 1} attempt(s)",
-                    cause=exc,
-                ) from exc
-        raise EmbeddingError(f"OpenAI embed failed after 5 retries for {len(texts)} texts")
+        try:
+            return self._call_with_retry(texts)
+        except Exception as exc:
+            raise EmbeddingError(f"OpenAI embed failed for {len(texts)} texts", cause=exc) from exc
+
+    @retry(
+        retry=retry_if_exception(_is_rate_limit),
+        wait=wait_exponential(multiplier=2, min=2, max=60),
+        stop=stop_after_attempt(5),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    def _call_with_retry(self, texts: list[str]) -> list[DenseVector]:
+        return self._call_api(texts)
 
     def _call_api(self, texts: list[str]) -> list[DenseVector]:
         client = self._get_client()
@@ -99,8 +109,3 @@ class OpenAIEmbeddingProvider(EmbeddingRepository):
                 ) from exc
             self._client = OpenAI(api_key=self.api_key)
         return self._client
-
-
-def _is_rate_limit(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))

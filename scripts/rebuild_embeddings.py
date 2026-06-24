@@ -21,7 +21,8 @@ import time
 
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
-_API_PROVIDERS = {"openai", "voyage", "cohere", "gemini"}
+from src.core.constants import API_EMBEDDING_PROVIDERS
+
 _API_BATCH_SIZE = 32   # Conservative default for API providers (rate limits)
 _API_BATCH_SLEEP = 0.1  # Seconds between batches for API providers
 
@@ -34,7 +35,7 @@ def _preflight(args: argparse.Namespace, settings: object) -> None:
     provider = s.embeddings.provider
 
     # 1. API providers require a key
-    if provider in _API_PROVIDERS:
+    if provider in API_EMBEDDING_PROVIDERS:
         key_map = {
             "openai": s.embeddings.openai.api_key,
             "voyage": s.embeddings.voyage.api_key,
@@ -54,7 +55,7 @@ def _preflight(args: argparse.Namespace, settings: object) -> None:
     else:
         print(f"Provider: {provider} (self-hosted)")
 
-    # 2. Dimension sanity check (warn only — user may intentionally change dims)
+    # 2. Dimension sanity check (warn only — user may intentionally change dimming)
     expected_dims = {
         "bge_m3": 1024, "nomic": 768, "qwen_embedding": 1024,
         "openai": s.embeddings.openai.dimensions,
@@ -145,7 +146,7 @@ def main() -> None:
         sys.exit(1)
 
     provider_name = settings.embeddings.provider
-    is_api = provider_name in _API_PROVIDERS
+    is_api = provider_name in API_EMBEDDING_PROVIDERS
     batch_size = args.batch_size or (_API_BATCH_SIZE if is_api else 32)
 
     print(f"Found {len(chunks)} chunks in BM25 index.")

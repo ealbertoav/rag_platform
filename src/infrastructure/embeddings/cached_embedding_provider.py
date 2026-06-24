@@ -3,11 +3,13 @@
 Caches dense vectors only — sparse vectors are either zero-cost (BM25)
 or model-native and not worth the Redis round-trip overhead.
 
-Cache key: SHA-256(text | model_identifier)
+Cache key: SHA-256 (text | model_identifier)
 Value    : JSON-encoded list[float], stored as a Redis string with TTL.
 
-Fail-open: if Redis is unavailable the provider falls through to the
-inner implementation without raising.
+Fail-open: if Redis is unavailable, the provider falls through to the
+inner implementation without raising. Connection is retried at most once
+per 60 seconds, so a temporarily unavailable Redis is picked back up
+automatically after it recovers.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from redis import Redis
@@ -32,6 +35,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_RECONNECT_COOLDOWN = 60.0  # seconds between Redis reconnect attempts
+
 
 class CachedEmbeddingProvider(EmbeddingRepository):
     """Transparent caching layer around any EmbeddingRepository.
@@ -39,21 +44,24 @@ class CachedEmbeddingProvider(EmbeddingRepository):
     Usage (handled automatically by the factory when cache.enabled=True):
 
         inner = BGEM3EmbeddingProvider.from_settings()
-        cached = CachedEmbeddingProvider(inner, redis_client, ttl_seconds=604800)
+        cached = CachedEmbeddingProvider(inner, redis_url="redis://localhost:6379")
     """
 
     def __init__(
         self,
         inner: EmbeddingRepository,
         redis_url: str = "redis://localhost:6379",
+        redis_password: str = "",
         ttl_seconds: int = 604800,
         model_identifier: str = "",
     ) -> None:
         self._inner = inner
         self._redis_url = redis_url
+        self._redis_password = redis_password
         self._ttl = ttl_seconds
         self._model_id = model_identifier
-        self._redis: Redis | None = None  # lazy connection; stays None if Redis is down
+        self._redis: Redis | None = None
+        self._next_retry_at: float = 0.0  # monotonic timestamp; 0 = connect immediately
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
@@ -95,7 +103,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         return self._inner.embed_sparse(texts)
 
     def embed_both(self, texts: list[str]) -> tuple[list[DenseVector], list[SparseVector]]:
-        # Cache dense only; sparse is computed by inner.
+        # Cache dense only; inner computes sparse.
         dense = self.embed(texts)
         sparse = self._inner.embed_sparse(texts)
         return dense, sparse
@@ -109,14 +117,24 @@ class CachedEmbeddingProvider(EmbeddingRepository):
     def _get_client(self) -> Redis | None:
         if self._redis is not None:
             return self._redis
+        # Respect the reconnection cooldown so a temporarily down Redis is
+        # retried periodically rather than giving up for the process lifetime.
+        if time.monotonic() < self._next_retry_at:
+            return None
         try:
-            client: Redis = Redis.from_url(self._redis_url, decode_responses=True)  # type: ignore[assignment]
+            client: Redis = Redis.from_url(  # type: ignore[assignment]
+                self._redis_url,
+                password=self._redis_password or None,
+                decode_responses=True,
+            )
             client.ping()
             self._redis = client
+            self._next_retry_at = 0.0
             logger.info("Embedding cache connected to Redis at %s", self._redis_url)
             return client
         except (RedisConnectionError, RedisError, OSError) as exc:
-            logger.warning("Redis unavailable (%s); embedding cache disabled", exc)
+            self._next_retry_at = time.monotonic() + _RECONNECT_COOLDOWN
+            logger.warning("Redis unavailable (%s); will retry in %.0fs", exc, _RECONNECT_COOLDOWN)
             return None
 
     @staticmethod

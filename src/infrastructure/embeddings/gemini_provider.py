@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Literal
+
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from src.core.exceptions import EmbeddingError
 from src.domain.repositories.embedding_repository import (
@@ -19,13 +26,19 @@ _MAX_BATCH = 100  # Gemini batch limit
 GeminiTaskType = Literal["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
 
 
+def _is_rate_limit(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    keywords = ("429", "quota", "resource_exhausted", "rate_limit", "too many requests")
+    return any(kw in msg for kw in keywords)
+
+
 class GeminiEmbeddingProvider(EmbeddingRepository):
     """Google Gemini text-embedding-004 provider.
 
     Dense only (768-dim) — sparse vectors fall back to BM25.
     Uses task_type="RETRIEVAL_DOCUMENT" for ingestion and
     "RETRIEVAL_QUERY" for query embedding.
-    Retries on quota exhaustion errors.
+    Retries on quota exhaustion via tenacity.
     """
 
     def __init__(self, api_key: str, model: str = "text-embedding-004") -> None:
@@ -67,22 +80,20 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
         return results
 
     def _embed_batch(self, texts: list[str], task_type: GeminiTaskType) -> list[DenseVector]:
-        for attempt in range(5):
-            try:
-                return self._call_api(texts, task_type)
-            except Exception as exc:
-                if _is_rate_limit(exc) and attempt < 4:
-                    wait = min(2**attempt * 2, 60)
-                    logger.warning(
-                        "Gemini rate limit on attempt %d, retrying in %ds", attempt + 1, wait
-                    )
-                    time.sleep(wait)
-                    continue
-                raise EmbeddingError(
-                    f"Gemini embed failed for {len(texts)} texts after {attempt + 1} attempt(s)",
-                    cause=exc,
-                ) from exc
-        raise EmbeddingError(f"Gemini embed failed after 5 retries for {len(texts)} texts")
+        try:
+            return self._call_with_retry(texts, task_type)
+        except Exception as exc:
+            raise EmbeddingError(f"Gemini embed failed for {len(texts)} texts", cause=exc) from exc
+
+    @retry(
+        retry=retry_if_exception(_is_rate_limit),
+        wait=wait_exponential(multiplier=2, min=2, max=60),
+        stop=stop_after_attempt(5),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    def _call_with_retry(self, texts: list[str], task_type: GeminiTaskType) -> list[DenseVector]:
+        return self._call_api(texts, task_type)
 
     def _call_api(self, texts: list[str], task_type: GeminiTaskType) -> list[DenseVector]:
         import google.generativeai as genai
@@ -105,9 +116,3 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
             ) from exc
         genai.configure(api_key=self.api_key)
         self._configured = True
-
-
-def _is_rate_limit(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    keywords = ("429", "quota", "resource_exhausted", "rate_limit", "too many requests")
-    return any(kw in msg for kw in keywords)

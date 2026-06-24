@@ -75,7 +75,7 @@ class GeminiEmbeddingConfig(BaseModel):
 
 
 class EmbeddingCacheSettings(BaseModel):
-    enabled: bool = True
+    enabled: bool = False  # opt-in: avoids Redis round-trips for self-hosted providers
     ttl_seconds: int = 604800  # 7 days
 
 

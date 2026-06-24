@@ -814,7 +814,7 @@
 ---
 
 ### T-100 · Embedding Settings Expansion
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Extend `EmbeddingSettings` to support API-based providers and a Redis embedding cache. No infrastructure code yet — just the settings model.
 - **Files:**
   - `src/core/settings.py` — extend `EmbeddingSettings`
@@ -848,7 +848,7 @@
 ---
 
 ### T-101 · OpenAI Embedding Provider
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Implement `EmbeddingRepository` for OpenAI's embedding API. Dense only — sparse falls back to BM25 (returns `{}`).
 - **Files:**
   - `src/infrastructure/embeddings/openai_provider.py`
@@ -867,7 +867,7 @@
 ---
 
 ### T-102 · Voyage AI Embedding Provider
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Implement `EmbeddingRepository` for Voyage AI's embedding API. Dense only.
 - **Files:**
   - `src/infrastructure/embeddings/voyage_provider.py`
@@ -885,7 +885,7 @@
 ---
 
 ### T-103 · Cohere Embedding Provider
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Implement `EmbeddingRepository` for Cohere's embedding API. Dense only. Notable: Cohere requires an `input_type` flag (`search_document` vs `search_query`).
 - **Files:**
   - `src/infrastructure/embeddings/cohere_provider.py`
@@ -905,7 +905,7 @@
 ---
 
 ### T-104 · Gemini Embedding Provider
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Implement `EmbeddingRepository` for Google Gemini's embedding API. Dense only (768-dim).
 - **Files:**
   - `src/infrastructure/embeddings/gemini_provider.py`
@@ -923,7 +923,7 @@
 ---
 
 ### T-105 · Embedding Model Versioning (Qdrant Payload)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Track which embedding model generated each vector by storing `embedding_model_name` and `embedding_model_version` in each chunk's Qdrant payload. Detect model mismatch on startup to prevent silent vector corruption.
 - **Files:**
   - `src/infrastructure/vectordb/qdrant.py` — modify `upsert()` and add `_validate_embedding_model()`
@@ -947,7 +947,7 @@
 ---
 
 ### T-106 · Redis Embedding Cache
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Implement a transparent caching layer for any `EmbeddingRepository`. Caches dense vectors in Redis to avoid redundant API calls (and costs). Uses the decorator pattern — wraps any provider without modifying it.
 - **Files:**
   - `src/infrastructure/embeddings/cached_embedding_provider.py`
@@ -975,7 +975,7 @@
 ---
 
 ### T-107 · Factory & Config Wiring
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Extend `get_embedding_provider()` factory to instantiate all new providers (T-101–T-104) and optionally wrap with `CachedEmbeddingProvider` (T-106). Single entry point — no other code needs to know which provider is active.
 - **Files:**
   - `src/infrastructure/embeddings/__init__.py`
@@ -997,7 +997,7 @@
 ---
 
 ### T-108 · Rebuild Embeddings — Multi-Provider Hardening
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Extend `scripts/rebuild_embeddings.py` to work correctly with API providers and to catch dimension/model mismatches before they corrupt the collection.
 - **Files:**
   - `scripts/rebuild_embeddings.py`
@@ -1014,7 +1014,7 @@
 ---
 
 ### T-109 · Embedding Provider Comparison Script
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Script to benchmark multiple embedding providers against the golden QA dataset and produce a side-by-side quality + cost comparison table. Mirrors `compare_models.py` but for embedding providers.
 - **Files:**
   - `scripts/compare_embedding_providers.py`
