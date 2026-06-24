@@ -26,8 +26,12 @@ _MAX_BATCH = 128  # Voyage API limit
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))
+    try:
+        from voyageai.error import RateLimitError
+        return isinstance(exc, RateLimitError)
+    except ImportError:
+        msg = str(exc).lower()
+        return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))
 
 
 class VoyageEmbeddingProvider(EmbeddingRepository):

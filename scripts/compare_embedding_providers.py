@@ -24,7 +24,6 @@ import argparse
 import asyncio
 import dataclasses
 import json
-import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -67,31 +66,6 @@ class ProviderResult:
         return not self.error and self.recall_at_5 > 0
 
 
-def _set_provider_env(provider: str) -> None:
-    """Override EMBEDDINGS__PROVIDER and reload the settings singleton.
-
-    Both the settings module and the embedding factory module are reloaded so
-    that subsequent lazy imports inside provider factory functions see the new
-    settings object.
-
-    IMPORTANT: _run_provider() must perform ALL infrastructure imports (embeddings,
-    vector store, retriever) AFTER this function returns.  Any module that caches a
-    reference to `settings` at its own import time will see stale data and silently
-    use the wrong provider.  Do not hoist those imports to the module level.
-
-    Limitation: providers are benchmarked sequentially (not concurrently) because
-    the reload mutates global module state.
-    """
-    import importlib
-
-    import src.core.settings as _settings_mod
-    import src.infrastructure.embeddings as _embeddings_mod
-
-    os.environ["EMBEDDINGS__PROVIDER"] = provider
-    importlib.reload(_settings_mod)
-    importlib.reload(_embeddings_mod)
-
-
 def _compute_recall_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
     if not relevant_ids:
         return 0.0
@@ -115,18 +89,30 @@ def _compute_ndcg_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int
 async def _run_provider(
     provider: str,
     qa_pairs: list[dict[str, object]],
+    settings: object,
     k: int = 5,
 ) -> ProviderResult:
-    _set_provider_env(provider)
-
     try:
-        from src.infrastructure.embeddings import get_embedding_provider
+        from src.core.settings import Settings
+        from src.infrastructure.embeddings import create_embedding_provider
         from src.infrastructure.vectordb.bm25 import BM25Index
         from src.infrastructure.vectordb.qdrant import QdrantVectorStore
         from src.rag.retrieval.hybrid_retriever import HybridRetriever
 
-        embedder = get_embedding_provider()
-        vector_store = QdrantVectorStore.from_settings()
+        s: Settings = settings  # type: ignore[assignment]
+
+        # Construct the embedder directly for this provider — no global-state mutation.
+        embedder = create_embedding_provider(provider, s)
+
+        # Disable the embedding model mismatch guard: this script intentionally
+        # queries the same collection with different providers to compare quality.
+        vector_store = QdrantVectorStore(
+            url=s.qdrant.url,
+            collection=s.qdrant.collection,
+            api_key=s.qdrant.api_key,
+            dense_dim=s.embeddings.dense_dim,
+            embedding_model_name="",
+        )
         bm25 = BM25Index.load_or_create()
 
         # Lazy import to avoid circular at module level
@@ -231,6 +217,8 @@ def _save_results(results: list[ProviderResult], output: str) -> None:
 
 
 async def run(args: argparse.Namespace) -> int:
+    from src.core.settings import settings
+
     qa_pairs = resolve_qa_pairs(args.qa_dataset, args.max_samples)
     if qa_pairs is None:
         return 1
@@ -240,7 +228,7 @@ async def run(args: argparse.Namespace) -> int:
     results: list[ProviderResult] = []
     for provider in args.providers:
         print(f"  Running: {provider}")
-        result = await _run_provider(provider, qa_pairs, k=args.top_k)
+        result = await _run_provider(provider, qa_pairs, settings, k=args.top_k)
         results.append(result)
         if result.error:
             print(f"    → skipped: {result.error}", file=sys.stderr)

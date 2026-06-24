@@ -24,7 +24,10 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from src.core.constants import API_EMBEDDING_PROVIDERS
 
 _API_BATCH_SIZE = 32   # Conservative default for API providers (rate limits)
-_API_BATCH_SLEEP = 0.1  # Seconds between batches for API providers
+# 0.1 s keeps throughput at ~320 texts/s — well under the most restrictive
+# provider limit (Cohere: 100 req/min on free tier; OpenAI/Voyage: 3000+ RPM).
+# Increase via --batch-size (larger batches) rather than removing this sleep.
+_API_BATCH_SLEEP = 0.1  # seconds between batches for API providers
 
 
 def _check_api_key(settings: object) -> None:

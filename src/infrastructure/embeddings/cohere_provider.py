@@ -27,8 +27,12 @@ CohereInputType = Literal["search_document", "search_query"]
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))
+    try:
+        from cohere import TooManyRequestsError
+        return isinstance(exc, TooManyRequestsError)
+    except ImportError:
+        msg = str(exc).lower()
+        return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))
 
 
 class CohereEmbeddingProvider(EmbeddingRepository):

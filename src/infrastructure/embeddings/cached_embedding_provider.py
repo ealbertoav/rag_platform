@@ -3,7 +3,10 @@
 Caches dense vectors only — sparse vectors are either zero-cost (BM25)
 or model-native and not worth the Redis round-trip overhead.
 
-Cache key: SHA-256 (text | model_identifier)
+Cache key: SHA-256 (text | provider:model_name)  — includes both provider and
+           specific model so that switching models within the same provider
+           (e.g. text-embedding-3-large → text-embedding-3-small) uses
+           distinct keys and never returns stale vectors.
 Value    : JSON-encoded list[float], stored as a Redis string with TTL.
 
 Fail-open: if Redis is unavailable, the provider falls through to the

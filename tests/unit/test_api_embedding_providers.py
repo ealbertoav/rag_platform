@@ -5,7 +5,14 @@ All HTTP calls are mocked — no real API keys or network access required.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+if TYPE_CHECKING:
+    from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
+    from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
+    from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
+    from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
 import pytest
 
@@ -27,7 +34,8 @@ def _fake_vecs(n: int, dim: int = _DIM) -> list[list[float]]:
 
 
 class TestOpenAIEmbeddingProvider:
-    def _provider(self) -> object:
+    @staticmethod
+    def _provider() -> OpenAIEmbeddingProvider:
         from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
 
         return OpenAIEmbeddingProvider(api_key="sk-test", model="text-embedding-3-small")
@@ -53,12 +61,11 @@ class TestOpenAIEmbeddingProvider:
         mock_client.embeddings.create.assert_called_once()
 
     def test_embed_sparse_returns_empty_dicts(self) -> None:
-        result = self._provider().embed_sparse(_TEXTS)  # type: ignore[union-attr]
+        result = self._provider().embed_sparse(_TEXTS)
         assert result == [{}, {}, {}]
 
     def test_embed_empty_list_returns_empty(self) -> None:
-        assert self._provider().embed([]) == []  # type: ignore[union-attr]
-
+        assert self._provider().embed([]) == []
     def test_dimension_truncation_applied_for_v3_models(self) -> None:
         from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
 
@@ -121,7 +128,8 @@ class TestOpenAIEmbeddingProvider:
 
 
 class TestVoyageEmbeddingProvider:
-    def _provider(self) -> object:
+    @staticmethod
+    def _provider() -> VoyageEmbeddingProvider:
         from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
         return VoyageEmbeddingProvider(api_key="voy-test")
@@ -159,12 +167,11 @@ class TestVoyageEmbeddingProvider:
         )
 
     def test_embed_sparse_returns_empty_dicts(self) -> None:
-        result = self._provider().embed_sparse(_TEXTS)  # type: ignore[union-attr]
+        result = self._provider().embed_sparse(_TEXTS)
         assert result == [{}, {}, {}]
 
     def test_embed_empty_list_returns_empty(self) -> None:
-        assert self._provider().embed([]) == []  # type: ignore[union-attr]
-
+        assert self._provider().embed([]) == []
     def test_import_error_raises_embedding_error(self) -> None:
         from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
@@ -207,7 +214,8 @@ class TestVoyageEmbeddingProvider:
 
 
 class TestCohereEmbeddingProvider:
-    def _provider(self) -> object:
+    @staticmethod
+    def _provider() -> CohereEmbeddingProvider:
         from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
 
         return CohereEmbeddingProvider(api_key="co-test")
@@ -250,12 +258,11 @@ class TestCohereEmbeddingProvider:
         )
 
     def test_embed_sparse_returns_empty_dicts(self) -> None:
-        result = self._provider().embed_sparse(_TEXTS)  # type: ignore[union-attr]
+        result = self._provider().embed_sparse(_TEXTS)
         assert result == [{}, {}, {}]
 
     def test_embed_empty_list_returns_empty(self) -> None:
-        assert self._provider().embed([]) == []  # type: ignore[union-attr]
-
+        assert self._provider().embed([]) == []
     def test_import_error_raises_embedding_error(self) -> None:
         from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
 
@@ -286,12 +293,11 @@ class TestCohereEmbeddingProvider:
 
 
 class TestGeminiEmbeddingProvider:
-    def _provider(self) -> object:
+    @staticmethod
+    def _provider() -> GeminiEmbeddingProvider:
         from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
-        p = GeminiEmbeddingProvider(api_key="gem-test")
-        p._configured = True  # skip genai.configure() call in unit tests
-        return p
+        return GeminiEmbeddingProvider(api_key="gem-test")
 
     def test_implements_repository(self) -> None:
         assert isinstance(self._provider(), EmbeddingRepository)
@@ -300,7 +306,6 @@ class TestGeminiEmbeddingProvider:
         from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
         provider = GeminiEmbeddingProvider(api_key="gem-test")
-        provider._configured = True
         vecs = _fake_vecs(len(_TEXTS), dim=768)
 
         with patch(
@@ -314,7 +319,6 @@ class TestGeminiEmbeddingProvider:
         from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
         provider = GeminiEmbeddingProvider(api_key="gem-test")
-        provider._configured = True
         vecs = _fake_vecs(1, dim=768)
 
         with patch(
@@ -325,33 +329,46 @@ class TestGeminiEmbeddingProvider:
             mock_call.assert_called_once_with(["what is EKS?"], "RETRIEVAL_QUERY")
 
     def test_embed_sparse_returns_empty_dicts(self) -> None:
-        result = self._provider().embed_sparse(_TEXTS)  # type: ignore[union-attr]
+        result = self._provider().embed_sparse(_TEXTS)
         assert result == [{}, {}, {}]
 
     def test_embed_empty_list_returns_empty(self) -> None:
-        assert self._provider().embed([]) == []  # type: ignore[union-attr]
-
+        assert self._provider().embed([]) == []
     def test_import_error_raises_embedding_error(self) -> None:
         from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
         provider = GeminiEmbeddingProvider(api_key="gem-test")
-        provider._configured = False
         with (
             patch.dict("sys.modules", {"google": None, "google.generativeai": None}),
             pytest.raises(EmbeddingError, match="google-generativeai package is not installed"),
         ):
-            provider._configure()
+            provider._call_api(["test"], "RETRIEVAL_DOCUMENT")
+
+    def test_configure_called_per_api_call(self) -> None:
+        """genai.configure() must be called before every API request with this instance's key."""
+        from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
+
+        provider = GeminiEmbeddingProvider(api_key="gem-test-key")
+        vecs = _fake_vecs(1, dim=768)
+        mock_genai = MagicMock()
+        mock_genai.embed_content.return_value = {"embedding": vecs}
+
+        # Patch only google.generativeai — do NOT also patch "google" (the namespace
+        # package may already be installed via other deps and overriding it breaks import
+        # resolution for sys.modules["google.generativeai"]).
+        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
+            provider._call_api(["hello"], "RETRIEVAL_DOCUMENT")
+            mock_genai.configure.assert_called_once_with(api_key="gem-test-key")
 
     def test_retry_on_rate_limit(self) -> None:
         from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
         provider = GeminiEmbeddingProvider(api_key="gem-test")
-        provider._configured = True
         vecs = _fake_vecs(1, dim=768)
 
         call_count = 0
 
-        def _side_effect(texts: list[str], task_type: str) -> list[list[float]]:
+        def _side_effect(_texts: list[str], _task_type: str) -> list[list[float]]:
             nonlocal call_count
             call_count += 1
             if call_count < 3:

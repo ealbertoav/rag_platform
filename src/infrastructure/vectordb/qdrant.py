@@ -180,6 +180,7 @@ class QdrantVectorStore(VectorStoreRepository):
     def _ensure_collection(self) -> None:
         if self._collection_ready:
             return
+        collection_existed: bool
         try:
             if not self._client.collection_exists(self.collection):
                 self._client.create_collection(
@@ -194,12 +195,13 @@ class QdrantVectorStore(VectorStoreRepository):
                 logger.info(
                     "Created Qdrant collection %r (%d-dim)", self.collection, self.dense_dim
                 )
+                collection_existed = False
             else:
-                self._validate_embedding_model()
-        except VectorStoreError:
-            raise
+                collection_existed = True
         except Exception as exc:
             raise VectorStoreError("Qdrant collection setup failed", cause=exc) from exc
+        if collection_existed:
+            self._validate_embedding_model()
         self._collection_ready = True
 
     def get_collection_embedding_model(self) -> str | None:

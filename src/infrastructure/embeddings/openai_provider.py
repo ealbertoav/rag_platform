@@ -27,8 +27,12 @@ _SUPPORTS_DIM_TRUNCATION = {"text-embedding-3-large", "text-embedding-3-small"}
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))
+    try:
+        from openai import RateLimitError
+        return isinstance(exc, RateLimitError)
+    except ImportError:
+        msg = str(exc).lower()
+        return any(kw in msg for kw in ("429", "rate_limit", "rate limit", "too many requests"))
 
 
 class OpenAIEmbeddingProvider(EmbeddingRepository):

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.infrastructure.embeddings.bge_m3 import BGEM3EmbeddingProvider
 from src.infrastructure.embeddings.nomic import NomicEmbeddingProvider
 from src.infrastructure.embeddings.qwen_embedding import QwenEmbeddingProvider
+
+if TYPE_CHECKING:
+    from src.core.settings import Settings
 
 # API providers — imported lazily inside get_embedding_provider() to avoid
 # importing optional libraries at module load time.
@@ -15,6 +20,17 @@ _API_KEY_ENV: dict[str, str] = {
     "cohere": "EMBEDDINGS__COHERE__API_KEY",
     "gemini": "EMBEDDINGS__GEMINI__API_KEY",
 }
+
+
+def create_embedding_provider(name: str, settings: Settings) -> EmbeddingRepository:
+    """Construct a provider by name with explicit settings, without cache wrapping.
+
+    Unlike get_embedding_provider(), this does not read from the global settings
+    singleton and does not apply the Redis cache decorator.  Use this when explicit
+    control over which provider is instantiated is needed (e.g. benchmarking scripts
+    that iterate over multiple providers without mutating global state).
+    """
+    return _create_provider(name, settings)
 
 
 def get_embedding_provider() -> EmbeddingRepository:
@@ -51,11 +67,7 @@ def get_embedding_provider() -> EmbeddingRepository:
     return provider
 
 
-def _create_provider(name: str, settings: object) -> EmbeddingRepository:
-    from src.core.settings import Settings
-
-    s: Settings = settings  # type: ignore[assignment]
-
+def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
     match name:
         case "bge_m3":
             return BGEM3EmbeddingProvider.from_settings()
@@ -64,22 +76,22 @@ def _create_provider(name: str, settings: object) -> EmbeddingRepository:
         case "qwen_embedding":
             return QwenEmbeddingProvider.from_settings()
         case "openai":
-            _require_api_key(name, s.embeddings.openai.api_key)
+            _require_api_key(name, settings.embeddings.openai.api_key)
             from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
 
             return OpenAIEmbeddingProvider.from_settings()
         case "voyage":
-            _require_api_key(name, s.embeddings.voyage.api_key)
+            _require_api_key(name, settings.embeddings.voyage.api_key)
             from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
             return VoyageEmbeddingProvider.from_settings()
         case "cohere":
-            _require_api_key(name, s.embeddings.cohere.api_key)
+            _require_api_key(name, settings.embeddings.cohere.api_key)
             from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
 
             return CohereEmbeddingProvider.from_settings()
         case "gemini":
-            _require_api_key(name, s.embeddings.gemini.api_key)
+            _require_api_key(name, settings.embeddings.gemini.api_key)
             from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
             return GeminiEmbeddingProvider.from_settings()
@@ -101,20 +113,38 @@ def _require_api_key(provider: str, api_key: object) -> None:
         )
 
 
-def _wrap_with_cache(
-    inner: EmbeddingRepository, provider_name: str, settings: object
-) -> EmbeddingRepository:
-    from src.core.settings import Settings
+def _model_identifier(provider_name: str, settings: Settings) -> str:
+    """Return a stable string that uniquely identifies the active model.
 
-    s: Settings = settings  # type: ignore[assignment]
+    Includes both the provider name and the specific model name/path so that
+    switching models within the same provider (e.g. text-embedding-3-large →
+    text-embedding-3-small) produces different cache keys.
+    """
+    emb = settings.embeddings
+    api_model: str | None = None
+    if provider_name == "openai":
+        api_model = emb.openai.model
+    elif provider_name == "voyage":
+        api_model = emb.voyage.model
+    elif provider_name == "cohere":
+        api_model = emb.cohere.model
+    elif provider_name == "gemini":
+        api_model = emb.gemini.model
+    model = api_model if api_model is not None else emb.model_path
+    return f"{provider_name}:{model}"
+
+
+def _wrap_with_cache(
+    inner: EmbeddingRepository, provider_name: str, settings: Settings
+) -> EmbeddingRepository:
     from src.infrastructure.embeddings.cached_embedding_provider import CachedEmbeddingProvider
 
     return CachedEmbeddingProvider(
         inner=inner,
-        redis_url=s.redis.url,
-        redis_password=s.redis.password.get_secret_value(),
-        ttl_seconds=s.embeddings.cache.ttl_seconds,
-        model_identifier=provider_name,
+        redis_url=settings.redis.url,
+        redis_password=settings.redis.password.get_secret_value(),
+        ttl_seconds=settings.embeddings.cache.ttl_seconds,
+        model_identifier=_model_identifier(provider_name, settings),
     )
 
 
@@ -122,5 +152,6 @@ __all__ = [
     "BGEM3EmbeddingProvider",
     "NomicEmbeddingProvider",
     "QwenEmbeddingProvider",
+    "create_embedding_provider",
     "get_embedding_provider",
 ]

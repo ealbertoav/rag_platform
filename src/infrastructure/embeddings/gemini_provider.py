@@ -27,6 +27,12 @@ GeminiTaskType = Literal["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
+    try:
+        from google.api_core.exceptions import ResourceExhausted
+        if isinstance(exc, ResourceExhausted):
+            return True
+    except ImportError:
+        pass
     msg = str(exc).lower()
     keywords = ("429", "quota", "resource_exhausted", "rate_limit", "too many requests")
     return any(kw in msg for kw in keywords)
@@ -39,12 +45,16 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
     Uses task_type="RETRIEVAL_DOCUMENT" for ingestion and
     "RETRIEVAL_QUERY" for query embedding.
     Retries on quota exhaustion via tenacity.
+
+    genai.configure() is called immediately before each API request rather than
+    once at construction time. This avoids global-state conflicts when multiple
+    GeminiEmbeddingProvider instances with different API keys coexist (e.g. in
+    the provider comparison script or in tests).
     """
 
     def __init__(self, api_key: str, model: str = "text-embedding-004") -> None:
         self.api_key = api_key
         self.model = model
-        self._configured = False
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
@@ -73,7 +83,6 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
     def _embed_with_task(self, texts: list[str], task_type: GeminiTaskType) -> list[DenseVector]:
         if not texts:
             return []
-        self._configure()
         results: list[DenseVector] = []
         for i in range(0, len(texts), _MAX_BATCH):
             results.extend(self._embed_batch(texts[i : i + _MAX_BATCH], task_type))
@@ -96,11 +105,20 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
         return self._call_api(texts, task_type)
 
     def _call_api(self, texts: list[str], task_type: GeminiTaskType) -> list[DenseVector]:
-        import google.generativeai as genai
+        try:
+            import google.generativeai as genai
+        except ImportError as exc:
+            raise EmbeddingError(
+                "google-generativeai package is not installed. Run: uv sync --extra api-embeddings"
+            ) from exc
 
-        # embed_content with a list returns a result [ "embedding"] as list[list[float]];
-        # with a single string it returns list[float]. Guard against both shapes so
-        # a future SDK change (or a single-item batch) doesn't silently corrupt output.
+        # Configure with this instance's key immediately before the call so that
+        # multiple providers with different keys never interfere with each other.
+        genai.configure(api_key=self.api_key)
+
+        # embed_content with a list returns {"embedding": list[list[float]]};
+        # with a single string it returns {"embedding": list[float]}. Guard against
+        # both shapes so a single-item batch doesn't silently corrupt output.
         result = genai.embed_content(
             model=f"models/{self.model}",
             content=texts,
@@ -108,18 +126,5 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
         )
         embedding = result["embedding"]
         if embedding and not isinstance(embedding[0], (list, tuple)):
-            # Single-text response — wrap in outer list
             return [list(embedding)]
         return [list(v) for v in embedding]
-
-    def _configure(self) -> None:
-        if self._configured:
-            return
-        try:
-            import google.generativeai as genai
-        except ImportError as exc:
-            raise EmbeddingError(
-                "google-generativeai package is not installed. Run: uv sync --extra api-embeddings"
-            ) from exc
-        genai.configure(api_key=self.api_key)
-        self._configured = True
