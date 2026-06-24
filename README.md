@@ -749,7 +749,7 @@ uv run python scripts/rebuild_embeddings.py --recreate-collection
 
 ### Embedding cache
 
-When `EMBEDDINGS__CACHE__ENABLED=true` (default), dense vectors are cached in Redis using a SHA-256 key of `text + model_identifier`. This eliminates redundant API calls during re-ingestion or repeated queries.
+When `EMBEDDINGS__CACHE__ENABLED=true`, dense vectors are cached in Redis using a SHA-256 key of `text + model_identifier`. This eliminates redundant API calls during re-ingestion or repeated queries. Caching is disabled by default — set `EMBEDDINGS__CACHE__ENABLED=true` to activate it.
 
 ```bash
 EMBEDDINGS__CACHE__ENABLED=true

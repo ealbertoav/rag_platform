@@ -29,6 +29,7 @@ GeminiTaskType = Literal["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
 def _is_rate_limit(exc: BaseException) -> bool:
     try:
         from google.api_core.exceptions import ResourceExhausted
+
         if isinstance(exc, ResourceExhausted):
             return True
     except ImportError:

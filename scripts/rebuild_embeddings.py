@@ -51,6 +51,14 @@ def _check_api_key(settings: object) -> None:
         "cohere": s.embeddings.cohere.api_key.get_secret_value(),
         "gemini": s.embeddings.gemini.api_key.get_secret_value(),
     }
+    # Guard against new providers added to API_EMBEDDING_PROVIDERS but not to key_map.
+    if provider not in key_map:
+        print(
+            f"[error] Provider '{provider}' is listed as API-based but has no key_map entry.\n"
+            f"        Update _check_api_key() in rebuild_embeddings.py to add it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     api_key = key_map[provider]
     if not api_key:
         env_var = f"EMBEDDINGS__{provider.upper()}__API_KEY"

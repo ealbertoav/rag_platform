@@ -66,6 +66,7 @@ class TestOpenAIEmbeddingProvider:
 
     def test_embed_empty_list_returns_empty(self) -> None:
         assert self._provider().embed([]) == []
+
     def test_dimension_truncation_applied_for_v3_models(self) -> None:
         from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
 
@@ -172,6 +173,7 @@ class TestVoyageEmbeddingProvider:
 
     def test_embed_empty_list_returns_empty(self) -> None:
         assert self._provider().embed([]) == []
+
     def test_import_error_raises_embedding_error(self) -> None:
         from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
@@ -263,6 +265,7 @@ class TestCohereEmbeddingProvider:
 
     def test_embed_empty_list_returns_empty(self) -> None:
         assert self._provider().embed([]) == []
+
     def test_import_error_raises_embedding_error(self) -> None:
         from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
 
@@ -334,6 +337,7 @@ class TestGeminiEmbeddingProvider:
 
     def test_embed_empty_list_returns_empty(self) -> None:
         assert self._provider().embed([]) == []
+
     def test_import_error_raises_embedding_error(self) -> None:
         from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 

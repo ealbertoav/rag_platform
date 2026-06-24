@@ -3,7 +3,7 @@
 Caches dense vectors only — sparse vectors are either zero-cost (BM25)
 or model-native and not worth the Redis round-trip overhead.
 
-Cache key: SHA-256 (text | provider:model_name)  — includes both provider and
+Cache key: SHA-256 (text | provider: model_name) — includes both provider and
            specific model so that switching models within the same provider
            (e.g. text-embedding-3-large → text-embedding-3-small) uses
            distinct keys and never returns stale vectors.
@@ -98,6 +98,14 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         _record_cache_metrics(hits=n_hits, misses=len(misses))
         return [hits[i] for i in range(len(texts))]
 
+    def embed_query(self, texts: list[str]) -> list[DenseVector]:
+        # Query vectors are not cached: some providers (Cohere, Voyage, Gemini)
+        # use a different task type for queries vs. documents, so the same text
+        # must produce different vectors in each role.  Caching would silently
+        # serve document-type vectors for query calls.  Query embedding is also
+        # single-shot during retrieval, so the cache hit-rate would be low anyway.
+        return self._inner.embed_query(texts)
+
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         # Sparse vectors are not cached — delegate directly to inner provider.
         return self._inner.embed_sparse(texts)
@@ -105,9 +113,15 @@ class CachedEmbeddingProvider(EmbeddingRepository):
     def embed_both(self, texts: list[str]) -> tuple[list[DenseVector], list[SparseVector]]:
         """Cache-aware combined embed.
 
-        For cache misses, calls inner.embed_both() so providers like BGE-M3 can
-        compute dense + sparse in a single forward pass.  For cache hits (dense
-        already stored), calls inner.embed_sparse() only for those texts.
+        Cache misses: calls inner.embed_both() so providers like BGE-M3 compute
+        dense + sparse in a single forward pass.
+
+        Cache hits: dense is served from Redis; sparse still requires
+        inner.embed_sparse() for the hit texts.  For BGE-M3 this means a model
+        forward pass even for fully cached batches — the cache only eliminates
+        the dense computation, not the sparse one.  Sparse vectors are cheap
+        relative to the dense embedding API cost, so this is still worthwhile
+        for API providers (where dense is the paid call).
         """
         if not texts:
             return [], []

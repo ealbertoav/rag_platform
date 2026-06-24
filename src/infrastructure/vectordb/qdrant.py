@@ -80,6 +80,7 @@ class QdrantVectorStore(VectorStoreRepository):
         self.embedding_model_name = embedding_model_name
         self._client = QdrantClient(url=url, api_key=api_key or None, check_compatibility=False)
         self._collection_ready = False
+        self._model_validated = False  # set True after first successful _validate_embedding_model
 
     # ── Factory ────────────────────────────────────────────────────────────────
 
@@ -200,7 +201,7 @@ class QdrantVectorStore(VectorStoreRepository):
                 collection_existed = True
         except Exception as exc:
             raise VectorStoreError("Qdrant collection setup failed", cause=exc) from exc
-        if collection_existed:
+        if collection_existed and not self._model_validated:
             self._validate_embedding_model()
         self._collection_ready = True
 
@@ -244,6 +245,7 @@ class QdrantVectorStore(VectorStoreRepository):
     def _validate_embedding_model(self) -> None:
         """Raise VectorStoreError when the collection's model differs from the current config."""
         if not self.embedding_model_name:
+            self._model_validated = True
             return
         existing_model = self.get_collection_embedding_model()
         if existing_model is not None and existing_model != self.embedding_model_name:
@@ -252,6 +254,7 @@ class QdrantVectorStore(VectorStoreRepository):
                 f"'{existing_model}' but current config is '{self.embedding_model_name}'. "
                 f"Run: python scripts/rebuild_embeddings.py --recreate-collection"
             )
+        self._model_validated = True
 
     def _to_point(self, chunk: Chunk) -> PointStruct:
         embedding = chunk.embedding

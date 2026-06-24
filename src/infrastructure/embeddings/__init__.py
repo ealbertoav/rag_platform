@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import SecretStr
+
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.infrastructure.embeddings.bge_m3 import BGEM3EmbeddingProvider
 from src.infrastructure.embeddings.nomic import NomicEmbeddingProvider
@@ -70,11 +72,29 @@ def get_embedding_provider() -> EmbeddingRepository:
 def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
     match name:
         case "bge_m3":
-            return BGEM3EmbeddingProvider.from_settings()
+            cfg = settings.embeddings
+            return BGEM3EmbeddingProvider(
+                model_path=cfg.model_path,
+                device=cfg.device,
+                batch_size=cfg.batch_size,
+                normalize=cfg.normalize,
+            )
         case "nomic":
-            return NomicEmbeddingProvider.from_settings()
+            cfg = settings.embeddings
+            return NomicEmbeddingProvider(
+                model_path=cfg.model_path,
+                device=cfg.device,
+                batch_size=cfg.batch_size,
+                normalize=cfg.normalize,
+            )
         case "qwen_embedding":
-            return QwenEmbeddingProvider.from_settings()
+            cfg = settings.embeddings
+            return QwenEmbeddingProvider(
+                model_path=cfg.model_path,
+                device=cfg.device,
+                batch_size=cfg.batch_size,
+                normalize=cfg.normalize,
+            )
         case "openai":
             _require_api_key(name, settings.embeddings.openai.api_key)
             from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
@@ -99,10 +119,8 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
             raise ValueError(f"Unknown embedding provider: {name!r}")
 
 
-def _require_api_key(provider: str, api_key: object) -> None:
-    from pydantic import SecretStr
-
-    raw = api_key.get_secret_value() if isinstance(api_key, SecretStr) else str(api_key)
+def _require_api_key(provider: str, api_key: SecretStr) -> None:
+    raw = api_key.get_secret_value()
     if not raw:
         from src.core.exceptions import ConfigurationError
 

@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from _benchmark_utils import add_eval_args, resolve_qa_pairs  # noqa: E402
 
 # ── Cost estimates (USD per 1K tokens) ────────────────────────────────────────
-# Prices as of 2025-06-24. Check provider pricing pages for current rates:
+# last-updated: 2025-06-24. Check provider pricing pages for current rates:
 #   OpenAI:  https://openai.com/api/pricing/
 #   Voyage:  https://docs.voyageai.com/docs/pricing
 #   Cohere:  https://cohere.com/pricing
@@ -236,6 +236,9 @@ async def run(args: argparse.Namespace) -> int:
     print()
     _print_table(results, k=args.top_k)
 
+    # Save when the user explicitly named an output file (even if all providers
+    # errored — they asked for the file, so write it).  For auto-generated paths,
+    # only save when at least one provider produced valid results.
     if args.output or any(not r.error for r in results):
         _save_results(results, args.output or "")
 

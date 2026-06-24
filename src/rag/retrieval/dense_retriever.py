@@ -32,7 +32,7 @@ class DenseRetriever:
         If "query.embedding" is already populated, it is used directly,
         avoiding a redundant embedding call.
         """
-        embedding = query.embedding or self._embedder.embed([query.text])[0]
+        embedding = query.embedding or self._embedder.embed_query([query.text])[0]
         results = self._vector_store.search_dense(embedding, top_k=top_k)
         logger.debug("Dense retrieval: %d results for %r", len(results), query.text[:60])
         return results
@@ -41,5 +41,5 @@ class DenseRetriever:
         """Return *query* with "embedding" populated (no-op if already set)."""
         if query.embedding is not None:
             return query
-        embedding = self._embedder.embed([query.text])[0]
+        embedding = self._embedder.embed_query([query.text])[0]
         return query.model_copy(update={"embedding": embedding})

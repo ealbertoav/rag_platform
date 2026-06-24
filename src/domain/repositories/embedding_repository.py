@@ -19,6 +19,17 @@ class EmbeddingRepository(ABC):
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         """Return one sparse vector per input text, in the same order."""
 
+    def embed_query(self, texts: list[str]) -> list[DenseVector]:
+        """Return one dense vector per query text, optimized for retrieval.
+
+        Providers that distinguish between document and query embeddings
+        (Cohere search_query, Voyage query, Gemini RETRIEVAL_QUERY) must
+        override this method.  The default delegates to embed() for providers
+        that use the same representation for both roles (BGE-M3, Nomic, Qwen,
+        OpenAI).
+        """
+        return self.embed(texts)
+
     def embed_both(self, texts: list[str]) -> tuple[list[DenseVector], list[SparseVector]]:
         """Return (dense, sparse) vectors for each text in a single call.
 
