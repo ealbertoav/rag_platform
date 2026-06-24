@@ -33,38 +33,32 @@ A production-grade, **local** Retrieval-Augmented Generation platform built with
 ## Architecture Overview
 
 ```mermaid
-flowchart TD
+flowchart LR
     subgraph INGEST["📥 Ingestion Pipeline"]
-        D[Documents\n.pdf .docx .html .md] --> L[Document Loader]
-        L --> C[Chunker\nRecursive / Semantic / Parent-Child]
-        C --> E[BGE-M3\nDense 1024-dim + Sparse Lexical]
-        E --> Q[(Qdrant\nHNSW Index)]
-        E --> B[(BM25\nIn-Memory Index)]
+        direction TB
+        D["Documents<br/>.pdf .docx .html .md"] --> L[Document Loader]
+        L --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
+        C --> E["BGE-M3<br/>Dense 1024-dim + Sparse Lexical"]
+        E --> Q[("Qdrant<br/>HNSW Index")]
+        E --> B[("BM25<br/>In-Memory Index")]
     end
 
     subgraph RETRIEVE["🔍 Retrieval Pipeline"]
-        QU[User Query] --> QX[Query Expansion\nLLM · 3 variants]
-        QX --> EM[BGE-M3 Embedding]
-        EM --> DS[Dense Search\nQdrant HNSW]
+        direction TB
+        QX["User Query<br/>+ Expansion · 3 variants"] --> EM[BGE-M3 Embedding]
+        EM --> DS["Dense Search<br/>Qdrant HNSW"]
         EM --> BS[BM25 Search]
-        DS --> RF[RRF Fusion\nTop 50]
+        DS --> RF["RRF Fusion<br/>Top 50"]
         BS --> RF
-        RF --> RR[BGE-Reranker\nCross-Encoder · Top 10]
-        RR --> CC[Contextual Compression\n≤ 1500 tokens]
+        RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
+        RR --> CC["Contextual Compression<br/>≤ 1500 tokens"]
     end
 
     subgraph GENERATE["💬 Generation Pipeline"]
-        CC --> PR[System Prompt\n+ Context]
-        PR --> LLM[llama.cpp\nQwen3-30B on Metal]
-        LLM --> SSE[Streaming Response\nSSE tokens]
-    end
-
-    subgraph AGENT["🤖 Agentic RAG (optional)"]
-        AQ[User Question] --> AL{LLM Decision}
-        AL -->|ANSWER| GENERATE
-        AL -->|RETRIEVE_MORE| RETRIEVE
-        AL -->|GRAPH_LOOKUP| G2[(Neo4j)]
-        G2 --> RETRIEVE
+        direction TB
+        CC --> PR["System Prompt<br/>+ Context"]
+        PR --> LLM["llama.cpp<br/>Qwen3-30B on Metal"]
+        LLM --> SSE["Streaming Response<br/>SSE tokens"]
     end
 
     INGEST --> RETRIEVE
@@ -75,12 +69,12 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    API["🌐 api/\nFastAPI routers\nDI"]
-    RAG["⚙️ rag/\nPipelines\nRetrievers\nRankers"]
-    DOMAIN["📐 domain/\nEntities\nRepository ABCs\nServices"]
-    INFRA["🔧 infrastructure/\nBGE-M3 · Nomic · Qwen3-Embed\nQdrant · BM25 · Neo4j\nllama.cpp"]
-    CORE["🛠 core/\nSettings\nLogging\nExceptions"]
-    OBS["📊 observability/\nOTel · Prometheus"]
+    API["🌐 api/<br/>FastAPI routers<br/>DI"]
+    RAG["⚙️ rag/<br/>Pipelines<br/>Retrievers<br/>Rankers"]
+    DOMAIN["📐 domain/<br/>Entities<br/>Repository ABCs<br/>Services"]
+    INFRA["🔧 infrastructure/<br/>BGE-M3 · Nomic · Qwen3-Embed<br/>Qdrant · BM25 · Neo4j<br/>llama.cpp"]
+    CORE["🛠 core/<br/>Settings<br/>Logging<br/>Exceptions"]
+    OBS["📊 observability/<br/>OTel · Prometheus"]
 
     API --> RAG
     API --> DOMAIN
@@ -210,15 +204,15 @@ make ingest SOURCE=data/raw/
 
 ```mermaid
 flowchart LR
-    SRC["📄 Source File\n.pdf/.docx/.html/.md"] --> LD["Document Loader"]
+    SRC["📄 Source File<br/>.pdf/.docx/.html/.md"] --> LD["Document Loader"]
     LD --> CL["Text Cleaning"]
-    CL --> CH{Chunking\nStrategy}
-    CH -->|recursive| RC["Recursive\nSplitter"]
-    CH -->|semantic| SC["Semantic\nSplitter"]
-    CH -->|parent_child| PC["Parent-Child\nSplitter"]
-    RC & SC & PC --> EM["BGE-M3\nEmbed Both\ndense + sparse"]
-    EM --> QD[("Qdrant\nHNSW + Sparse")]
-    EM --> BM[("BM25\nIn-Memory")]
+    CL --> CH{"Chunking<br/>Strategy"}
+    CH -->|recursive| RC["Recursive<br/>Splitter"]
+    CH -->|semantic| SC["Semantic<br/>Splitter"]
+    CH -->|parent_child| PC["Parent-Child<br/>Splitter"]
+    RC & SC & PC --> EM["BGE-M3<br/>Embed Both<br/>dense + sparse"]
+    EM --> QD[("Qdrant<br/>HNSW + Sparse")]
+    EM --> BM[("BM25<br/>In-Memory")]
     QD & BM --> DONE["✅ Indexed"]
 ```
 
@@ -293,9 +287,9 @@ uv run python scripts/rebuild_embeddings.py --batch-size 16
 
 ```mermaid
 flowchart LR
-    BM[("BM25 Index\n(chunk text)")]
-    --> EMB["BGE-M3\nembed_both()"]
-    --> QD[("Qdrant\nupsert")]
+    BM[("BM25 Index<br/>(chunk text)")]
+    --> EMB["BGE-M3<br/>embed_both()"]
+    --> QD[("Qdrant<br/>upsert")]
     style BM fill:#fff3cd,stroke:#856404
     style QD fill:#d1ecf1,stroke:#0c5460
 ```
@@ -354,14 +348,14 @@ Graph RAG augments the retrieval pipeline with a Neo4j knowledge graph that stor
 ```mermaid
 flowchart LR
     subgraph INGEST["Ingestion (with Graph RAG)"]
-        C[Chunk text] --> EX["EntityExtractor\nLLM → subject·relation·object triples"]
-        EX --> N4J[("Neo4j\n:Entity-[:RELATES_TO]->:Entity\n:Entity-[:MENTIONED_IN]->:Chunk")]
+        C[Chunk text] --> EX["EntityExtractor<br/>LLM → subject·relation·object triples"]
+        EX --> N4J[("Neo4j<br/>:Entity-[:RELATES_TO]-&gt;:Entity<br/>:Entity-[:MENTIONED_IN]-&gt;:Chunk")]
     end
 
     subgraph RETRIEVE["Retrieval (with Graph RAG)"]
-        Q["Query"] --> EN["Extract entity names\n(capitalised token heuristic)"]
-        EN --> N4J2[("Neo4j\nentity → chunk lookup")]
-        N4J2 -->|graph-matched chunks| RRF["RRF Fusion\n(dense + BM25 + graph)"]
+        Q["Query"] --> EN["Extract entity names<br/>(capitalised token heuristic)"]
+        EN --> N4J2[("Neo4j<br/>entity → chunk lookup")]
+        N4J2 -->|graph-matched chunks| RRF["RRF Fusion<br/>(dense + BM25 + graph)"]
     end
 ```
 
@@ -411,13 +405,13 @@ hybrid = HybridRetriever(dense=dense, bm25=bm25, graph_retriever=graph_retriever
 
 ```mermaid
 flowchart TD
-    Q["User Question"] --> IR["Initial Retrieval\ndense + BM25 + graph"]
-    IR --> DEC{"LLM Decision\nagent_decision.txt"}
+    Q["User Question"] --> IR["Initial Retrieval<br/>dense + BM25 + graph"]
+    IR --> DEC{"LLM Decision<br/>agent_decision.txt"}
 
-    DEC -->|ANSWER| GEN["🤖 Generate Answer\n(stream or blocking)"]
-    DEC -->|RETRIEVE_MORE| REF["Refined Query\nRe-retrieve + RRF merge"]
-    DEC -->|GRAPH_LOOKUP| GRL["Neo4j Entity Lookup\nRRF merge with existing"]
-    DEC -->|CLARIFY| CLR["Return clarifying\nquestion to user"]
+    DEC -->|ANSWER| GEN["🤖 Generate Answer<br/>(stream or blocking)"]
+    DEC -->|RETRIEVE_MORE| REF["Refined Query<br/>Re-retrieve + RRF merge"]
+    DEC -->|GRAPH_LOOKUP| GRL["Neo4j Entity Lookup<br/>RRF merge with existing"]
+    DEC -->|CLARIFY| CLR["Return clarifying<br/>question to user"]
 
     REF --> DEC
     GRL --> GEN
@@ -592,21 +586,21 @@ Integration tests auto-skip when models / Qdrant are absent.
 
 ```mermaid
 flowchart TD
-    Q["🔎 User Question"] --> QE["Query Expander\nLLM generates 3 variants"]
-    QE --> EMB["BGE-M3 Encoder\n1024-dim dense + sparse"]
+    Q["🔎 User Question"] --> QE["Query Expander<br/>LLM generates 3 variants"]
+    QE --> EMB["BGE-M3 Encoder<br/>1024-dim dense + sparse"]
 
-    EMB --> DS["Dense Search\nQdrant HNSW cosine"]
-    EMB --> BS["BM25 Search\nIn-memory lexical"]
-    QE --> GS["Graph Search\nNeo4j entity traversal\n(optional)"]
+    EMB --> DS["Dense Search<br/>Qdrant HNSW cosine"]
+    EMB --> BS["BM25 Search<br/>In-memory lexical"]
+    QE --> GS["Graph Search<br/>Neo4j entity traversal<br/>(optional)"]
 
-    DS -->|Top 50 candidates| RRF["RRF Fusion\nscore = Σ 1/(k+rank)"]
+    DS -->|Top 50 candidates| RRF["RRF Fusion<br/>score = Σ 1/(k+rank)"]
     BS -->|Top 50 candidates| RRF
     GS -->|entity-matched chunks| RRF
 
-    RRF --> RR["BGE-Reranker\nCross-encoder scoring\nTop 10"]
-    RR --> CTX["Contextual Compression\nLLM extracts relevant sentences\n≤ 1500 tokens"]
-    CTX --> GEN["🤖 Generation\nllama.cpp · Qwen3-30B"]
-    GEN --> ANS["💬 Streamed Answer\n+ source chunk IDs"]
+    RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
+    RR --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
+    CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
+    GEN --> ANS["💬 Streamed Answer<br/>+ source chunk IDs"]
 
     style RRF fill:#f0f0ff,stroke:#6666cc
     style CTX fill:#f0fff0,stroke:#66aa66
@@ -621,32 +615,32 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph GEN["🏭 Dataset Generation (T-040)"]
-        IC[Ingested Chunks] --> LLM2[LLM\nGenerates N Q&A pairs]
-        LLM2 --> DED[Cosine Dedup\nthreshold 0.95]
-        DED --> QA[("datasets/synthetic\ngenerated_qa.json")]
+        IC[Ingested Chunks] --> LLM2["LLM<br/>Generates N Q&A pairs"]
+        LLM2 --> DED["Cosine Dedup<br/>threshold 0.95"]
+        DED --> QA[("datasets/synthetic<br/>generated_qa.json")]
     end
 
     subgraph RET["📏 Retrieval Evals (T-041)"]
-        QA2[("datasets/goldens\nretrieval_dataset.json")] --> R1["Recall@K"]
+        QA2[("datasets/goldens<br/>retrieval_dataset.json")] --> R1["Recall@K"]
         QA2 --> R2["Precision@K"]
         QA2 --> R3["NDCG@K"]
         R1 & R2 & R3 --> RT[Summary Table]
     end
 
     subgraph GEN2["🧪 Generation Evals (T-042)"]
-        QA3[("QA Dataset")] --> F["Faithfulness\nRagas"]
-        QA3 --> RV["Relevance\nRagas"]
-        QA3 --> H["Hallucination\nDeepEval"]
-        F & RV & H --> GR[Pass / Fail\nper threshold]
+        QA3[("QA Dataset")] --> F["Faithfulness<br/>Ragas"]
+        QA3 --> RV["Relevance<br/>Ragas"]
+        QA3 --> H["Hallucination<br/>DeepEval"]
+        F & RV & H --> GR["Pass / Fail<br/>per threshold"]
     end
 
     subgraph E2E["🏁 E2E Benchmark (T-043 / T-044)"]
-        QA4[("QA Dataset")] --> PIPE[Full RAG Pipeline\nRetrieval + Generation]
-        PIPE --> MET[Recall@5\nFaithfulness\nRelevance]
-        MET --> RPT[("data/exports\nbenchmark_{ts}.json")]
+        QA4[("QA Dataset")] --> PIPE["Full RAG Pipeline<br/>Retrieval + Generation"]
+        PIPE --> MET["Recall@5<br/>Faithfulness<br/>Relevance"]
+        MET --> RPT[("data/exports<br/>benchmark_{ts}.json")]
         RPT --> EXIT{All ≥ threshold?}
-        EXIT -->|yes| PASS[exit 0 ✅\nPOST /evals/run → 200]
-        EXIT -->|no| FAIL[exit 1 ❌\nPOST /evals/run → 200 failed]
+        EXIT -->|yes| PASS["exit 0 ✅<br/>POST /evals/run → 200"]
+        EXIT -->|no| FAIL["exit 1 ❌<br/>POST /evals/run → 200 failed"]
     end
 
     GEN --> RET
@@ -706,10 +700,10 @@ scrape_configs:
 
 ```mermaid
 flowchart LR
-    PR["Pull Request\nor push to main"] --> L["1️⃣ Lint\nruff · mypy"]
-    L --> U["2️⃣ Unit Tests\n568+ tests\ncoverage upload"]
-    U --> I["3️⃣ Integration Tests\nauto-skip if models absent"]
-    U --> R["4️⃣ Retrieval Regression\nRecall@5 gate\nauto-skip if no golden data"]
+    PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
+    L --> U["2️⃣ Unit Tests<br/>568+ tests<br/>coverage upload"]
+    U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
+    U --> R["4️⃣ Retrieval Regression<br/>Recall@5 gate<br/>auto-skip if no golden data"]
 
     L -->|fail| BLOCK["🚫 PR blocked"]
     U -->|fail| BLOCK
