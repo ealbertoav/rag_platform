@@ -1,0 +1,12 @@
+Given the following passage, generate $n question-answer pairs suitable for evaluating a retrieval-augmented generation system.
+
+Rules:
+- Each question must be answerable using ONLY the provided passage
+- Answers should be concise, accurate, and grounded in the passage
+- Questions should cover different aspects and vary in phrasing
+- Output ONLY valid JSON — a list of objects with "question" and "answer" keys, nothing else
+
+Passage:
+$passage
+
+JSON output:

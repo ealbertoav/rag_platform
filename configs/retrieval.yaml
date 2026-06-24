@@ -1,0 +1,26 @@
+chunking:
+  strategy: recursive          # recursive | semantic | parent_child
+  chunk_size: 500              # approximate tokens
+  overlap: 50
+  similarity_threshold: 0.4   # semantic chunker: distance > threshold → split
+  parent_chunk_size: 1500     # parent_child chunker
+  child_chunk_size: 400
+
+retrieval:
+  top_k_dense: 50
+  top_k_final: 5
+  hybrid_alpha: 0.7            # 1.0 = dense only, 0.0 = BM25 only
+
+reranker:
+  provider: bge_reranker
+  model_path: models/rerankers/bge-reranker-v2-m3
+  top_k: 10
+  batch_size: 16
+
+query_expansion:
+  enabled: true
+  n_variants: 3
+
+compression:
+  enabled: true
+  max_tokens: 1500

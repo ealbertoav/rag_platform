@@ -1,0 +1,10 @@
+app:
+  name: rag-platform
+  version: "0.1.0"
+  description: "Local enterprise RAG platform"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  reload: true
+  cors_origins: ["*"]

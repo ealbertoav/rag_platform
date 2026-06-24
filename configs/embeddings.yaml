@@ -1,0 +1,8 @@
+embeddings:
+  provider: bge_m3
+  model_path: models/embeddings/bge-m3
+  batch_size: 32
+  device: mps                  # mps | cuda | cpu
+  normalize: true
+  dense_dim: 1024
+  sparse_dim: 30522            # BGE-M3 lexical output

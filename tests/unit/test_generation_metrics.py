@@ -1,0 +1,184 @@
+"""T-042 — Generation metric unit tests (Ragas/DeepEval mocked)."""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+
+from src.domain.entities.evaluation import EvalSample
+from src.evals.generation import EvalResult, GenerationMetric
+from src.evals.generation.faithfulness import FaithfulnessMetric
+from src.evals.generation.hallucination import HallucinationMetric
+from src.evals.generation.relevance import RelevanceMetric
+
+# Patch paths — extracted to avoid long lines in each test.
+_FAITH = "src.evals.generation.faithfulness.FaithfulnessMetric._ragas_score"
+_RELEV = "src.evals.generation.relevance.RelevanceMetric._ragas_score"
+_HALLU = "src.evals.generation.hallucination.HallucinationMetric._deepeval_score"
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+
+def _sample(
+    question: str = "What is EKS?",
+    expected: str = "Amazon EKS is a managed Kubernetes service.",
+    generated: str = "EKS is a managed Kubernetes service from AWS.",
+    chunks: list[str] | None = None,
+) -> EvalSample:
+    return EvalSample(
+        question=question,
+        expected_answer=expected,
+        retrieved_chunks=chunks or ["EKS is Amazon Elastic Kubernetes Service."],
+        generated_answer=generated,
+    )
+
+
+# ── EvalResult ─────────────────────────────────────────────────────────────────
+
+
+class TestEvalResult:
+    def test_higher_is_better_passes_above_threshold(self):
+        r = EvalResult.make("f", 0.9, threshold=0.8)
+        assert r.passed is True
+
+    def test_higher_is_better_fails_at_threshold(self):
+        r = EvalResult.make("f", 0.8, threshold=0.8)
+        assert r.passed is False
+
+    def test_lower_is_better_passes_below_threshold(self):
+        r = EvalResult.make("h", 0.05, threshold=0.1, higher_is_better=False)
+        assert r.passed is True
+
+    def test_lower_is_better_fails_above_threshold(self):
+        r = EvalResult.make("h", 0.2, threshold=0.1, higher_is_better=False)
+        assert r.passed is False
+
+    def test_fields_set(self):
+        r = EvalResult.make("faith", 0.85, threshold=0.8, details="all good")
+        assert r.metric == "faith"
+        assert r.score == pytest.approx(0.85)
+        assert r.details == "all good"
+
+
+# ── GenerationMetric protocol ──────────────────────────────────────────────────
+
+
+class TestProtocol:
+    def test_faithfulness_satisfies_protocol(self):
+        m: GenerationMetric = FaithfulnessMetric()
+        assert callable(m.score)
+
+    def test_relevance_satisfies_protocol(self):
+        m: GenerationMetric = RelevanceMetric()
+        assert callable(m.score)
+
+    def test_hallucination_satisfies_protocol(self):
+        m: GenerationMetric = HallucinationMetric()
+        assert callable(m.score)
+
+
+# ── FaithfulnessMetric ─────────────────────────────────────────────────────────
+
+
+class TestFaithfulnessMetric:
+    def test_returns_eval_result(self):
+        with patch(_FAITH, return_value=0.9):
+            result = FaithfulnessMetric().score(_sample())
+        assert isinstance(result, EvalResult)
+
+    def test_passes_above_threshold(self):
+        with patch(_FAITH, return_value=0.95):
+            result = FaithfulnessMetric(threshold=0.8).score(_sample())
+        assert result.passed is True
+
+    def test_fails_below_threshold(self):
+        with patch(_FAITH, return_value=0.6):
+            result = FaithfulnessMetric(threshold=0.8).score(_sample())
+        assert result.passed is False
+
+    def test_empty_answer_returns_zero(self):
+        result = FaithfulnessMetric().score(_sample(generated=""))
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is False
+
+    def test_no_context_returns_zero(self):
+        result = FaithfulnessMetric().score(_sample(chunks=[]))
+        assert result.score == pytest.approx(0.0)
+
+    def test_ragas_failure_returns_zero(self):
+        with patch(_FAITH, side_effect=RuntimeError("API error")):
+            result = FaithfulnessMetric().score(_sample())
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is False
+        assert result.details != ""
+
+    def test_metric_name(self):
+        with patch(_FAITH, return_value=0.9):
+            result = FaithfulnessMetric().score(_sample())
+        assert result.metric == "faithfulness"
+
+
+# ── RelevanceMetric ────────────────────────────────────────────────────────────
+
+
+class TestRelevanceMetric:
+    def test_passes_above_threshold(self):
+        with patch(_RELEV, return_value=0.85):
+            result = RelevanceMetric(threshold=0.75).score(_sample())
+        assert result.passed is True
+
+    def test_fails_below_threshold(self):
+        with patch(_RELEV, return_value=0.5):
+            result = RelevanceMetric(threshold=0.75).score(_sample())
+        assert result.passed is False
+
+    def test_empty_answer_returns_zero(self):
+        result = RelevanceMetric().score(_sample(generated=""))
+        assert result.score == pytest.approx(0.0)
+
+    def test_ragas_failure_returns_zero(self):
+        with patch(_RELEV, side_effect=ImportError("ragas not installed")):
+            result = RelevanceMetric().score(_sample())
+        assert result.score == pytest.approx(0.0)
+
+    def test_metric_name(self):
+        with patch(_RELEV, return_value=0.8):
+            result = RelevanceMetric().score(_sample())
+        assert result.metric == "answer_relevancy"
+
+
+# ── HallucinationMetric ────────────────────────────────────────────────────────
+
+
+class TestHallucinationMetric:
+    def test_passes_below_threshold(self):
+        with patch(_HALLU, return_value=0.05):
+            result = HallucinationMetric(threshold=0.1).score(_sample())
+        assert result.passed is True
+
+    def test_fails_above_threshold(self):
+        with patch(_HALLU, return_value=0.4):
+            result = HallucinationMetric(threshold=0.1).score(_sample())
+        assert result.passed is False
+
+    def test_empty_answer_passes(self):
+        result = HallucinationMetric().score(_sample(generated=""))
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is True
+
+    def test_no_context_fails(self):
+        result = HallucinationMetric().score(_sample(chunks=[]))
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is False
+
+    def test_deepeval_failure_returns_one(self):
+        with patch(_HALLU, side_effect=ImportError("deepeval not installed")):
+            result = HallucinationMetric().score(_sample())
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is False
+
+    def test_metric_name(self):
+        with patch(_HALLU, return_value=0.05):
+            result = HallucinationMetric().score(_sample())
+        assert result.metric == "hallucination"

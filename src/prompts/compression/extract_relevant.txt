@@ -1,0 +1,15 @@
+Given a user question and a document passage, extract ONLY the sentences or phrases from the passage that are directly relevant to answering the question.
+
+Rules:
+- Output ONLY the relevant sentences, copied verbatim from the passage
+- Keep each sentence complete — do not truncate mid-sentence
+- Preserve the original order of sentences
+- If nothing in the passage is relevant, output nothing
+- Do not add explanation, commentary, labels, or formatting
+
+Question: $query
+
+Passage:
+$passage
+
+Relevant sentences:

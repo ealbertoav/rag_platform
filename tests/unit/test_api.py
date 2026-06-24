@@ -1,0 +1,238 @@
+"""T-032 — FastAPI application tests."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from src.domain.entities.answer import Answer
+from src.main import create_app
+from src.rag.pipelines.ingestion_pipeline import IngestionResult
+
+# ── app fixture ────────────────────────────────────────────────────────────────
+
+
+async def _token_stream(*tokens: str) -> AsyncIterator[str]:
+    for t in tokens:
+        yield t
+
+
+@pytest.fixture
+def chat_pipeline_mock() -> MagicMock:
+    m = MagicMock()
+    m.chat = AsyncMock(return_value=_token_stream("Hello", " world"))
+    m.chat_full = AsyncMock(
+        return_value=Answer(
+            query_id="q-1",
+            text="Hello world",
+            sources=["c0"],
+            latency_ms=42.0,
+            token_count=2,
+        )
+    )
+    return m
+
+
+@pytest.fixture
+def ingestion_pipeline_mock() -> MagicMock:
+    m = MagicMock()
+    m.ingest_file.return_value = IngestionResult(
+        source="/tmp/doc.md", chunk_count=3, content_hash="abc123"
+    )
+    m.ingest_directory.return_value = [
+        IngestionResult(source="/tmp/doc.md", chunk_count=3, content_hash="abc123")
+    ]
+    m.save_indexes = MagicMock()
+    return m
+
+
+@pytest.fixture
+def app_client(chat_pipeline_mock, ingestion_pipeline_mock):
+    app = create_app()
+    app.state.chat_pipeline = chat_pipeline_mock
+    app.state.ingestion_pipeline = ingestion_pipeline_mock
+    app.state.models_loaded = True
+    return app
+
+
+def _client(app):
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+# ── /health ────────────────────────────────────────────────────────────────────
+
+
+class TestHealth:
+    @pytest.mark.asyncio
+    async def test_returns_200(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.get("/health")
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_status_ok(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.get("/health")).json()
+        assert data["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_models_loaded_true(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.get("/health")).json()
+        assert data["models_loaded"] is True
+
+
+# ── /ingest/path ───────────────────────────────────────────────────────────────
+
+
+class TestIngestPath:
+    @pytest.mark.asyncio
+    async def test_existing_file_returns_200(self, app_client, tmp_path):
+        md = tmp_path / "doc.md"
+        md.write_text("# Hello")
+        app_client.state.ingestion_pipeline.ingest_file.return_value = IngestionResult(
+            source=str(md), chunk_count=1, content_hash="aaa"
+        )
+        async with _client(app_client) as c:
+            resp = await c.post("/ingest/path", json={"source": str(md)})
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_returns_chunk_count(self, app_client, tmp_path):
+        md = tmp_path / "doc.md"
+        md.write_text("# Hello")
+        app_client.state.ingestion_pipeline.ingest_file.return_value = IngestionResult(
+            source=str(md), chunk_count=7, content_hash="aaa"
+        )
+        async with _client(app_client) as c:
+            data = (await c.post("/ingest/path", json={"source": str(md)})).json()
+        assert data["chunk_count"] == 7
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_404(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.post("/ingest/path", json={"source": "/nonexistent/file.md"})
+        assert resp.status_code == 404
+
+
+# ── /chat (streaming) ──────────────────────────────────────────────────────────
+
+
+class TestChatStream:
+    @pytest.mark.asyncio
+    async def test_returns_200(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.post("/chat", json={"question": "What is EKS?"})
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_content_type_event_stream(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.post("/chat", json={"question": "q"})
+        assert "text/event-stream" in resp.headers["content-type"]
+
+    @pytest.mark.asyncio
+    async def test_sse_contains_tokens(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.post("/chat", json={"question": "q"})
+        lines = [ln for ln in resp.text.splitlines() if ln.startswith("data:")]
+        payloads = [json.loads(ln[5:].strip()) for ln in lines if ln.strip() != "data: [DONE]"]
+        tokens = [p["token"] for p in payloads]
+        assert "Hello" in tokens
+        assert " world" in tokens
+
+    @pytest.mark.asyncio
+    async def test_sse_ends_with_done(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.post("/chat", json={"question": "q"})
+        assert "data: [DONE]" in resp.text
+
+
+# ── /chat/full ─────────────────────────────────────────────────────────────────
+
+
+class TestChatFull:
+    @pytest.mark.asyncio
+    async def test_returns_200(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.post("/chat/full", json={"question": "q"})
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_answer_in_response(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/full", json={"question": "q"})).json()
+        assert data["answer"] == "Hello world"
+        assert "c0" in data["sources"]
+
+    @pytest.mark.asyncio
+    async def test_latency_present(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/full", json={"question": "q"})).json()
+        assert "latency_ms" in data
+
+
+# ── /evals/run ─────────────────────────────────────────────────────────────────
+
+
+class TestEvals:
+    @pytest.mark.asyncio
+    async def test_empty_dataset_returns_204(self, app_client):
+        # QA dataset has only placeholder rows in the test environment.
+        async with _client(app_client) as c:
+            resp = await c.post("/evals/run")
+        assert resp.status_code == 204
+
+    @pytest.mark.asyncio
+    async def test_real_dataset_returns_200(self, app_client):
+        from unittest.mock import AsyncMock, patch
+
+        from src.evals.e2e.rag_benchmark import BenchmarkReport
+
+        report = BenchmarkReport(
+            timestamp="20250101T000000",
+            total_samples=5,
+            mean_recall_at_5=0.8,
+            mean_faithfulness=0.9,
+            mean_relevance=0.85,
+            recall_threshold=0.5,
+            faithfulness_threshold=0.8,
+            relevance_threshold=0.75,
+            passed=True,
+        )
+        with (
+            patch(
+                "src.domain.services.evaluation_service.EvaluationService.run",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "src.evals.e2e.rag_benchmark.BenchmarkReport.save",
+            ),
+        ):
+            async with _client(app_client) as c:
+                resp = await c.post("/evals/run")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "passed"
+        assert resp.json()["total_samples"] == 5
+
+
+# ── OpenAPI docs ───────────────────────────────────────────────────────────────
+
+
+class TestOpenAPI:
+    @pytest.mark.asyncio
+    async def test_docs_available(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.get("/docs")
+        assert resp.status_code == 200  # noqa: E501
+
+    @pytest.mark.asyncio
+    async def test_openapi_json(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.get("/openapi.json")).json()
+        assert data["info"]["title"] == "RAG Platform"
