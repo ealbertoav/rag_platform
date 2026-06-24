@@ -621,32 +621,32 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph GEN["🏭 Dataset Generation (T-040)"]
-        IC[Ingested Chunks] --> LLM2[LLM\nGenerates N Q&A pairs]
-        LLM2 --> DED[Cosine Dedup\nthreshold 0.95]
-        DED --> QA[("datasets/synthetic\ngenerated_qa.json")]
+        IC[Ingested Chunks] --> LLM2["LLM<br/>Generates N Q&A pairs"]
+        LLM2 --> DED["Cosine Dedup<br/>threshold 0.95"]
+        DED --> QA[("datasets/synthetic<br/>generated_qa.json")]
     end
 
     subgraph RET["📏 Retrieval Evals (T-041)"]
-        QA2[("datasets/goldens\nretrieval_dataset.json")] --> R1["Recall@K"]
+        QA2[("datasets/goldens<br/>retrieval_dataset.json")] --> R1["Recall@K"]
         QA2 --> R2["Precision@K"]
         QA2 --> R3["NDCG@K"]
         R1 & R2 & R3 --> RT[Summary Table]
     end
 
     subgraph GEN2["🧪 Generation Evals (T-042)"]
-        QA3[("QA Dataset")] --> F["Faithfulness\nRagas"]
-        QA3 --> RV["Relevance\nRagas"]
-        QA3 --> H["Hallucination\nDeepEval"]
-        F & RV & H --> GR[Pass / Fail\nper threshold]
+        QA3[("QA Dataset")] --> F["Faithfulness<br/>Ragas"]
+        QA3 --> RV["Relevance<br/>Ragas"]
+        QA3 --> H["Hallucination<br/>DeepEval"]
+        F & RV & H --> GR["Pass / Fail<br/>per threshold"]
     end
 
     subgraph E2E["🏁 E2E Benchmark (T-043 / T-044)"]
-        QA4[("QA Dataset")] --> PIPE[Full RAG Pipeline\nRetrieval + Generation]
-        PIPE --> MET[Recall@5\nFaithfulness\nRelevance]
-        MET --> RPT[("data/exports\nbenchmark_{ts}.json")]
+        QA4[("QA Dataset")] --> PIPE["Full RAG Pipeline<br/>Retrieval + Generation"]
+        PIPE --> MET["Recall@5<br/>Faithfulness<br/>Relevance"]
+        MET --> RPT[("data/exports<br/>benchmark_{ts}.json")]
         RPT --> EXIT{All ≥ threshold?}
-        EXIT -->|yes| PASS[exit 0 ✅\nPOST /evals/run → 200]
-        EXIT -->|no| FAIL[exit 1 ❌\nPOST /evals/run → 200 failed]
+        EXIT -->|yes| PASS["exit 0 ✅<br/>POST /evals/run → 200"]
+        EXIT -->|no| FAIL["exit 1 ❌<br/>POST /evals/run → 200 failed"]
     end
 
     GEN --> RET
