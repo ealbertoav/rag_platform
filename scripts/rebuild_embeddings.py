@@ -10,6 +10,7 @@ Usage:
     uv run python scripts/rebuild_embeddings.py
     uv run python scripts/rebuild_embeddings.py --batch-size 16 --dry-run
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,15 +22,19 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 def main() -> None:
     parser = argparse.ArgumentParser(description="Re-embed all chunks and sync Qdrant")
     parser.add_argument(
-        "--batch-size", type=int, default=32,
+        "--batch-size",
+        type=int,
+        default=32,
         help="Number of chunks to embed per batch (default: 32)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Load and count chunks without writing to Qdrant",
     )
     parser.add_argument(
-        "--recreate-collection", action="store_true",
+        "--recreate-collection",
+        action="store_true",
         help="Drop and recreate the Qdrant collection before upserting",
     )
     args = parser.parse_args()
@@ -60,8 +65,7 @@ def main() -> None:
     if args.recreate_collection:
         print(f"Dropping collection '{settings.qdrant.collection}'…")
         try:
-            vector_store._client.delete_collection(settings.qdrant.collection)  # type: ignore[attr-defined]
-            vector_store._collection_ready = False  # type: ignore[attr-defined]
+            vector_store.drop_collection()
             print("Collection dropped.")
         except Exception as exc:
             print(f"Warning: could not drop collection: {exc}", file=sys.stderr)

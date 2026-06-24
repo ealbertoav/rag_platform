@@ -92,6 +92,11 @@ class QdrantVectorStore(VectorStoreRepository):
             dense_dim=settings.embeddings.dense_dim,
         )
 
+    def drop_collection(self) -> None:
+        """Delete the Qdrant collection and reset the ready flag."""
+        self._client.delete_collection(self.collection)
+        self._collection_ready = False
+
     # ── VectorStoreRepository interface ────────────────────────────────────────
 
     def upsert(self, chunks: list[Chunk]) -> None:

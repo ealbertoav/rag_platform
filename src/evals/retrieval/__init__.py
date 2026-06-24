@@ -8,6 +8,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from src.evals.retrieval.mrr import mrr
 from src.evals.retrieval.ndcg import ndcg_at_k
 from src.evals.retrieval.precision_at_k import precision_at_k
 from src.evals.retrieval.recall_at_k import recall_at_k
@@ -26,10 +27,11 @@ class MetricsAtK:
     recall: float
     precision: float
     ndcg: float
+    mrr: float
 
 
 class RetrievalEvaluator:
-    """Compute Recall@K, Precision@K, NDCG@K across a list of samples."""
+    """Compute Recall@K, Precision@K, NDCG@K, MRR across a list of samples."""
 
     def __init__(self, k_values: list[int] | None = None) -> None:
         self.k_values: list[int] = k_values or [1, 3, 5, 10]
@@ -44,7 +46,10 @@ class RetrievalEvaluator:
             recall = _mean(recall_at_k(s.retrieved_ids, s.relevant_ids, k) for s in samples)
             precision = _mean(precision_at_k(s.retrieved_ids, s.relevant_ids, k) for s in samples)
             ndcg_score = _mean(ndcg_at_k(s.retrieved_ids, s.relevant_ids, k) for s in samples)
-            results.append(MetricsAtK(k=k, recall=recall, precision=precision, ndcg=ndcg_score))
+            mrr_score = _mean(mrr(s.retrieved_ids[:k], s.relevant_ids) for s in samples)
+            results.append(
+                MetricsAtK(k=k, recall=recall, precision=precision, ndcg=ndcg_score, mrr=mrr_score)
+            )
 
         return results
 
@@ -56,6 +61,7 @@ class RetrievalEvaluator:
         table.add_column("Recall@K", justify="right")
         table.add_column("Precision@K", justify="right")
         table.add_column("NDCG@K", justify="right")
+        table.add_column("MRR", justify="right")
 
         for m in metrics:
             table.add_row(
@@ -63,6 +69,7 @@ class RetrievalEvaluator:
                 f"{m.recall:.4f}",
                 f"{m.precision:.4f}",
                 f"{m.ndcg:.4f}",
+                f"{m.mrr:.4f}",
             )
 
         Console().print(table)
