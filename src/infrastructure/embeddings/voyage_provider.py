@@ -63,7 +63,7 @@ class VoyageEmbeddingProvider(EmbeddingRepository):
         from src.core.settings import settings
 
         cfg = settings.embeddings.voyage
-        return cls(api_key=cfg.api_key, model=cfg.model)
+        return cls(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
 
     # ── Internals ──────────────────────────────────────────────────────────────
 

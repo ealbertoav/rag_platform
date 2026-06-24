@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -51,25 +51,25 @@ class LLMSettings(BaseModel):
 
 
 class OpenAIEmbeddingConfig(BaseModel):
-    api_key: str = ""
+    api_key: SecretStr = SecretStr("")
     model: str = "text-embedding-3-large"
     dimensions: int = 3072  # text-embedding-3 supports truncation via this param
 
 
 class VoyageEmbeddingConfig(BaseModel):
-    api_key: str = ""
+    api_key: SecretStr = SecretStr("")
     model: str = "voyage-large-2"
     dimensions: int = 1536
 
 
 class CohereEmbeddingConfig(BaseModel):
-    api_key: str = ""
+    api_key: SecretStr = SecretStr("")
     model: str = "embed-english-v3.0"
     dimensions: int = 1024
 
 
 class GeminiEmbeddingConfig(BaseModel):
-    api_key: str = ""
+    api_key: SecretStr = SecretStr("")
     model: str = "text-embedding-004"
     dimensions: int = 768
 

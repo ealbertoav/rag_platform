@@ -71,7 +71,9 @@ class OpenAIEmbeddingProvider(EmbeddingRepository):
         from src.core.settings import settings
 
         cfg = settings.embeddings.openai
-        return cls(api_key=cfg.api_key, model=cfg.model, dimensions=cfg.dimensions)
+        return cls(
+            api_key=cfg.api_key.get_secret_value(), model=cfg.model, dimensions=cfg.dimensions
+        )
 
     # ── Internals ──────────────────────────────────────────────────────────────
 

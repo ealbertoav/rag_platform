@@ -4309,7 +4309,6 @@ dependencies = [
     { name = "pyyaml" },
     { name = "qdrant-client" },
     { name = "rank-bm25" },
-    { name = "redis" },
     { name = "rich" },
     { name = "sentence-transformers" },
     { name = "tenacity" },
@@ -4322,6 +4321,7 @@ api-embeddings = [
     { name = "cohere" },
     { name = "google-generativeai" },
     { name = "openai" },
+    { name = "redis" },
     { name = "voyageai" },
 ]
 evals = [
@@ -4348,7 +4348,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "basedpyright", specifier = ">=1.39.8" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
-    { name = "cohere", marker = "extra == 'api-embeddings'", specifier = ">=5.0.0" },
+    { name = "cohere", marker = "extra == 'api-embeddings'", specifier = ">=7.0.0" },
     { name = "datasets", marker = "extra == 'evals'", specifier = ">=2.20.0" },
     { name = "deepeval", marker = "extra == 'evals'", specifier = ">=0.21.0" },
     { name = "diskcache", specifier = ">=5.6.3" },
@@ -4377,7 +4377,7 @@ requires-dist = [
     { name = "qdrant-client", specifier = ">=1.10.0" },
     { name = "ragas", marker = "extra == 'evals'", specifier = ">=0.1.20" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
-    { name = "redis", specifier = ">=5.0.0" },
+    { name = "redis", marker = "extra == 'api-embeddings'", specifier = ">=5.0.0" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "sentence-transformers", specifier = ">=3.0.0" },
     { name = "tenacity", specifier = ">=9.0.0" },

@@ -27,35 +27,47 @@ _API_BATCH_SIZE = 32   # Conservative default for API providers (rate limits)
 _API_BATCH_SLEEP = 0.1  # Seconds between batches for API providers
 
 
-def _preflight(args: argparse.Namespace, settings: object) -> None:
-    """Validate configuration before touching any data."""
+def _check_api_key(settings: object) -> None:
+    """Abort early if an API provider is selected, but its key is missing.
+
+    Always called — even with --force — so users get a clear error rather
+    than an opaque failure from the embedding API itself.
+    """
     from src.core.settings import Settings
 
     s: Settings = settings  # type: ignore[assignment]
     provider = s.embeddings.provider
 
-    # 1. API providers require a key
-    if provider in API_EMBEDDING_PROVIDERS:
-        key_map = {
-            "openai": s.embeddings.openai.api_key,
-            "voyage": s.embeddings.voyage.api_key,
-            "cohere": s.embeddings.cohere.api_key,
-            "gemini": s.embeddings.gemini.api_key,
-        }
-        api_key = key_map[provider]
-        if not api_key:
-            env_var = f"EMBEDDINGS__{provider.upper()}__API_KEY"
-            print(
-                f"[error] Provider '{provider}' requires an API key.\n"
-                f"        Set {env_var} in your environment or .env file.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        print(f"Provider: {provider} (API-based, key present)")
-    else:
+    if provider not in API_EMBEDDING_PROVIDERS:
         print(f"Provider: {provider} (self-hosted)")
+        return
 
-    # 2. Dimension sanity check (warn only — user may intentionally change dimming)
+    key_map = {
+        "openai": s.embeddings.openai.api_key.get_secret_value(),
+        "voyage": s.embeddings.voyage.api_key.get_secret_value(),
+        "cohere": s.embeddings.cohere.api_key.get_secret_value(),
+        "gemini": s.embeddings.gemini.api_key.get_secret_value(),
+    }
+    api_key = key_map[provider]
+    if not api_key:
+        env_var = f"EMBEDDINGS__{provider.upper()}__API_KEY"
+        print(
+            f"[error] Provider '{provider}' requires an API key.\n"
+            f"        Set {env_var} in your environment or .env file.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"Provider: {provider} (API-based, key present)")
+
+
+def _preflight(args: argparse.Namespace, settings: object) -> None:
+    """Validate dimensions and model mismatch (skipped with --force)."""
+    from src.core.settings import Settings
+
+    s: Settings = settings  # type: ignore[assignment]
+    provider = s.embeddings.provider
+
+    # 1. Dimension sanity check (warn only — user may intentionally change dimming)
     expected_dims = {
         "bge_m3": 1024, "nomic": 768, "qwen_embedding": 1024,
         "openai": s.embeddings.openai.dimensions,
@@ -73,7 +85,7 @@ def _preflight(args: argparse.Namespace, settings: object) -> None:
                 file=sys.stderr,
             )
 
-    # 3. Model mismatch guard (only when NOT recreating)
+    # 2. Model mismatch guard (only when NOT recreating)
     if not args.recreate_collection:
         _check_qdrant_model_mismatch(s)
 
@@ -134,8 +146,9 @@ def main() -> None:
     from src.infrastructure.vectordb.qdrant import QdrantVectorStore
 
     # ── Pre-flight ─────────────────────────────────────────────────────────────
+    _check_api_key(settings)          # always — gives clear error before any API call
     if not args.force:
-        _preflight(args, settings)
+        _preflight(args, settings)    # dimension + model-mismatch checks (skipped with --force)
 
     # ── Load chunks from BM25 index ────────────────────────────────────────────
     bm25 = BM25Index.load_or_create()
@@ -174,6 +187,7 @@ def main() -> None:
 
     # ── Re-embed in batches ─────────────────────────────────────────────────────
     errors = 0
+    ok = 0
     with Progress(
         TextColumn("[cyan]{task.description}"),
         BarColumn(),
@@ -192,6 +206,7 @@ def main() -> None:
                     for chunk, dense, sparse in zip(batch, dense_vecs, sparse_vecs, strict=True)
                 ]
                 vector_store.upsert(embedded)
+                ok += len(batch)
                 if is_api and i + batch_size < len(chunks):
                     time.sleep(_API_BATCH_SLEEP)
             except Exception as exc:
@@ -200,7 +215,6 @@ def main() -> None:
             finally:
                 progress.advance(task, len(batch))
 
-    ok = len(chunks) - errors * batch_size
     print(f"\n✓ Re-embedded {ok}/{len(chunks)} chunks → Qdrant '{settings.qdrant.collection}'")
     if errors:
         print(f"  {errors} batch(es) failed — check logs above.", file=sys.stderr)

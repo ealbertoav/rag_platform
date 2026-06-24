@@ -65,18 +65,22 @@ class ProviderResult:
 def _set_provider_env(provider: str) -> None:
     """Override EMBEDDINGS__PROVIDER and reload the settings singleton.
 
-    Limitation: singleton objects (Qdrant client, embedder) that were already
-    constructed before this reload still reference the previous settings. Each
-    call to _run_provider() creates fresh infrastructure objects after the
-    reload, which is why providers are benchmarked sequentially rather than
-    concurrently in this script.
+    Both the settings module and the embedding factory module are reloaded so
+    that subsequent lazy imports inside provider factory functions see the new
+    settings object.  _run_provider() creates all infrastructure objects after
+    this call, so any stale module-level references are bypassed.
+
+    Limitation: providers are benchmarked sequentially (not concurrently) because
+    the reload mutates global module state.
     """
     import importlib
 
-    os.environ["EMBEDDINGS__PROVIDER"] = provider
     import src.core.settings as _settings_mod
+    import src.infrastructure.embeddings as _embeddings_mod
 
+    os.environ["EMBEDDINGS__PROVIDER"] = provider
     importlib.reload(_settings_mod)
+    importlib.reload(_embeddings_mod)
 
 
 def _compute_recall_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:

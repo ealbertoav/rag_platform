@@ -20,10 +20,6 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from redis import Redis
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import RedisError
-
 from src.domain.repositories.embedding_repository import (
     DenseVector,
     EmbeddingRepository,
@@ -31,6 +27,7 @@ from src.domain.repositories.embedding_repository import (
 )
 
 if TYPE_CHECKING:
+    from redis import Redis
     from redis.client import Pipeline
 
 logger = logging.getLogger(__name__)
@@ -91,7 +88,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
                 pipeline.set(self._make_key(text), json.dumps(vec), ex=self._ttl)
             pipeline.execute()
 
-        n_hits = len(hits) - len(misses)
+        n_hits = len(texts) - len(misses)
         logger.debug(
             "embed cache: %d hits, %d misses (model=%s)", n_hits, len(misses), self._model_id
         )
@@ -122,7 +119,11 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         if time.monotonic() < self._next_retry_at:
             return None
         try:
-            client: Redis = Redis.from_url(  # type: ignore[assignment]
+            from redis import Redis as _Redis
+            from redis.exceptions import ConnectionError as _ConnError
+            from redis.exceptions import RedisError as _RedisError
+
+            client: Redis = _Redis.from_url(  # type: ignore[assignment]
                 self._redis_url,
                 password=self._redis_password or None,
                 decode_responses=True,
@@ -132,7 +133,14 @@ class CachedEmbeddingProvider(EmbeddingRepository):
             self._next_retry_at = 0.0
             logger.info("Embedding cache connected to Redis at %s", self._redis_url)
             return client
-        except (RedisConnectionError, RedisError, OSError) as exc:
+        except ImportError:
+            logger.error(
+                "redis package not installed; embedding cache disabled. "
+                "Run: uv sync --extra api-embeddings"
+            )
+            self._next_retry_at = float("inf")  # don't retry — package won't appear
+            return None
+        except (_ConnError, _RedisError, OSError) as exc:  # type: ignore[misc]
             self._next_retry_at = time.monotonic() + _RECONNECT_COOLDOWN
             logger.warning("Redis unavailable (%s); will retry in %.0fs", exc, _RECONNECT_COOLDOWN)
             return None
@@ -140,8 +148,10 @@ class CachedEmbeddingProvider(EmbeddingRepository):
     @staticmethod
     def _mget(client: Redis, keys: list[str]) -> list[str | None]:
         try:
+            from redis.exceptions import RedisError as _RedisError
+
             return client.mget(keys)  # type: ignore[return-value]
-        except RedisError as exc:
+        except _RedisError as exc:  # type: ignore[misc]
             logger.warning("Redis mget failed (%s); bypassing cache for this batch", exc)
             return [None] * len(keys)
 

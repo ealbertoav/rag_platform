@@ -65,7 +65,7 @@ class CohereEmbeddingProvider(EmbeddingRepository):
         from src.core.settings import settings
 
         cfg = settings.embeddings.cohere
-        return cls(api_key=cfg.api_key, model=cfg.model)
+        return cls(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
@@ -95,8 +95,14 @@ class CohereEmbeddingProvider(EmbeddingRepository):
 
     def _call_api(self, texts: list[str], input_type: CohereInputType) -> list[DenseVector]:
         client = self._get_client()
-        response = client.embed(texts=texts, model=self.model, input_type=input_type)
-        return [list(v) for v in response.embeddings]  # type: ignore[union-attr]
+        # SDK v7+: ClientV2.embed() requires embedding_types; floats live in .embeddings.float_
+        response = client.embed(
+            texts=texts,
+            model=self.model,
+            input_type=input_type,
+            embedding_types=["float"],
+        )
+        return [list(v) for v in response.embeddings.float_]  # type: ignore[union-attr]
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -106,5 +112,5 @@ class CohereEmbeddingProvider(EmbeddingRepository):
                 raise EmbeddingError(
                     "cohere package is not installed. Run: uv sync --extra api-embeddings"
                 ) from exc
-            self._client = cohere.Client(api_key=self.api_key)
+            self._client = cohere.ClientV2(api_key=self.api_key)
         return self._client

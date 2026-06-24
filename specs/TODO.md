@@ -871,7 +871,7 @@
 - **Goal:** Implement `EmbeddingRepository` for Voyage AI's embedding API. Dense only.
 - **Files:**
   - `src/infrastructure/embeddings/voyage_provider.py`
-- **Dependencies:** `voyageai>=0.2.0` (add to `pyproject.toml`)
+- **Dependencies:** `voyageai>=0.3.0` (add to `pyproject.toml`)
 - **Supported models:** `voyage-large-2` (1536-dim), `voyage-code-2` (1536-dim, optimized for code/technical docs)
 - **Key details:**
   - Max 128 texts per batch (Voyage limit)

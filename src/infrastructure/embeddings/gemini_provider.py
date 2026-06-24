@@ -66,7 +66,7 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
         from src.core.settings import settings
 
         cfg = settings.embeddings.gemini
-        return cls(api_key=cfg.api_key, model=cfg.model)
+        return cls(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
@@ -98,12 +98,19 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
     def _call_api(self, texts: list[str], task_type: GeminiTaskType) -> list[DenseVector]:
         import google.generativeai as genai
 
+        # embed_content with a list returns a result [ "embedding"] as list[list[float]];
+        # with a single string it returns list[float]. Guard against both shapes so
+        # a future SDK change (or a single-item batch) doesn't silently corrupt output.
         result = genai.embed_content(
             model=f"models/{self.model}",
             content=texts,
             task_type=task_type,
         )
-        return [list(v) for v in result["embedding"]]
+        embedding = result["embedding"]
+        if embedding and not isinstance(embedding[0], (list, tuple)):
+            # Single-text response — wrap in outer list
+            return [list(embedding)]
+        return [list(v) for v in embedding]
 
     def _configure(self) -> None:
         if self._configured:

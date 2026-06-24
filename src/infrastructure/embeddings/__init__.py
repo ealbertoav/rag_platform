@@ -87,8 +87,11 @@ def _create_provider(name: str, settings: object) -> EmbeddingRepository:
             raise ValueError(f"Unknown embedding provider: {name!r}")
 
 
-def _require_api_key(provider: str, api_key: str) -> None:
-    if not api_key:
+def _require_api_key(provider: str, api_key: object) -> None:
+    from pydantic import SecretStr
+
+    raw = api_key.get_secret_value() if isinstance(api_key, SecretStr) else str(api_key)
+    if not raw:
         from src.core.exceptions import ConfigurationError
 
         env_var = _API_KEY_ENV.get(provider, f"EMBEDDINGS__{provider.upper()}__API_KEY")
