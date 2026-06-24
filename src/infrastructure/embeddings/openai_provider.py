@@ -69,7 +69,7 @@ class OpenAIEmbeddingProvider(EmbeddingRepository):
                 return self._call_api(texts)
             except Exception as exc:
                 if _is_rate_limit(exc) and attempt < 4:
-                    wait = min(2 ** attempt * 2, 60)
+                    wait = min(2**attempt * 2, 60)
                     logger.warning(
                         "OpenAI rate limit on attempt %d, retrying in %ds", attempt + 1, wait
                     )

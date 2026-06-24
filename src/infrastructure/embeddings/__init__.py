@@ -68,18 +68,22 @@ def _create_provider(name: str, settings: object) -> EmbeddingRepository:
         case "openai":
             _require_api_key(name, s.embeddings.openai.api_key)
             from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
+
             return OpenAIEmbeddingProvider.from_settings()
         case "voyage":
             _require_api_key(name, s.embeddings.voyage.api_key)
             from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
             return VoyageEmbeddingProvider.from_settings()
         case "cohere":
             _require_api_key(name, s.embeddings.cohere.api_key)
             from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
+
             return CohereEmbeddingProvider.from_settings()
         case "gemini":
             _require_api_key(name, s.embeddings.gemini.api_key)
             from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
+
             return GeminiEmbeddingProvider.from_settings()
         case _:
             raise ValueError(f"Unknown embedding provider: {name!r}")

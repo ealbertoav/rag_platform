@@ -71,7 +71,7 @@ class CohereEmbeddingProvider(EmbeddingRepository):
                 return self._call_api(texts, input_type)
             except Exception as exc:
                 if _is_rate_limit(exc) and attempt < 4:
-                    wait = min(2 ** attempt * 2, 60)
+                    wait = min(2**attempt * 2, 60)
                     logger.warning(
                         "Cohere rate limit on attempt %d, retrying in %ds", attempt + 1, wait
                     )

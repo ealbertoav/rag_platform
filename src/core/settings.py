@@ -81,8 +81,13 @@ class EmbeddingCacheSettings(BaseModel):
 
 class EmbeddingSettings(BaseModel):
     provider: Literal[
-        "bge_m3", "nomic", "qwen_embedding",  # self-hosted
-        "openai", "voyage", "cohere", "gemini",  # API-based
+        "bge_m3",
+        "nomic",
+        "qwen_embedding",  # self-hosted
+        "openai",
+        "voyage",
+        "cohere",
+        "gemini",  # API-based
     ] = "bge_m3"
     model_path: str = "models/embeddings/bge-m3"
     batch_size: int = 32
