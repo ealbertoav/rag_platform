@@ -3,45 +3,29 @@
 Usage:
     uv run python scripts/benchmark.py
     uv run python scripts/benchmark.py --max-samples 20 --recall-threshold 0.4
+    uv run python scripts/benchmark.py --llm-config configs/llm/qwen3-14b.yaml
 
 Exit code 0 = all metrics above thresholds; 1 = at least one metric below threshold.
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
 
-
-def _load_qa(path: Path) -> list[dict[str, object]]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return [d for d in data if isinstance(d, dict) and d.get("question")]
-        return []
-    except (OSError, ValueError):
-        return []
+from _benchmark_utils import add_eval_args, apply_llm_config, resolve_qa_pairs
 
 
 async def run(args: argparse.Namespace) -> int:
-    from src.core.constants import DATASETS_DIR, EXPORTS_DIR
+    from src.core.constants import EXPORTS_DIR
     from src.evals.e2e.rag_benchmark import RAGBenchmark
     from src.rag.pipelines.chat_pipeline import ChatPipeline
 
-    qa_path = Path(args.qa_dataset)
-    if not qa_path.is_absolute():
-        qa_path = DATASETS_DIR / "goldens" / args.qa_dataset
-
-    qa_pairs = _load_qa(qa_path)
-    if not qa_pairs:
-        print(f"Error: no QA pairs found in {qa_path}", file=sys.stderr)
+    qa_pairs = resolve_qa_pairs(args.qa_dataset, args.max_samples)
+    if qa_pairs is None:
         return 1
-
-    if args.max_samples:
-        qa_pairs = qa_pairs[: args.max_samples]
 
     print(f"Running benchmark on {len(qa_pairs)} QA pairs…")
 
@@ -66,13 +50,20 @@ async def run(args: argparse.Namespace) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="End-to-end RAG benchmark")
-    parser.add_argument("--qa-dataset", default="qa_dataset.json",
-                        help="Filename in datasets/goldens/ or absolute path")
-    parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--recall-threshold", type=float, default=0.5)
-    parser.add_argument("--faith-threshold", type=float, default=0.8)
-    parser.add_argument("--relev-threshold", type=float, default=0.75)
+    parser.add_argument(
+        "--llm-config",
+        default=None,
+        help="Path to a per-model LLM config YAML (e.g. configs/llm/qwen3-14b.yaml). "
+        "Overrides LLM settings before the pipeline loads.",
+    )
+    add_eval_args(parser)
     args = parser.parse_args()
+
+    # Apply model overrides BEFORE any src.* imports, so the settings singleton
+    # picks them up on first load.
+    if args.llm_config:
+        apply_llm_config(args.llm_config)
+
     sys.exit(asyncio.run(run(args)))
 
 

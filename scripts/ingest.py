@@ -4,6 +4,7 @@ Usage:
     uv run python scripts/ingest.py --source data/raw/
     uv run python scripts/ingest.py --source data/raw/manual.pdf
 """
+
 from __future__ import annotations
 
 import argparse

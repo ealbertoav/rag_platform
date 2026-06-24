@@ -5,6 +5,7 @@ Usage:
     uv run python scripts/run_evals.py --n-pairs 5 --max-chunks 50
     uv run python scripts/run_evals.py --output datasets/synthetic/my_dataset.json
 """
+
 from __future__ import annotations
 
 import argparse

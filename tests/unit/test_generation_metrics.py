@@ -8,6 +8,7 @@ import pytest
 
 from src.domain.entities.evaluation import EvalSample
 from src.evals.generation import EvalResult, GenerationMetric
+from src.evals.generation.context_precision import ContextPrecisionMetric
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.hallucination import HallucinationMetric
 from src.evals.generation.relevance import RelevanceMetric
@@ -182,3 +183,49 @@ class TestHallucinationMetric:
         with patch(_HALLU, return_value=0.05):
             result = HallucinationMetric().score(_sample())
         assert result.metric == "hallucination"
+
+
+# ── ContextPrecisionMetric ────────────────────────────────────────────────────
+
+_CTX_PREC = "src.evals.generation.context_precision.ContextPrecisionMetric._ragas_score"
+
+
+class TestContextPrecisionMetric:
+    def test_satisfies_protocol(self):
+        m: GenerationMetric = ContextPrecisionMetric()
+        assert callable(m.score)
+
+    def test_returns_eval_result(self):
+        with patch(_CTX_PREC, return_value=0.8):
+            result = ContextPrecisionMetric().score(_sample())
+        assert isinstance(result, EvalResult)
+
+    def test_passes_above_threshold(self):
+        with patch(_CTX_PREC, return_value=0.85):
+            result = ContextPrecisionMetric(threshold=0.7).score(_sample())
+        assert result.passed is True
+
+    def test_fails_below_threshold(self):
+        with patch(_CTX_PREC, return_value=0.5):
+            result = ContextPrecisionMetric(threshold=0.7).score(_sample())
+        assert result.passed is False
+
+    def test_no_context_returns_zero(self):
+        result = ContextPrecisionMetric().score(_sample(chunks=[]))
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is False
+
+    def test_empty_question_returns_zero(self):
+        result = ContextPrecisionMetric().score(_sample(question=""))
+        assert result.score == pytest.approx(0.0)
+
+    def test_ragas_failure_returns_zero(self):
+        with patch(_CTX_PREC, side_effect=ImportError("ragas not installed")):
+            result = ContextPrecisionMetric().score(_sample())
+        assert result.score == pytest.approx(0.0)
+        assert result.details != ""
+
+    def test_metric_name(self):
+        with patch(_CTX_PREC, return_value=0.75):
+            result = ContextPrecisionMetric().score(_sample())
+        assert result.metric == "context_precision"

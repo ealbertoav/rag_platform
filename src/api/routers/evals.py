@@ -16,6 +16,7 @@ class EvalsRunResponse(BaseModel):
     mean_recall_at_5: float
     mean_faithfulness: float
     mean_relevance: float
+    mean_context_precision: float
     passed: bool
     report_path: str
     message: str
@@ -55,6 +56,7 @@ async def run_evals(
         mean_recall_at_5=report.mean_recall_at_5,
         mean_faithfulness=report.mean_faithfulness,
         mean_relevance=report.mean_relevance,
+        mean_context_precision=report.mean_context_precision,
         passed=report.passed,
         report_path=report_path,
         message=(

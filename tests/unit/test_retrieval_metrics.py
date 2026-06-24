@@ -7,6 +7,7 @@ import math
 import pytest
 
 from src.evals.retrieval import MetricsAtK, RetrievalEvaluator, RetrievalSample
+from src.evals.retrieval.mrr import mrr
 from src.evals.retrieval.ndcg import ndcg_at_k
 from src.evals.retrieval.precision_at_k import precision_at_k
 from src.evals.retrieval.recall_at_k import recall_at_k
@@ -158,3 +159,34 @@ class TestRetrievalEvaluator:
         ev = RetrievalEvaluator(k_values=[1, 3])
         metrics = ev.evaluate([self._perfect_sample()])
         ev.print_table(metrics)  # must not raise
+
+
+# ── mrr ────────────────────────────────────────────────────────────────────────
+
+
+class TestMRR:
+    def test_first_hit_at_rank1(self):
+        assert mrr(["a", "b", "c"], ["a"]) == pytest.approx(1.0)
+
+    def test_first_hit_at_rank2(self):
+        assert mrr(["x", "a", "c"], ["a"]) == pytest.approx(0.5)
+
+    def test_first_hit_at_rank3(self):
+        assert mrr(["x", "y", "a"], ["a"]) == pytest.approx(1 / 3)
+
+    def test_no_hit_returns_zero(self):
+        assert mrr(["x", "y"], ["a", "b"]) == pytest.approx(0.0)
+
+    def test_empty_retrieved_returns_zero(self):
+        assert mrr([], ["a"]) == pytest.approx(0.0)
+
+    def test_empty_relevant_returns_zero(self):
+        assert mrr(["a", "b"], []) == pytest.approx(0.0)
+
+    def test_multiple_relevant_uses_first_found(self):
+        # "b" at rank 2 is hit before "c" at rank 3 — MRR = 1/2
+        assert mrr(["x", "b", "c"], ["b", "c"]) == pytest.approx(0.5)
+
+    def test_result_in_zero_one(self):
+        score = mrr(["a", "b", "c"], ["b"])
+        assert 0.0 <= score <= 1.0

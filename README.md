@@ -178,7 +178,9 @@ QDRANT__COLLECTION=rag_documents
 
 | File | Purpose |
 |---|---|
-| `configs/llm.yaml` | LLM provider, model path, context size, temperature |
+| `configs/llm/qwen3-30b.yaml` | Default LLM profile (llama.cpp + Qwen3-30B) |
+| `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
+| `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding model, batch size, vector dimensions |
 | `configs/retrieval.yaml` | Chunking, hybrid search alpha, reranker settings |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
@@ -330,12 +332,44 @@ The report is also saved to `data/exports/` for offline analysis.
 # End-to-end RAG benchmark (exits 0 if all metrics above threshold)
 make benchmark
 
+# With a specific LLM profile
+uv run python scripts/benchmark.py \
+  --llm-config configs/llm/qwen3-14b.yaml
+
 # With custom thresholds
 uv run python scripts/benchmark.py \
   --recall-threshold 0.5 \
   --faith-threshold 0.8 \
   --relev-threshold 0.75
 ```
+
+### Compare Models
+
+Run the same benchmark against multiple LLM profiles and see a side-by-side results table:
+
+```bash
+uv run python scripts/compare_models.py \
+  --configs configs/llm/qwen3-30b.yaml \
+           configs/llm/qwen3-14b.yaml \
+           configs/llm/ollama-glm52.yaml \
+  --max-samples 50
+```
+
+**Output:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Model Comparison                             │
+├──────────────────────┬──────────┬─────────────┬──────────┬─────────┤
+│ Model                │ Recall@5 │ Faithfulness │ Relevance│ Status  │
+├──────────────────────┼──────────┼─────────────┼──────────┼─────────┤
+│ models/llm/qwen3-30b │  0.821   │    0.883     │  0.847   │ PASS ✓  │
+│ models/llm/qwen3-14b │  0.798   │    0.861     │  0.822   │ PASS ✓  │
+│ glm4:latest          │  0.774   │    0.840     │  0.801   │ PASS ✓  │
+└──────────────────────┴──────────┴─────────────┴──────────┴─────────┘
+```
+
+The winning model is determined by real evaluation data — Faithfulness + Relevance + Recall@5 + Context Precision on **your** documents, not generic benchmarks.
 
 ---
 
@@ -488,7 +522,7 @@ uv run python scripts/rebuild_embeddings.py --recreate-collection
 | `POST` | `/chat/full` | Non-streaming chat, returns complete answer |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
 | `POST` | `/ingest/upload` | Ingest an uploaded file (multipart) |
-| `POST` | `/evals/run` | Run E2E benchmark — returns `204` until QA dataset is populated, `200` with full metric report when ready |
+| `POST` | `/evals/run` | Run E2E benchmark — returns `204` until QA dataset is populated, `200` with Recall@5 / Faithfulness / Relevance / Context Precision report |
 | `GET` | `/metrics` | Prometheus metrics (text format) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
@@ -499,6 +533,16 @@ uv run python scripts/rebuild_embeddings.py --recreate-collection
 ```
 rag_implementation/
 ├── configs/                    # YAML configuration
+│   ├── llm/                    # Per-model LLM profiles (switch with --llm-config)
+│   │   ├── qwen3-30b.yaml      # llama.cpp · Qwen3-30B (default baseline)
+│   │   ├── qwen3-14b.yaml      # llama.cpp · Qwen3-14B
+│   │   ├── ollama-glm52.yaml   # Ollama · GLM-5.2
+│   │   ├── ollama-gemma3-27b.yaml
+│   │   └── ollama-llama33-70b.yaml
+│   ├── embeddings.yaml
+│   ├── retrieval.yaml
+│   ├── evals.yaml
+│   └── logging.yaml
 ├── data/                       # Runtime data (gitignored)
 │   ├── raw/                    # Source documents to ingest
 │   ├── processed/              # BM25 index (.pkl)
@@ -511,15 +555,20 @@ rag_implementation/
 │   ├── rerankers/bge-reranker-v2-m3/
 │   └── llm/                    # GGUF models
 ├── scripts/
+│   ├── _benchmark_utils.py     # Shared CLI utilities (load QA, apply LLM config)
 │   ├── ingest.py               # Document ingestion CLI
 │   ├── rebuild_embeddings.py   # Re-embed all chunks → Qdrant (model migration)
 │   ├── run_evals.py            # QA dataset generation CLI
-│   └── benchmark.py            # E2E benchmark CLI
+│   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
+│   └── compare_models.py       # Multi-model comparison table
 ├── src/
 │   ├── api/                    # FastAPI routers + DI
 │   ├── core/                   # Settings, logging, exceptions
 │   ├── domain/                 # Entities, repository ABCs, services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
+│   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR
+│   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
+│   │   └── e2e/                # RAGBenchmark · BenchmarkReport
 │   ├── infrastructure/         # BGE-M3, Qdrant, BM25, llama.cpp
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
@@ -528,7 +577,7 @@ rag_implementation/
 ├── tests/
 │   ├── benchmarks/             # Benchmark tests (skip without data)
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 568+ unit tests (zero external deps)
+│   └── unit/                   # 640+ unit tests (zero external deps)
 ├── .env.example
 ├── .github/workflows/ci.yml
 ├── .pre-commit-config.yaml
@@ -576,7 +625,7 @@ make test
 uv run pytest tests/benchmarks/ -v -s
 ```
 
-**Test coverage:** 97 source files · 39 test files · 568+ unit tests.
+**Test coverage:** 97 source files · 39 test files · 640+ unit tests.
 
 Integration tests auto-skip when models / Qdrant are absent.
 
@@ -624,19 +673,21 @@ flowchart LR
         QA2[("datasets/goldens<br/>retrieval_dataset.json")] --> R1["Recall@K"]
         QA2 --> R2["Precision@K"]
         QA2 --> R3["NDCG@K"]
-        R1 & R2 & R3 --> RT[Summary Table]
+        QA2 --> R4["MRR"]
+        R1 & R2 & R3 & R4 --> RT[Summary Table]
     end
 
     subgraph GEN2["🧪 Generation Evals (T-042)"]
         QA3[("QA Dataset")] --> F["Faithfulness<br/>Ragas"]
         QA3 --> RV["Relevance<br/>Ragas"]
+        QA3 --> CP["Context Precision<br/>Ragas"]
         QA3 --> H["Hallucination<br/>DeepEval"]
-        F & RV & H --> GR["Pass / Fail<br/>per threshold"]
+        F & RV & CP & H --> GR["Pass / Fail<br/>per threshold"]
     end
 
     subgraph E2E["🏁 E2E Benchmark (T-043 / T-044)"]
         QA4[("QA Dataset")] --> PIPE["Full RAG Pipeline<br/>Retrieval + Generation"]
-        PIPE --> MET["Recall@5<br/>Faithfulness<br/>Relevance"]
+        PIPE --> MET["Recall@5 · Faithfulness<br/>Relevance · Context Precision"]
         MET --> RPT[("data/exports<br/>benchmark_{ts}.json")]
         RPT --> EXIT{All ≥ threshold?}
         EXIT -->|yes| PASS["exit 0 ✅<br/>POST /evals/run → 200"]

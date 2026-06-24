@@ -41,35 +41,43 @@ def _qa(
     }
 
 
-def _faith_mock(score: float = 0.9) -> MagicMock:
+def _metric_mock(score: float) -> MagicMock:
     m = MagicMock()
     result = MagicMock()
     result.score = score
     m.score.return_value = result
     return m
+
+
+def _faith_mock(score: float = 0.9) -> MagicMock:
+    return _metric_mock(score)
 
 
 def _relev_mock(score: float = 0.85) -> MagicMock:
-    m = MagicMock()
-    result = MagicMock()
-    result.score = score
-    m.score.return_value = result
-    return m
+    return _metric_mock(score)
+
+
+def _ctx_mock(score: float = 0.8) -> MagicMock:
+    return _metric_mock(score)
 
 
 def _benchmark(
     faith: float = 0.9,
     relev: float = 0.85,
+    ctx: float = 0.8,
     recall_thresh: float = 0.5,
     faith_thresh: float = 0.8,
     relev_thresh: float = 0.75,
+    ctx_thresh: float = 0.7,
 ) -> RAGBenchmark:
     return RAGBenchmark(
         faithfulness=_faith_mock(faith),
         relevance=_relev_mock(relev),
+        context_precision=_ctx_mock(ctx),
         recall_threshold=recall_thresh,
         faithfulness_threshold=faith_thresh,
         relevance_threshold=relev_thresh,
+        context_precision_threshold=ctx_thresh,
     )
 
 
@@ -85,9 +93,11 @@ class TestBenchmarkReport:
             mean_recall_at_5=0.8,
             mean_faithfulness=0.9,
             mean_relevance=0.85,
+            mean_context_precision=0.8,
             recall_threshold=0.5,
             faithfulness_threshold=0.8,
             relevance_threshold=0.75,
+            context_precision_threshold=0.7,
             passed=passed,
         )
 
@@ -115,6 +125,7 @@ class TestBenchmarkReport:
         assert "Recall@5" in s
         assert "Faithfulness" in s
         assert "Relevance" in s
+        assert "Context Precision" in s
 
 
 # ── RAGBenchmark.run ───────────────────────────────────────────────────────────
