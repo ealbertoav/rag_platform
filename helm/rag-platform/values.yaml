@@ -1,0 +1,151 @@
+# Default values for rag-platform.
+# Override per environment:
+#   helm install rag-platform helm/rag-platform -f values.prod.yaml
+#   helm install rag-platform helm/rag-platform --set ingress.enabled=true
+
+# Override the chart name used in resource names (rarely needed)
+nameOverride: ""
+# Override the fully-qualified release name (e.g. to pin a short name across envs)
+fullnameOverride: ""
+
+# ── Images ────────────────────────────────────────────────────────────────────
+
+image:
+  api:
+    repository: rag-platform-api
+    tag: latest
+    pullPolicy: IfNotPresent
+  worker:
+    repository: rag-platform-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# ── Replica counts ────────────────────────────────────────────────────────────
+
+replicaCount:
+  api: 2
+  worker: 1
+
+# ── Resources (T-096) ────────────────────────────────────────────────────────
+
+resources:
+  api:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "8Gi"
+    # GPU profile — uncomment limits block and set env.embeddingsDevice=cuda:
+    # limits:
+    #   cpu: "2"
+    #   memory: "8Gi"
+    #   nvidia.com/gpu: "1"
+  worker:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "4"
+      memory: "16Gi"
+
+# ── Scheduling constraints (T-096) ───────────────────────────────────────────
+# Per-component so api and worker can target different node groups.
+#
+# Common EKS examples:
+#   NVIDIA GPU nodes (llama.cpp / CUDA):
+#     scheduling.api.nodeSelector: { eks.amazonaws.com/nodegroup: gpu }
+#     scheduling.api.tolerations:
+#       - key: nvidia.com/gpu
+#         operator: Exists
+#         effect: NoSchedule
+#
+#   Graviton / arm64 nodes (CPU inference, cost-efficient):
+#     scheduling.api.nodeSelector: { kubernetes.io/arch: arm64 }
+#
+#   Separate worker node group:
+#     scheduling.worker.nodeSelector: { eks.amazonaws.com/nodegroup: standard }
+
+scheduling:
+  api:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  worker:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+# ── Autoscaling (T-094) ───────────────────────────────────────────────────────
+# Requires metrics-server installed on the cluster.
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# ── Service ───────────────────────────────────────────────────────────────────
+
+service:
+  type: ClusterIP
+  port: 8000
+
+# ── Ingress / AWS ALB (T-095) ─────────────────────────────────────────────────
+# Set enabled=true and provide certificateArn for production.
+
+ingress:
+  enabled: false
+  host: ""
+  # AWS ACM certificate ARN for TLS termination at the ALB
+  certificateArn: ""
+  # Extra annotations merged with the defaults in templates/ingress.yaml
+  annotations: {}
+
+# ── Persistence (T-093) ───────────────────────────────────────────────────────
+# storageClass is the default for all PVCs.
+# models.storageClass overrides the default for the models PVC only —
+# required on EKS because ReadOnlyMany needs EFS (gp3/EBS is ReadWriteOnce only):
+#   --set persistence.models.storageClass=efs-sc
+# Local clusters (k3d / kind): set storageClass=standard and models.accessMode=ReadWriteOnce
+
+persistence:
+  storageClass: gp3
+  qdrant:
+    size: 50Gi
+    accessMode: ReadWriteOnce
+  models:
+    size: 30Gi
+    # ReadOnlyMany lets multiple api replicas share the same PVC.
+    # Requires EFS on EKS — override storageClass to efs-sc.
+    accessMode: ReadOnlyMany
+    storageClass: ""   # empty = inherit persistence.storageClass above
+
+# ── Application environment ───────────────────────────────────────────────────
+# Non-sensitive values → ConfigMap (T-092)
+# Sensitive values (qdrantApiKey) → Secret (T-092)
+
+env:
+  qdrantUrl: http://qdrant:6333
+  otelEndpoint: http://otel-collector:4317
+  embeddingsDevice: cpu         # cpu on standard nodes; cuda on GPU nodes
+  logLevel: INFO
+  logFormat: json
+  llmProvider: ollama
+  llmModelPath: qwen3:14b
+  retrievalTopKDense: "50"
+  retrievalTopKFinal: "5"
+  retrievalHybridAlpha: "0.7"
+  apiPort: "8000"
+
+# Sensitive config — values here end up in a K8s Secret
+secret:
+  qdrantApiKey: ""
+
+# ── Service account ───────────────────────────────────────────────────────────
+
+serviceAccount:
+  create: true
+  # Leave empty to auto-generate: <chart-name>-<release-name>
+  name: ""
+  annotations: {}

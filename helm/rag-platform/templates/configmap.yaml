@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-platform.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "rag-platform.labels" . | nindent 4 }}
+# Non-sensitive settings — injected into all app containers via envFrom.configMapRef.
+# Keys use the pydantic-settings __ delimiter so they map directly to Settings fields
+# without any application code changes (e.g., QDRANT__URL → settings.qdrant.url).
+data:
+  QDRANT__URL:                {{ .Values.env.qdrantUrl | quote }}
+  LOGGING__OTEL_ENDPOINT:     {{ .Values.env.otelEndpoint | quote }}
+  LOGGING__LEVEL:             {{ .Values.env.logLevel | quote }}
+  LOGGING__FORMAT:            {{ .Values.env.logFormat | quote }}
+  EMBEDDINGS__DEVICE:         {{ .Values.env.embeddingsDevice | quote }}
+  LLM__PROVIDER:              {{ .Values.env.llmProvider | quote }}
+  LLM__MODEL_PATH:            {{ .Values.env.llmModelPath | quote }}
+  RETRIEVAL__TOP_K_DENSE:     {{ .Values.env.retrievalTopKDense | quote }}
+  RETRIEVAL__TOP_K_FINAL:     {{ .Values.env.retrievalTopKFinal | quote }}
+  RETRIEVAL__HYBRID_ALPHA:    {{ .Values.env.retrievalHybridAlpha | quote }}
+  API__HOST:                  "0.0.0.0"
+  API__PORT:                  {{ .Values.env.apiPort | quote }}
+  API__RELOAD:                "false"

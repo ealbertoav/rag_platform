@@ -18,6 +18,13 @@ A production-grade, **local** Retrieval-Augmented Generation platform built with
   - [Chat](#chat)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
+- [Docker Compose](#docker-compose)
+  - [Full Stack](#full-stack)
+  - [Development Hot-Reload](#development-hot-reload)
+  - [Ingestion via Docker](#ingestion-via-docker)
+- [Kubernetes & Production](#kubernetes--production)
+  - [Helm Chart](#helm-chart)
+  - [EKS Setup](#eks-setup)
 - [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag)
 - [Agentic RAG](#agentic-rag)
 - [Embedding Providers](#embedding-providers)
@@ -115,12 +122,14 @@ flowchart LR
 - **macOS** with Apple Silicon (M1/M2/M3/M4) — MPS acceleration
 - **Python 3.12+** (managed by uv)
 - **[uv](https://docs.astral.sh/uv/)** — `brew install uv`
-- **[Docker](https://www.docker.com/)** — for Qdrant
+- **[Docker Desktop](https://www.docker.com/)** — for Qdrant (native) or the full stack (Compose)
 - **~64 GB RAM** recommended for Qwen3-30B; smaller models work on less
 
 ---
 
 ## Installation
+
+### Option A — Native (recommended for active development on Apple Silicon)
 
 ```bash
 # 1. Clone the repository
@@ -133,9 +142,21 @@ make install
 # 3. Copy and edit the environment file
 cp .env.example .env
 
-# 4. Start Qdrant
+# 4. Start Qdrant only
 make qdrant-up
+
+# 5. Start the API server (Metal/MPS acceleration)
+make serve
 ```
+
+### Option B — Docker Compose (full stack, no local Python setup required)
+
+```bash
+cp .env.example .env   # adjust LLM__MODEL_PATH etc.
+make docker-up         # starts api, qdrant, ollama, redis, prometheus, otel-collector
+```
+
+See [Docker Compose](#docker-compose) for details.
 
 ---
 
@@ -373,6 +394,153 @@ The winning model is determined by real evaluation data — Faithfulness + Relev
 
 ---
 
+## Docker Compose
+
+The full local stack is defined in `docker-compose.yml`. All services start with a single command; the API server, Qdrant, Ollama, Redis, Prometheus, and the OTel collector are all included.
+
+### Full Stack
+
+```bash
+# First run — build images from source
+make docker-build
+
+# Start all services in the background
+make docker-up
+
+# Verify the API is healthy
+curl http://localhost:8000/health
+
+# Tail API logs
+make docker-logs
+
+# Stop (containers removed, volumes kept)
+make docker-down
+```
+
+**Services and ports:**
+
+| Service | Port | Notes |
+|---|---|---|
+| `api` | 8000 | FastAPI — built from `docker/Dockerfile.api` |
+| `qdrant` | 6333 / 6334 | Vector DB |
+| `ollama` | 11434 | LLM server (replaces llama.cpp in Docker) |
+| `redis` | 6379 | Cache |
+| `prometheus` | 9090 | Scrapes `api:8000/metrics` |
+| `otel-collector` | 4317 / 4318 | OTLP gRPC / HTTP |
+
+> **Metal / MPS note:** Docker on macOS runs inside a Linux VM and cannot access the Metal GPU. The Compose file sets `EMBEDDINGS__DEVICE=cpu` and routes LLM inference through Ollama instead of llama.cpp. For full Metal performance run the API natively with `make serve` and start only infrastructure via `docker compose up qdrant redis otel-collector prometheus`.
+
+### Development Hot-Reload
+
+`docker-compose.override.yml` is picked up automatically by Compose. It live-mounts `src/` and `configs/` into the container and enables `uvicorn --reload`, so code changes are reflected without rebuilding the image.
+
+```bash
+# Pull the lighter dev model once
+docker compose exec ollama ollama pull qwen3:14b
+
+# Start stack — override applied automatically
+make docker-up
+
+# Edit any file under src/ → server reloads within ~1 s
+make docker-logs
+```
+
+### Ingestion via Docker
+
+```bash
+# Ingest everything in data/raw/ (default)
+make docker-ingest
+
+# Ingest a specific file
+make docker-ingest SOURCE=/app/data/raw/manual.pdf
+```
+
+---
+
+## Kubernetes & Production
+
+### Helm Chart
+
+The chart lives in `helm/rag-platform/`. All tunables are in `values.yaml`; templates reference them — nothing is hardcoded.
+
+```bash
+# Install locally (dry-run against a k3d or kind cluster)
+helm install rag-platform helm/rag-platform \
+  --namespace rag-platform \
+  --create-namespace \
+  --dry-run
+
+# Production deploy on EKS
+helm install rag-platform helm/rag-platform \
+  --namespace rag-platform \
+  --create-namespace \
+  --set image.api.repository=<ECR_URI>/rag-platform-api \
+  --set image.worker.repository=<ECR_URI>/rag-platform-worker \
+  --set ingress.enabled=true \
+  --set ingress.host=api.yourdomain.com \
+  --set ingress.certificateArn=<ACM_ARN> \
+  --set persistence.models.storageClass=efs-sc
+
+# Upgrade (e.g. new image tag)
+helm upgrade rag-platform helm/rag-platform \
+  --namespace rag-platform \
+  --reuse-values \
+  --set image.api.tag=<new-tag>
+```
+
+**Chart contents:**
+
+| Template | Purpose |
+|---|---|
+| `deployment-api.yaml` | API Deployment — liveness/readiness probes on `GET /health` |
+| `deployment-worker.yaml` | Worker Deployment — 1 replica, no autoscale |
+| `service-api.yaml` | ClusterIP Service on port 8000 |
+| `hpa-api.yaml` | HPA — scales api on CPU ≥ 70% (min 2, max 10 replicas) |
+| `ingress.yaml` | AWS ALB Ingress — toggle via `ingress.enabled` |
+| `configmap.yaml` | Non-sensitive env vars → injected via `envFrom` |
+| `secret.yaml` | Sensitive values (Qdrant API key) → K8s Secret |
+| `pvc-qdrant.yaml` | 50 Gi `ReadWriteOnce` volume for Qdrant data |
+| `pvc-models.yaml` | 30 Gi `ReadOnlyMany` volume for model files (EFS on EKS) |
+
+**Key `values.yaml` overrides:**
+
+```yaml
+# Pin api pods to GPU node group (llama.cpp / CUDA)
+scheduling:
+  api:
+    nodeSelector: { eks.amazonaws.com/nodegroup: gpu }
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+# Switch embedding device to CUDA on GPU nodes
+env:
+  embeddingsDevice: cuda
+  
+# Add nvidia.com/gpu to resource limits
+resources:
+  api:
+    limits:
+      cpu: "2"
+      memory: "8Gi"
+      nvidia.com/gpu: "1"
+```
+
+### EKS Setup
+
+See **[infra/eks/README.md](infra/eks/README.md)** for the complete end-to-end guide covering:
+
+- EKS cluster provisioning with `eksctl`
+- Required add-ons: EBS CSI driver, EFS CSI driver, AWS Load Balancer Controller, metrics-server
+- ECR image push
+- Helm deploy with all production flags
+- Lens Desktop connection (kubeconfig import, key views, port-forward)
+- Common operations (scale, exec, log tailing, one-shot ingestion job)
+- Teardown
+
+---
+
 ## Knowledge Graph (Graph RAG)
 
 Graph RAG augments the retrieval pipeline with a Neo4j knowledge graph that stores entity relationships extracted from ingested documents. Chunks that mention query-relevant entities are surfaced alongside dense and BM25 results.
@@ -542,7 +710,9 @@ rag_implementation/
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
 │   ├── evals.yaml
-│   └── logging.yaml
+│   ├── logging.yaml
+│   ├── prometheus.yml          # Prometheus scrape config (scrapes api:8000/metrics)
+│   └── otel-collector.yaml     # OTel collector — OTLP gRPC/HTTP receiver, debug exporter
 ├── data/                       # Runtime data (gitignored)
 │   ├── raw/                    # Source documents to ingest
 │   ├── processed/              # BM25 index (.pkl)
@@ -550,6 +720,26 @@ rag_implementation/
 ├── datasets/
 │   ├── goldens/                # Golden QA + retrieval datasets
 │   └── synthetic/              # LLM-generated QA pairs
+├── docker/                     # Dockerfiles (one per service)
+│   ├── Dockerfile.api          # Multi-stage build for FastAPI server
+│   └── Dockerfile.worker       # Build for ingestion worker
+├── helm/rag-platform/          # Helm chart for Kubernetes deployment
+│   ├── Chart.yaml
+│   ├── values.yaml             # All tunables — image tags, resources, ingress, PVCs
+│   └── templates/
+│       ├── _helpers.tpl        # Shared template helpers (fullname, labels, etc.)
+│       ├── configmap.yaml      # Non-sensitive env vars
+│       ├── secret.yaml         # Sensitive values (Qdrant API key)
+│       ├── deployment-api.yaml # API Deployment + liveness/readiness probes
+│       ├── deployment-worker.yaml
+│       ├── service-api.yaml    # ClusterIP on port 8000
+│       ├── hpa-api.yaml        # HPA — CPU ≥ 70%, min 2 / max 10 replicas
+│       ├── ingress.yaml        # AWS ALB Ingress (toggle: ingress.enabled)
+│       ├── pvc-qdrant.yaml     # 50 Gi gp3 for Qdrant
+│       └── pvc-models.yaml     # 30 Gi ReadOnlyMany for model files (EFS on EKS)
+├── infra/
+│   └── eks/
+│       └── README.md           # EKS cluster setup guide + Lens integration
 ├── models/                     # Downloaded model files (gitignored)
 │   ├── embeddings/bge-m3/
 │   ├── rerankers/bge-reranker-v2-m3/
@@ -561,6 +751,8 @@ rag_implementation/
 │   ├── run_evals.py            # QA dataset generation CLI
 │   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
 │   └── compare_models.py       # Multi-model comparison table
+├── specs/
+│   └── TODO.md                 # Specification-driven task list (SDD format)
 ├── src/
 │   ├── api/                    # FastAPI routers + DI
 │   ├── core/                   # Settings, logging, exceptions
@@ -578,9 +770,12 @@ rag_implementation/
 │   ├── benchmarks/             # Benchmark tests (skip without data)
 │   ├── integration/            # Integration tests (skip without models)
 │   └── unit/                   # 640+ unit tests (zero external deps)
+├── .dockerignore
 ├── .env.example
 ├── .github/workflows/ci.yml
 ├── .pre-commit-config.yaml
+├── docker-compose.yml          # Full local stack
+├── docker-compose.override.yml # Dev overrides — hot-reload + Ollama LLM
 ├── Makefile
 └── pyproject.toml
 ```
@@ -609,6 +804,29 @@ LLM__TEMPERATURE=0.0
 RETRIEVAL__HYBRID_ALPHA=0.5
 EMBEDDINGS__DEVICE=cpu
 ```
+
+### Makefile targets
+
+| Target | Description |
+|---|---|
+| `make install` | `uv sync --extra dev --extra evals` |
+| `make serve` | Start API server natively (Metal/MPS) |
+| `make ingest SOURCE=path` | Ingest a file or directory |
+| `make evals` | Generate synthetic QA dataset |
+| `make benchmark` | Run E2E benchmark |
+| `make lint` | `ruff check` + `mypy` |
+| `make format` | `ruff format` + `ruff check --fix` |
+| `make test` | Unit + integration tests with coverage |
+| `make test-unit` | Unit tests only |
+| `make test-e2e` | End-to-end tests |
+| `make docker-build` | Build `api` and `worker` images |
+| `make docker-up` | Start full Docker Compose stack |
+| `make docker-down` | Stop containers (volumes kept) |
+| `make docker-logs` | Tail API container logs |
+| `make docker-ingest SOURCE=path` | Run one-shot ingestion via Docker |
+| `make docker-clean` | Stop containers **and** destroy volumes |
+| `make qdrant-up` | Start Qdrant container only (legacy) |
+| `make clean` | Remove `__pycache__`, `.mypy_cache`, etc. |
 
 ---
 

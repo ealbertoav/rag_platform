@@ -1,0 +1,15 @@
+apiVersion: v2
+name: rag-platform
+description: Local enterprise RAG platform — Clean Architecture, Hybrid Search, llama.cpp
+type: application
+# Chart version — bump on every chart change (independent of appVersion)
+version: 0.1.0
+# appVersion mirrors pyproject.toml project.version
+appVersion: "0.1.0"
+keywords:
+  - rag
+  - llm
+  - ai
+  - vector-search
+maintainers:
+  - name: rag-platform

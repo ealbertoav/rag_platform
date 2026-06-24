@@ -1,4 +1,5 @@
-.PHONY: install sync serve ingest evals benchmark lint format test test-e2e clean qdrant-up
+.PHONY: install sync serve ingest evals benchmark lint format test test-unit test-e2e clean qdrant-up \
+        docker-build docker-up docker-down docker-logs docker-ingest docker-clean
 
 install:
 	uv sync --extra dev --extra evals
@@ -44,3 +45,26 @@ qdrant-up:
 	docker run -d --name qdrant -p 6333:6333 -p 6334:6334 \
 		-v $(PWD)/data/qdrant:/qdrant/storage \
 		qdrant/qdrant
+
+# ── Docker Compose ────────────────────────────────────────────────────────────
+# Prerequisites: copy .env.example → .env before first run.
+
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f api
+
+## Run a one-shot ingestion job. Override source: make docker-ingest SOURCE=/app/data/raw/report.pdf
+docker-ingest:
+	docker compose run --rm worker python scripts/ingest.py --source $(if $(SOURCE),$(SOURCE),/app/data/raw)
+
+## Destroys all containers AND named volumes (qdrant data, ollama models). Irreversible.
+docker-clean:
+	docker compose down --volumes

@@ -1,0 +1,47 @@
+# ─── Stage 1: Install dependencies ──────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-dev --no-install-project
+
+# ─── Stage 2: Runtime ────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+# libgomp1: OpenMP runtime used by embedding models (BGE-M3, reranker)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash appuser
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv /app/.venv
+
+COPY src/ src/
+COPY configs/ configs/
+COPY scripts/ scripts/
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="/app"
+
+VOLUME ["/app/models", "/app/data"]
+
+USER appuser
+
+# Default: ingest everything in /app/data/raw.
+# Override at runtime: docker run ... rag-worker python scripts/ingest.py --source /app/data/raw/report.pdf
+CMD ["python", "scripts/ingest.py", "--source", "/app/data/raw"]
