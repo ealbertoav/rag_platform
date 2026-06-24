@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rag-platform.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "rag-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  # Omit replicas when HPA is enabled — letting HPA own the count prevents
+  # Helm upgrades from fighting the autoscaler on every deployment.
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount.api }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{ include "rag-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{ include "rag-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: {{ include "rag-platform.serviceAccountName" . }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
+          imagePullPolicy: {{ .Values.image.api.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "rag-platform.fullname" . }}-config
+            - secretRef:
+                name: {{ include "rag-platform.fullname" . }}-secret
+          resources:
+            {{ toYaml .Values.resources.api | nindent 12 }}
+          # Model loading is lazy (first request); start period must cover
+          # the time for uvicorn to start — not for llama.cpp to load.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+              readOnly: true
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ include "rag-platform.fullname" . }}-models
+        # BM25 index is ephemeral per-pod in K8s (rebuilt on first ingesting).
+        # For persistent shared BM25, replace with an EFS-backed RWX PVC.
+        - name: data
+          emptyDir: {}
+      {{- with .Values.scheduling.api.nodeSelector }}
+      nodeSelector:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.api.affinity }}
+      affinity:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.api.tolerations }}
+      tolerations:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}

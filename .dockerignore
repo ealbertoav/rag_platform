@@ -1,0 +1,43 @@
+# Virtual environment and caches
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.jbeval/
+
+# Large model files — mounted as volumes at runtime
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.ot
+
+# Runtime data — mounted as volumes at runtime
+data/
+datasets/
+*.pkl
+
+# Tests and specs — not needed in the image
+tests/
+specs/
+
+# Git and CI
+.git/
+.github/
+.gitignore
+
+# Docs
+README.md
+*.md
+
+# Secrets — never bake into an image
+.env
+.env.*
+
+# Docker files (no need to copy them into the image)
+docker/
+docker-compose*.yml

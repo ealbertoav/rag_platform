@@ -1,0 +1,112 @@
+# Full local stack for the RAG platform.
+# Prerequisites: copy .env.example → .env and adjust values.
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down
+# Ingest: docker compose run --rm worker python scripts/ingest.py --source /app/data/raw
+
+services:
+
+  # ── Infrastructure ───────────────────────────────────────────────────────
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"   # REST + gRPC
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./configs/otel-collector.yaml:/etc/otel-collector-config.yaml:ro
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  # ── Application ──────────────────────────────────────────────────────────
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Override localhost URLs with Docker service names
+      QDRANT__URL: http://qdrant:6333
+      LOGGING__OTEL_ENDPOINT: http://otel-collector:4317
+      # Metal/MPS is unavailable inside Docker on macOS; use CPU
+      EMBEDDINGS__DEVICE: cpu
+      # Disable hot-reload in containerized mode; see docker-compose.override.yml for dev
+      API__RELOAD: "false"
+    volumes:
+      # Bind-mount so the user manages model files directly on the host
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Jobs (not started by default; run with: docker compose run --rm worker) ──
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    env_file: .env
+    environment:
+      QDRANT__URL: http://qdrant:6333
+      LOGGING__OTEL_ENDPOINT: http://otel-collector:4317
+      EMBEDDINGS__DEVICE: cpu
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    profiles: ["tools"]   # excluded from `docker compose up`; invoke via make docker-ingest
+    restart: "no"
+
+volumes:
+  qdrant_data:
+  ollama_data:

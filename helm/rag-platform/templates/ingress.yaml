@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "rag-platform.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{ include "rag-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # Point ALB health checks at the existing /health endpoint
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    {{- if .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    # Redirect plain HTTP to HTTPS at the ALB level
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{ toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # ingressClassName is the modern replacement for the kubernetes.io/ingress.class annotation
+  # Requires AWS Load Balancer Controller v2.x installed on the cluster
+  ingressClassName: alb
+  rules:
+    - {{- if .Values.ingress.host }}
+      host: {{ .Values.ingress.host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "rag-platform.fullname" . }}-api
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

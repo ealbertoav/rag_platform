@@ -1,0 +1,35 @@
+# Development overrides — automatically merged with docker-compose.yml by Compose.
+# Provides hot-reload and swaps llama.cpp → Ollama for faster iteration.
+#
+# Usage:  docker compose up -d          (override is picked up automatically)
+#         docker compose logs -f api    (watch for reload events)
+#
+# After pulling the dev model once:
+#   docker compose exec ollama ollama pull qwen3:14b
+
+services:
+  api:
+    # Live-mount source and configs so uvicorn --reload picks up every change
+    volumes:
+      - ./src:/app/src
+      - ./configs:/app/configs
+      - ./models:/app/models
+      - ./data:/app/data
+    command:
+      - uvicorn
+      - src.main:app
+      - --reload
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    environment:
+      # Use the lighter Ollama-backed model in dev — no GGUF needed locally
+      LLM__PROVIDER: ollama
+      LLM__MODEL_PATH: qwen3:14b
+      # Inherit Docker service-name overrides from base compose file
+      QDRANT__URL: http://qdrant:6333
+      LOGGING__OTEL_ENDPOINT: http://otel-collector:4317
+      EMBEDDINGS__DEVICE: cpu
+      API__RELOAD: "true"
+      LOGGING__LEVEL: DEBUG

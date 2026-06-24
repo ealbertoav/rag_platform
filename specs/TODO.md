@@ -527,6 +527,284 @@
 
 ---
 
+## Phase 8 — Containerization (Docker Compose)
+
+> **Strategy:** Docker Compose from day 1. Define services thinking about Kubernetes (health checks, env vars, volumes) so the migration to Phase 9 is a straight lift. No Kubernetes yet — it adds unnecessary complexity before real users.
+> Services: `api`, `worker`, `qdrant`, `ollama`, `redis`, `prometheus`, `otel-collector`.
+
+### T-080 · Dockerfile — Backend API (multi-stage)
+- **Status:** `[x]`
+- **Goal:** Create a production-quality multi-stage Dockerfile for the FastAPI backend. Builder stage installs all Python deps via `uv`; runtime stage is a slim Python 3.12 image with only the app code and installed packages.
+- **Inputs:** `pyproject.toml`, `uv.lock`, `src/`, `configs/`
+- **Outputs:** A Docker image that starts `uvicorn src.main:app --host 0.0.0.0 --port 8000`
+- **Files:**
+  - `docker/Dockerfile.api`
+- **Key constraints:**
+  - Model files (`models/`) and data (`data/`) are **mounted as volumes** — never baked into the image (they are 16 GB+ GGUF files)
+  - All config via env vars using existing `LLM__*`, `EMBEDDINGS__*`, `QDRANT__*` naming convention
+  - Final image must be `< 2 GB` (no model weights included)
+- **Acceptance Criteria:**
+  - `docker build -f docker/Dockerfile.api -t rag-api .` completes without error
+  - `docker run --env-file .env rag-api` starts the server on port 8000
+  - `GET /health` returns `200` from inside the container
+
+---
+
+### T-081 · Dockerfile — Ingestion Worker
+- **Status:** `[x]`
+- **Goal:** Create a Dockerfile for the ingestion worker that shares the same base layer as T-080 but runs `scripts/ingest.py` instead of the API server.
+- **Inputs:** T-080 base image, `scripts/ingest.py`, `src/`
+- **Outputs:** An image runnable as a one-shot job (`docker run`) or long-running watcher
+- **Files:**
+  - `docker/Dockerfile.worker`
+- **Acceptance Criteria:**
+  - `docker build -f docker/Dockerfile.worker -t rag-worker .` completes
+  - `docker run --env-file .env -v $(pwd)/data:/app/data rag-worker` ingests documents from `/app/data/raw`
+
+---
+
+### T-082 · docker-compose.yml — Full local stack
+- **Status:** `[x]`
+- **Goal:** Define the full local development stack as a single Compose file. Replaces the bare `docker run qdrant/qdrant` in the Makefile with a complete, reproducible environment.
+- **Inputs:** T-080, T-081, `.env.example`, existing `make qdrant-up` command
+- **Outputs:** A `docker-compose.yml` that brings up all services with a single `docker compose up`
+- **Files:**
+  - `docker-compose.yml` (project root)
+- **Services to define:**
+  ```
+  api           → docker/Dockerfile.api        → port 8000
+  worker        → docker/Dockerfile.worker     → no port (job)
+  qdrant        → qdrant/qdrant:latest         → ports 6333, 6334
+  ollama        → ollama/ollama:latest          → port 11434
+  redis         → redis:7-alpine               → port 6379
+  prometheus    → prom/prometheus:latest        → port 9090
+  otel-collector→ otel/opentelemetry-collector  → port 4317
+  ```
+- **Named volumes:** `qdrant_data`, `models`, `ollama_data`, `raw_docs`
+- **Health checks:** `api` waits for `qdrant` healthcheck before starting
+- **Acceptance Criteria:**
+  - `docker compose up -d` starts all services without error
+  - `curl http://localhost:8000/health` returns `200`
+  - `curl http://localhost:6333/healthz` returns `200`
+  - `docker compose down -v` cleanly removes containers
+
+---
+
+### T-083 · .dockerignore + build hygiene
+- **Status:** `[x]`
+- **Goal:** Add a `.dockerignore` file to exclude heavy, unnecessary files from the Docker build context, keeping builds fast.
+- **Outputs:** Sub-second Docker build context transfer
+- **Files:**
+  - `.dockerignore`
+- **Must exclude:** `.venv/`, `models/`, `data/`, `tests/`, `.mypy_cache/`, `.ruff_cache/`, `*.gguf`, `*.pkl`, `*.bin`, `datasets/`
+- **Acceptance Criteria:**
+  - `docker build` context size is `< 5 MB`
+  - No model weights or test fixtures appear inside the built image
+
+---
+
+### T-084 · Makefile targets for Docker workflow
+- **Status:** `[x]`
+- **Goal:** Add Docker-specific targets to the existing `Makefile` so the team can manage the full stack without remembering raw `docker compose` flags.
+- **Inputs:** T-082 `docker-compose.yml`, existing Makefile targets
+- **Files:**
+  - `Makefile` (add targets to existing file)
+- **New targets:**
+  ```makefile
+  docker-build   ## Build all service images
+  docker-up      ## Start full stack in detached mode
+  docker-down    ## Stop and remove containers (keep volumes)
+  docker-logs    ## Follow logs from the api service
+  docker-ingest  ## Run a one-shot ingestion job against data/raw/
+  docker-clean   ## docker compose down --volumes (destroys data)
+  ```
+- **Acceptance Criteria:**
+  - `make docker-up` starts the stack
+  - `make docker-ingest SOURCE=data/raw/` processes documents
+  - `make docker-down` stops gracefully
+
+---
+
+### T-085 · docker-compose.override.yml (development hot-reload)
+- **Status:** `[x]`
+- **Goal:** Create a Compose override file for local development that mounts `src/` as a live volume and enables `uvicorn --reload`, so code changes are reflected instantly without rebuilding.
+- **Inputs:** T-082 base Compose file
+- **Files:**
+  - `docker-compose.override.yml`
+- **Key differences from base:**
+  - `api` mounts `./src:/app/src` and `./configs:/app/configs` as live volumes
+  - `api` CMD overridden to `uvicorn src.main:app --reload --host 0.0.0.0 --port 8000`
+  - `LLM__PROVIDER=ollama` (lighter than llama.cpp for dev iteration)
+- **Acceptance Criteria:**
+  - Editing a file in `src/` triggers an automatic reload (log line visible in `make docker-logs`)
+  - Override file is automatically picked up by `docker compose up` without extra flags
+
+---
+
+## Phase 9 — Kubernetes & Production (EKS + Helm + Lens)
+
+> **Strategy:** When the MVP has real users and needs autoscaling, migrate to AWS EKS. Helm charts parameterise the K8s manifests; Lens provides visual cluster management. The existing `/health` endpoint, Prometheus metrics, and env-var-driven config make this a near-zero-code migration from Phase 8.
+
+### T-090 · Helm chart scaffold
+- **Status:** `[x]`
+- **Goal:** Create the Helm chart skeleton for `rag-platform`. No templates yet — just the chart metadata and a fully-documented `values.yaml` that defines all tunables for Phase 9 tasks.
+- **Inputs:** `pyproject.toml` (for `appVersion`), T-082 service definitions
+- **Files:**
+  - `helm/rag-platform/Chart.yaml`
+  - `helm/rag-platform/values.yaml`
+  - `helm/rag-platform/templates/.gitkeep`
+- **`values.yaml` top-level keys:** `image`, `replicaCount`, `resources`, `env`, `ingress`, `autoscaling`, `persistence`, `serviceAccount`
+- **Acceptance Criteria:**
+  - `helm lint helm/rag-platform` passes with no errors
+  - `helm template rag-platform helm/rag-platform` renders without error (no templates yet, but chart is valid)
+
+---
+
+### T-091 · Deployment + Service manifests (api and worker)
+- **Status:** `[x]`
+- **Goal:** Create Kubernetes Deployment and Service manifests for the `api` and `worker` services, wired up to the existing `/health` endpoint for liveness/readiness probes.
+- **Inputs:** T-090 chart scaffold, `GET /health` endpoint (T-032)
+- **Files:**
+  - `helm/rag-platform/templates/deployment-api.yaml`
+  - `helm/rag-platform/templates/deployment-worker.yaml`
+  - `helm/rag-platform/templates/service-api.yaml`
+- **Probe config (api):**
+  ```yaml
+  livenessProbe:
+    httpGet: { path: /health, port: 8000 }
+    initialDelaySeconds: 30
+    periodSeconds: 15
+  readinessProbe:
+    httpGet: { path: /health, port: 8000 }
+    initialDelaySeconds: 10
+    periodSeconds: 5
+  ```
+- **Acceptance Criteria:**
+  - `helm template` renders valid YAML for both deployments
+  - `kubectl apply --dry-run=client` passes against a local cluster (k3d or kind)
+
+---
+
+### T-092 · ConfigMaps and Secrets
+- **Status:** `[x]`
+- **Goal:** Map the existing `__`-delimited env var config system to Kubernetes ConfigMaps (non-sensitive) and Secrets (sensitive). No app code changes needed — the settings system already reads from env vars.
+- **Inputs:** `.env.example`, T-090 `values.yaml`
+- **Files:**
+  - `helm/rag-platform/templates/configmap.yaml`
+  - `helm/rag-platform/templates/secret.yaml`
+- **ConfigMap keys (non-sensitive):** `LOGGING__LEVEL`, `API__HOST`, `API__PORT`, `RETRIEVAL__TOP_K_FINAL`, `RETRIEVAL__HYBRID_ALPHA`
+- **Secret keys (sensitive):** `QDRANT__API_KEY` (empty for local, populated in prod)
+- **Acceptance Criteria:**
+  - `helm template` renders both resources
+  - Deployment spec references ConfigMap via `envFrom.configMapRef` and Secret via `envFrom.secretRef`
+
+---
+
+### T-093 · PersistentVolumeClaims (Qdrant data + model storage)
+- **Status:** `[x]`
+- **Goal:** Define PVCs for the two stateful data concerns: Qdrant vector store and the GGUF model files.
+- **Inputs:** T-091 deployments, EKS storage class `gp3`
+- **Files:**
+  - `helm/rag-platform/templates/pvc-qdrant.yaml`
+  - `helm/rag-platform/templates/pvc-models.yaml`
+- **Sizes (configurable via `values.yaml`):**
+  - `qdrant`: 50Gi, `ReadWriteOnce`
+  - `models`: 30Gi, `ReadOnlyMany` (shared across api replicas)
+- **Acceptance Criteria:**
+  - `helm template` renders both PVCs
+  - `storageClassName` is parameterised (default `gp3`; can be overridden to `standard` for local clusters)
+
+---
+
+### T-094 · Horizontal Pod Autoscaler
+- **Status:** `[x]`
+- **Goal:** Configure HPA for the `api` deployment so it scales horizontally under load, using the existing Prometheus metrics as the signal.
+- **Inputs:** T-091 `deployment-api.yaml`, metrics-server installed on cluster
+- **Files:**
+  - `helm/rag-platform/templates/hpa-api.yaml`
+- **Config (in `values.yaml`):**
+  - `autoscaling.enabled: true`
+  - `autoscaling.minReplicas: 2`
+  - `autoscaling.maxReplicas: 10`
+  - `autoscaling.targetCPUUtilizationPercentage: 70`
+- **Acceptance Criteria:**
+  - `helm template` renders HPA only when `autoscaling.enabled=true`
+  - `kubectl describe hpa` shows correct target after `helm install`
+
+---
+
+### T-095 · AWS ALB Ingress
+- **Status:** `[x]`
+- **Goal:** Expose the API to the internet via AWS Application Load Balancer with TLS termination. Controlled by `ingress.enabled` flag in `values.yaml` — off for local, on for prod.
+- **Inputs:** T-091 `service-api.yaml`, AWS Load Balancer Controller installed on EKS
+- **Files:**
+  - `helm/rag-platform/templates/ingress.yaml`
+- **Required annotations:**
+  ```yaml
+  kubernetes.io/ingress.class: alb
+  alb.ingress.kubernetes.io/scheme: internet-facing
+  alb.ingress.kubernetes.io/target-type: ip
+  alb.ingress.kubernetes.io/certificate-arn: <ACM_ARN>  # from values.yaml
+  ```
+- **Acceptance Criteria:**
+  - `helm template --set ingress.enabled=true` renders the Ingress resource
+  - `helm template --set ingress.enabled=false` omits it entirely
+  - ALB annotation keys are parameterised via `values.yaml`, not hardcoded
+
+---
+
+### T-096 · Resource limits and requests
+- **Status:** `[x]`
+- **Goal:** Set appropriate CPU/memory requests and limits for all containers so the K8s scheduler can place pods correctly on EKS node groups.
+- **Inputs:** T-091 deployments, T-090 `values.yaml`
+- **Files:**
+  - `helm/rag-platform/values.yaml` (update `resources` section)
+- **Default values:**
+  ```yaml
+  resources:
+    api:
+      requests: { cpu: "500m", memory: "2Gi" }
+      limits:   { cpu: "2",    memory: "8Gi" }
+    worker:
+      requests: { cpu: "1",    memory: "4Gi" }
+      limits:   { cpu: "4",    memory: "16Gi" }
+  ```
+- **Note:** For GPU inference (llama.cpp with CUDA), add `nodeSelector: { accelerator: nvidia-gpu }` and extend limits. For Apple Silicon node pools (future), use `nodeSelector: { kubernetes.io/arch: arm64 }`.
+- **Acceptance Criteria:**
+  - All Deployment templates reference `{{ .Values.resources.api }}` (not hardcoded values)
+  - `helm template` renders resource blocks correctly
+
+---
+
+### T-097 · AWS EKS cluster setup guide + Lens integration
+- **Status:** `[x]`
+- **Goal:** Document the end-to-end steps to provision a production-ready EKS cluster, install required add-ons, deploy the Helm chart, and connect Lens for visual management.
+- **Inputs:** T-090–T-096 Helm chart, AWS CLI, eksctl, existing Terraform familiarity
+- **Files:**
+  - `infra/eks/README.md`
+- **Sections to cover:**
+  1. **Cluster provisioning** via `eksctl` (faster than Terraform for first cluster; can be imported into Terraform later)
+     ```bash
+     eksctl create cluster --name rag-platform-prod \
+       --region us-east-1 --nodegroup-name standard \
+       --node-type m7g.2xlarge --nodes 3 --nodes-min 2 --nodes-max 10
+     ```
+  2. **Add-on installation**: AWS Load Balancer Controller, metrics-server, EBS CSI driver (for gp3 PVCs)
+  3. **Helm deploy**:
+     ```bash
+     helm install rag-platform helm/rag-platform \
+       --namespace rag-platform --create-namespace \
+       --set ingress.enabled=true \
+       --set ingress.certificateArn=<ACM_ARN>
+     ```
+  4. **Lens setup**: Import kubeconfig (`~/.kube/config`); Lens auto-discovers clusters. Navigate to Workloads → Deployments to see `api` and `worker`. Use Lens terminal for `kubectl exec` into pods.
+  5. **Teardown**: `eksctl delete cluster --name rag-platform-prod`
+- **Acceptance Criteria:**
+  - A developer with AWS credentials can follow the guide from zero to a running cluster in one session
+  - Lens connection steps are explicit (not just "add kubeconfig")
+
+---
+
 ## Dependency Graph
 
 ```
@@ -540,6 +818,10 @@ T-001 ──► T-003 ──► T-004 ──► T-005
                     T-015 + T-031 ──► T-040 ──► T-041 ──► T-042 ──► T-043
                     T-031 ──► T-050 ──► T-051
                     T-043 ──► T-060 ──► T-061
+T-061 ──► T-080 ──► T-081 ──► T-082 ──► T-083 ──► T-084 ──► T-085
+T-082 ──► T-090 ──► T-091 ──► T-092 ──► T-093 ──► T-094 ──► T-095
+T-091 ──► T-096
+T-095 ──► T-097
 ```
 
 ## Quick Start Order for an Agent
@@ -551,3 +833,5 @@ T-001 ──► T-003 ──► T-004 ──► T-005
 5. T-040 → T-041 → T-042 → T-043 _(Evals: ~2 sessions)_
 6. T-050 → T-051 _(Observability: ~1 session)_
 7. T-060 → T-061 _(CI/CD: ~1 session)_
+8. T-080 → T-081 → T-082 → T-083 → T-084 → T-085 _(Docker Compose: ~1 session)_
+9. T-090 → T-091 → T-092 → T-093 → T-094 → T-095 → T-096 → T-097 _(Kubernetes/EKS: ~2 sessions)_
