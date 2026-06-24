@@ -112,7 +112,7 @@ def _wrap_with_cache(
     return CachedEmbeddingProvider(
         inner=inner,
         redis_url=s.redis.url,
-        redis_password=s.redis.password,
+        redis_password=s.redis.password.get_secret_value(),
         ttl_seconds=s.embeddings.cache.ttl_seconds,
         model_identifier=provider_name,
     )

@@ -120,7 +120,7 @@ class QdrantSettings(BaseModel):
 
 class RedisSettings(BaseModel):
     url: str = "redis://localhost:6379"
-    password: str = ""
+    password: SecretStr = SecretStr("")
 
 
 class RetrievalSettings(BaseModel):

@@ -86,7 +86,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
             for (idx, text), vec in zip(misses, miss_vecs, strict=True):
                 hits[idx] = vec
                 pipeline.set(self._make_key(text), json.dumps(vec), ex=self._ttl)
-            pipeline.execute()
+            self._execute_pipeline(pipeline)
 
         n_hits = len(texts) - len(misses)
         logger.debug(
@@ -100,10 +100,63 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         return self._inner.embed_sparse(texts)
 
     def embed_both(self, texts: list[str]) -> tuple[list[DenseVector], list[SparseVector]]:
-        # Cache dense only; inner computes sparse.
-        dense = self.embed(texts)
-        sparse = self._inner.embed_sparse(texts)
-        return dense, sparse
+        """Cache-aware combined embed.
+
+        For cache misses, calls inner.embed_both() so providers like BGE-M3 can
+        compute dense + sparse in a single forward pass.  For cache hits (dense
+        already stored), calls inner.embed_sparse() only for those texts.
+        """
+        if not texts:
+            return [], []
+
+        client = self._get_client()
+        if client is None:
+            return self._inner.embed_both(texts)
+
+        keys = [self._make_key(t) for t in texts]
+        cached_raw = self._mget(client, keys)
+
+        dense_out: dict[int, DenseVector] = {}
+        sparse_out: dict[int, SparseVector] = {}
+        hit_indices: list[int] = []
+        miss_indices: list[int] = []
+        miss_texts: list[str] = []
+
+        for i, raw in enumerate(cached_raw):
+            if raw is not None:
+                dense_out[i] = json.loads(raw)
+                hit_indices.append(i)
+            else:
+                miss_indices.append(i)
+                miss_texts.append(texts[i])
+
+        # Misses: single inner.embed_both() — one forward pass for BGE-M3.
+        if miss_texts:
+            miss_dense, miss_sparse = self._inner.embed_both(miss_texts)
+            pipeline: Pipeline = client.pipeline()
+            for list_pos, orig_idx in enumerate(miss_indices):
+                vec = miss_dense[list_pos]
+                dense_out[orig_idx] = vec
+                sparse_out[orig_idx] = miss_sparse[list_pos]
+                pipeline.set(self._make_key(miss_texts[list_pos]), json.dumps(vec), ex=self._ttl)
+            self._execute_pipeline(pipeline)
+
+        # Hits: dense served from cache; sparse still requires an inner call.
+        if hit_indices:
+            hit_sparse = self._inner.embed_sparse([texts[i] for i in hit_indices])
+            for orig_idx, sp in zip(hit_indices, hit_sparse, strict=True):
+                sparse_out[orig_idx] = sp
+
+        n_hits = len(hit_indices)
+        n_misses = len(miss_indices)
+        logger.debug(
+            "embed_both cache: %d hits, %d misses (model=%s)", n_hits, n_misses, self._model_id
+        )
+        _record_cache_metrics(hits=n_hits, misses=n_misses)
+        return (
+            [dense_out[i] for i in range(len(texts))],
+            [sparse_out[i] for i in range(len(texts))],
+        )
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
@@ -118,11 +171,20 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         # retried periodically rather than giving up for the process lifetime.
         if time.monotonic() < self._next_retry_at:
             return None
+        # Import separately so the exception names are always bound when the
+        # connection-error except clause runs.
         try:
             from redis import Redis as _Redis
             from redis.exceptions import ConnectionError as _ConnError
             from redis.exceptions import RedisError as _RedisError
-
+        except ImportError:
+            logger.error(
+                "redis package not installed; embedding cache disabled. "
+                "Run: uv sync --extra api-embeddings"
+            )
+            self._next_retry_at = float("inf")  # don't retry — package won't appear
+            return None
+        try:
             client: Redis = _Redis.from_url(  # type: ignore[assignment]
                 self._redis_url,
                 password=self._redis_password or None,
@@ -133,26 +195,42 @@ class CachedEmbeddingProvider(EmbeddingRepository):
             self._next_retry_at = 0.0
             logger.info("Embedding cache connected to Redis at %s", self._redis_url)
             return client
-        except ImportError:
-            logger.error(
-                "redis package not installed; embedding cache disabled. "
-                "Run: uv sync --extra api-embeddings"
-            )
-            self._next_retry_at = float("inf")  # don't retry — package won't appear
-            return None
         except (_ConnError, _RedisError, OSError) as exc:  # type: ignore[misc]
             self._next_retry_at = time.monotonic() + _RECONNECT_COOLDOWN
             logger.warning("Redis unavailable (%s); will retry in %.0fs", exc, _RECONNECT_COOLDOWN)
             return None
 
-    @staticmethod
-    def _mget(client: Redis, keys: list[str]) -> list[str | None]:
+    def _execute_pipeline(self, pipeline: Pipeline) -> None:
+        """Execute a Redis pipeline, resetting the client on RedisError."""
         try:
-            from redis.exceptions import RedisError as _RedisError
+            pipeline.execute()
+        except Exception as exc:  # noqa: BLE001
+            from redis.exceptions import RedisError as _RedisError  # type: ignore[import-untyped]
 
+            if isinstance(exc, _RedisError):
+                logger.warning(
+                    "Redis pipeline write failed (%s); cache write skipped, will retry in %.0fs",
+                    exc,
+                    _RECONNECT_COOLDOWN,
+                )
+                self._redis = None
+                self._next_retry_at = time.monotonic() + _RECONNECT_COOLDOWN
+            else:
+                raise
+
+    def _mget(self, client: Redis, keys: list[str]) -> list[str | None]:
+        from redis.exceptions import RedisError as _RedisError  # type: ignore[import-untyped]
+
+        try:
             return client.mget(keys)  # type: ignore[return-value]
         except _RedisError as exc:  # type: ignore[misc]
-            logger.warning("Redis mget failed (%s); bypassing cache for this batch", exc)
+            logger.warning(
+                "Redis mget failed (%s); bypassing cache for this batch, will retry in %.0fs",
+                exc,
+                _RECONNECT_COOLDOWN,
+            )
+            self._redis = None
+            self._next_retry_at = time.monotonic() + _RECONNECT_COOLDOWN
             return [None] * len(keys)
 
 

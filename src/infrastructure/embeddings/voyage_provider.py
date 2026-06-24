@@ -46,15 +46,15 @@ class VoyageEmbeddingProvider(EmbeddingRepository):
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
     def embed(self, texts: list[str]) -> list[DenseVector]:
-        if not texts:
-            return []
-        results: list[DenseVector] = []
-        for i in range(0, len(texts), _MAX_BATCH):
-            results.extend(self._embed_batch(texts[i : i + _MAX_BATCH]))
-        return results
+        """Embed texts for document storage (input_type=document)."""
+        return self._embed_with_type(texts, "document")
 
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         return [{} for _ in texts]
+
+    def embed_query(self, texts: list[str]) -> list[DenseVector]:
+        """Embed query texts (input_type=query). Use during retrieval."""
+        return self._embed_with_type(texts, "query")
 
     # ── Factory ────────────────────────────────────────────────────────────────
 
@@ -67,9 +67,17 @@ class VoyageEmbeddingProvider(EmbeddingRepository):
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
-    def _embed_batch(self, texts: list[str]) -> list[DenseVector]:
+    def _embed_with_type(self, texts: list[str], input_type: str) -> list[DenseVector]:
+        if not texts:
+            return []
+        results: list[DenseVector] = []
+        for i in range(0, len(texts), _MAX_BATCH):
+            results.extend(self._embed_batch(texts[i : i + _MAX_BATCH], input_type))
+        return results
+
+    def _embed_batch(self, texts: list[str], input_type: str) -> list[DenseVector]:
         try:
-            return self._call_with_retry(texts)
+            return self._call_with_retry(texts, input_type)
         except Exception as exc:
             raise EmbeddingError(f"Voyage embed failed for {len(texts)} texts", cause=exc) from exc
 
@@ -80,12 +88,12 @@ class VoyageEmbeddingProvider(EmbeddingRepository):
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    def _call_with_retry(self, texts: list[str]) -> list[DenseVector]:
-        return self._call_api(texts)
+    def _call_with_retry(self, texts: list[str], input_type: str) -> list[DenseVector]:
+        return self._call_api(texts, input_type)
 
-    def _call_api(self, texts: list[str]) -> list[DenseVector]:
+    def _call_api(self, texts: list[str], input_type: str) -> list[DenseVector]:
         client = self._get_client()
-        result = client.embed(texts, model=self.model, input_type="document")
+        result = client.embed(texts, model=self.model, input_type=input_type)
         return [list(v) for v in result.embeddings]
 
     def _get_client(self) -> Any:

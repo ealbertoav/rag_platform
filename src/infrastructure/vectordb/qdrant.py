@@ -230,6 +230,15 @@ class QdrantVectorStore(VectorStoreRepository):
                 return str(payload["embedding_model_name"])
         return None
 
+    def validate_embedding_model(self) -> None:
+        """Raise VectorStoreError when the collection's model differs from the current config.
+
+        Call this before ingestion to surface provider mismatches early, before
+        any batches are processed.  No-op when the collection is empty or has no
+        model tracking payload (legacy data).
+        """
+        self._validate_embedding_model()
+
     def _validate_embedding_model(self) -> None:
         """Raise VectorStoreError when the collection's model differs from the current config."""
         if not self.embedding_model_name:

@@ -144,6 +144,20 @@ class TestVoyageEmbeddingProvider:
             _TEXTS, model="voyage-large-2", input_type="document"
         )
 
+    def test_embed_query_uses_query_input_type(self) -> None:
+        from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
+        provider = VoyageEmbeddingProvider(api_key="voy-test")
+        vecs = _fake_vecs(1)
+        mock_client = MagicMock()
+        mock_client.embed.return_value = MagicMock(embeddings=vecs)
+        provider._client = mock_client
+
+        provider.embed_query(["what is EKS?"])
+        mock_client.embed.assert_called_once_with(
+            ["what is EKS?"], model="voyage-large-2", input_type="query"
+        )
+
     def test_embed_sparse_returns_empty_dicts(self) -> None:
         result = self._provider().embed_sparse(_TEXTS)  # type: ignore[union-attr]
         assert result == [{}, {}, {}]
@@ -207,12 +221,15 @@ class TestCohereEmbeddingProvider:
         provider = CohereEmbeddingProvider(api_key="co-test")
         vecs = _fake_vecs(len(_TEXTS), dim=1024)
         mock_client = MagicMock()
-        mock_client.embed.return_value = MagicMock(embeddings=vecs)
+        mock_client.embed.return_value = MagicMock(embeddings=MagicMock(float_=vecs))
         provider._client = mock_client
 
         provider.embed(_TEXTS)
         mock_client.embed.assert_called_once_with(
-            texts=_TEXTS, model="embed-english-v3.0", input_type="search_document"
+            texts=_TEXTS,
+            model="embed-english-v3.0",
+            input_type="search_document",
+            embedding_types=["float"],
         )
 
     def test_embed_query_uses_search_query_input_type(self) -> None:
@@ -221,12 +238,15 @@ class TestCohereEmbeddingProvider:
         provider = CohereEmbeddingProvider(api_key="co-test")
         vecs = _fake_vecs(1, dim=1024)
         mock_client = MagicMock()
-        mock_client.embed.return_value = MagicMock(embeddings=vecs)
+        mock_client.embed.return_value = MagicMock(embeddings=MagicMock(float_=vecs))
         provider._client = mock_client
 
         provider.embed_query(["what is EKS?"])
         mock_client.embed.assert_called_once_with(
-            texts=["what is EKS?"], model="embed-english-v3.0", input_type="search_query"
+            texts=["what is EKS?"],
+            model="embed-english-v3.0",
+            input_type="search_query",
+            embedding_types=["float"],
         )
 
     def test_embed_sparse_returns_empty_dicts(self) -> None:
@@ -253,7 +273,7 @@ class TestCohereEmbeddingProvider:
         mock_client = MagicMock()
         mock_client.embed.side_effect = [
             Exception("429 rate_limit exceeded"),
-            MagicMock(embeddings=vecs),
+            MagicMock(embeddings=MagicMock(float_=vecs)),
         ]
         provider._client = mock_client
 

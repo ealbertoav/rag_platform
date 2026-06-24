@@ -35,7 +35,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from _benchmark_utils import add_eval_args, resolve_qa_pairs  # noqa: E402
 
-# ── Cost estimates (USD per 1K tokens; approximate as of 2025) ─────────────────
+# ── Cost estimates (USD per 1K tokens) ────────────────────────────────────────
+# Prices as of 2025-06-24. Check provider pricing pages for current rates:
+#   OpenAI:  https://openai.com/api/pricing/
+#   Voyage:  https://docs.voyageai.com/docs/pricing
+#   Cohere:  https://cohere.com/pricing
+#   Gemini:  https://ai.google.dev/gemini-api/docs/pricing
 
 _COST_PER_1K: dict[str, float] = {
     "bge_m3": 0.0,
@@ -67,8 +72,12 @@ def _set_provider_env(provider: str) -> None:
 
     Both the settings module and the embedding factory module are reloaded so
     that subsequent lazy imports inside provider factory functions see the new
-    settings object.  _run_provider() creates all infrastructure objects after
-    this call, so any stale module-level references are bypassed.
+    settings object.
+
+    IMPORTANT: _run_provider() must perform ALL infrastructure imports (embeddings,
+    vector store, retriever) AFTER this function returns.  Any module that caches a
+    reference to `settings` at its own import time will see stale data and silently
+    use the wrong provider.  Do not hoist those imports to the module level.
 
     Limitation: providers are benchmarked sequentially (not concurrently) because
     the reload mutates global module state.

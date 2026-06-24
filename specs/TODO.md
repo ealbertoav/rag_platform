@@ -889,7 +889,7 @@
 - **Goal:** Implement `EmbeddingRepository` for Cohere's embedding API. Dense only. Notable: Cohere requires an `input_type` flag (`search_document` vs `search_query`).
 - **Files:**
   - `src/infrastructure/embeddings/cohere_provider.py`
-- **Dependencies:** `cohere>=5.0.0` (add to `pyproject.toml`)
+- **Dependencies:** `cohere>=7.0.0` (add to `pyproject.toml`; `ClientV2` with `embedding_types` requires v7+)
 - **Supported models:** `embed-english-v3.0` (1024-dim), `embed-multilingual-v3.0` (1024-dim)
 - **Key details:**
   - `embed(texts)` uses `input_type="search_document"` (for ingestion)

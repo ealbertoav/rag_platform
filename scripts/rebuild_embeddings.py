@@ -85,34 +85,18 @@ def _preflight(args: argparse.Namespace, settings: object) -> None:
                 file=sys.stderr,
             )
 
-    # 2. Model mismatch guard (only when NOT recreating)
+    # 2. Model mismatch guard (only when NOT recreating).
+    # Delegates to QdrantVectorStore._validate_embedding_model() — the single
+    # authoritative check — so the comparison logic lives in one place.
     if not args.recreate_collection:
-        _check_qdrant_model_mismatch(s)
+        from src.core.exceptions import VectorStoreError
+        from src.infrastructure.vectordb.qdrant import QdrantVectorStore
 
-
-def _check_qdrant_model_mismatch(settings: object) -> None:
-    """Abort if the existing collection was built with a different embedding model."""
-    from src.core.settings import Settings
-    from src.infrastructure.vectordb.qdrant import QdrantVectorStore
-
-    s: Settings = settings  # type: ignore[assignment]
-    vector_store = QdrantVectorStore.from_settings()
-    existing_model = vector_store.get_collection_embedding_model()
-    if existing_model is None:
-        return  # empty, new, or legacy collection — nothing to check
-
-    current = s.embeddings.provider
-    if existing_model != current:
-        print(
-            f"[error] Embedding model mismatch!\n"
-            f"        Collection '{s.qdrant.collection}' was built with '{existing_model}'\n"
-            f"        but current config is '{current}'.\n"
-            f"\n"
-            f"        Run with --recreate-collection to drop and re-index:\n"
-            f"          uv run python scripts/rebuild_embeddings.py --recreate-collection",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        try:
+            QdrantVectorStore.from_settings().validate_embedding_model()
+        except VectorStoreError as exc:
+            print(f"\n[error] {exc}\n", file=sys.stderr)
+            sys.exit(1)
 
 
 def main() -> None:
