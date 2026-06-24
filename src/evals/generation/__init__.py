@@ -45,7 +45,7 @@ class GenerationMetric(Protocol):
 
 def _make_ragas_dataset(sample: EvalSample) -> object:
     """Build a single-row Ragas-compatible HuggingFace Dataset from *sample*."""
-    from datasets import Dataset  # type: ignore[import-untyped]
+    from datasets import Dataset  # type: ignore[import-untyped, attr-defined]
 
     return Dataset.from_dict(
         {
