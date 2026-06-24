@@ -65,3 +65,13 @@ class LLMTimeoutError(GenerationError):
 
 class EvaluationError(RAGPlatformError):
     """Raised when an evaluation run fails."""
+
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+
+
+class ConfigurationError(RAGPlatformError):
+    """Raised when the required configuration is missing or invalid.
+
+    Typically, it means an API key is absent or an unsupported provider is requested.
+    """

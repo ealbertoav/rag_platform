@@ -805,6 +805,243 @@
 
 ---
 
+## Phase 10 — Embedding Provider Expansion (API + Self-Hosted Switching)
+
+> **Motivation:** The current platform supports only self-hosted embedding models. This phase adds four API-based providers (OpenAI, Voyage AI, Cohere, Gemini), a Redis embedding cache to control API costs, and embedding model versioning in Qdrant payload to prevent silent vector corruption when switching providers.
+>
+> **Key risk addressed:** Vectors from different embedding models cannot be mixed in the same Qdrant collection. Without versioning, switching providers silently corrupts search results.
+
+---
+
+### T-100 · Embedding Settings Expansion
+- **Status:** `[ ]`
+- **Goal:** Extend `EmbeddingSettings` to support API-based providers and a Redis embedding cache. No infrastructure code yet — just the settings model.
+- **Files:**
+  - `src/core/settings.py` — extend `EmbeddingSettings`
+  - `configs/embeddings.yaml` — add API provider sections and cache block
+  - `.env.example` — add `OPENAI_API_KEY`, `VOYAGE_API_KEY`, `COHERE_API_KEY`, `GEMINI_API_KEY`
+- **Changes to `EmbeddingSettings`:**
+  ```python
+  provider: Literal[
+      "bge_m3", "nomic", "qwen_embedding",   # existing
+      "openai", "voyage", "cohere", "gemini"  # new
+  ] = "bge_m3"
+
+  # per-provider config blocks (all optional — only needed when that provider is active)
+  openai: OpenAIEmbeddingConfig | None = None
+  voyage: VoyageEmbeddingConfig | None = None
+  cohere: CohereEmbeddingConfig | None = None
+  gemini: GeminiEmbeddingConfig | None = None
+  cache: EmbeddingCacheSettings = EmbeddingCacheSettings()
+  ```
+- **New nested models:**
+  - `OpenAIEmbeddingConfig(api_key, model, dimensions)` — model default `text-embedding-3-large`, dims `3072`
+  - `VoyageEmbeddingConfig(api_key, model, dimensions)` — model default `voyage-large-2`, dims `1536`
+  - `CohereEmbeddingConfig(api_key, model, dimensions)` — model default `embed-english-v3.0`, dims `1024`
+  - `GeminiEmbeddingConfig(api_key, model, dimensions)` — model default `text-embedding-004`, dims `768`
+  - `EmbeddingCacheSettings(enabled: bool = True, ttl_seconds: int = 604800)`
+- **Acceptance Criteria:**
+  - `from src.core.settings import settings` still works with no `.env` changes (all new fields optional)
+  - `EMBEDDINGS__PROVIDER=openai OPENAI_API_KEY=sk-...` correctly populates settings
+  - `pytest tests/unit/test_settings.py` passes
+
+---
+
+### T-101 · OpenAI Embedding Provider
+- **Status:** `[ ]`
+- **Goal:** Implement `EmbeddingRepository` for OpenAI's embedding API. Dense only — sparse falls back to BM25 (returns `{}`).
+- **Files:**
+  - `src/infrastructure/embeddings/openai_provider.py`
+- **Dependencies:** `openai>=1.0.0` (add to `pyproject.toml`)
+- **Supported models:** `text-embedding-3-large` (3072-dim), `text-embedding-3-small` (1536-dim), `text-embedding-ada-002` (1536-dim)
+- **Key details:**
+  - `text-embedding-3` family supports dimension truncation via `dimensions` param — wire to `settings.embeddings.openai.dimensions`
+  - Batch texts into chunks of 2048 items (OpenAI limit)
+  - Retry on HTTP 429 with exponential backoff (max 5 retries)
+  - `embed_sparse()` always returns `[{} for _ in texts]`
+- **Acceptance Criteria:**
+  - Implements `EmbeddingRepository` from `src/domain/repositories/embedding_repository.py`
+  - Unit tests mock `openai.OpenAI` — no real API calls in CI
+  - `pytest tests/unit/test_openai_embedding.py` passes
+
+---
+
+### T-102 · Voyage AI Embedding Provider
+- **Status:** `[ ]`
+- **Goal:** Implement `EmbeddingRepository` for Voyage AI's embedding API. Dense only.
+- **Files:**
+  - `src/infrastructure/embeddings/voyage_provider.py`
+- **Dependencies:** `voyageai>=0.2.0` (add to `pyproject.toml`)
+- **Supported models:** `voyage-large-2` (1536-dim), `voyage-code-2` (1536-dim, optimized for code/technical docs)
+- **Key details:**
+  - Max 128 texts per batch (Voyage limit)
+  - Retry on HTTP 429 with exponential backoff
+  - `embed_sparse()` returns `[{} for _ in texts]`
+- **Acceptance Criteria:**
+  - Implements `EmbeddingRepository`
+  - Unit tests mock `voyageai.Client`
+  - `pytest tests/unit/test_voyage_embedding.py` passes
+
+---
+
+### T-103 · Cohere Embedding Provider
+- **Status:** `[ ]`
+- **Goal:** Implement `EmbeddingRepository` for Cohere's embedding API. Dense only. Notable: Cohere requires an `input_type` flag (`search_document` vs `search_query`).
+- **Files:**
+  - `src/infrastructure/embeddings/cohere_provider.py`
+- **Dependencies:** `cohere>=5.0.0` (add to `pyproject.toml`)
+- **Supported models:** `embed-english-v3.0` (1024-dim), `embed-multilingual-v3.0` (1024-dim)
+- **Key details:**
+  - `embed(texts)` uses `input_type="search_document"` (for ingestion)
+  - Override `embed_query(text)` to use `input_type="search_query"` (for retrieval queries)
+  - Max 96 texts per batch
+  - Retry on 429
+- **Acceptance Criteria:**
+  - Implements `EmbeddingRepository`
+  - `input_type` is correctly set for document vs query calls
+  - Unit tests mock `cohere.Client`
+  - `pytest tests/unit/test_cohere_embedding.py` passes
+
+---
+
+### T-104 · Gemini Embedding Provider
+- **Status:** `[ ]`
+- **Goal:** Implement `EmbeddingRepository` for Google Gemini's embedding API. Dense only (768-dim).
+- **Files:**
+  - `src/infrastructure/embeddings/gemini_provider.py`
+- **Dependencies:** `google-generativeai>=0.5.0` (add to `pyproject.toml`)
+- **Supported models:** `text-embedding-004` (768-dim)
+- **Key details:**
+  - `task_type="RETRIEVAL_DOCUMENT"` for ingestion, `task_type="RETRIEVAL_QUERY"` for query embedding
+  - Max 100 texts per batch
+  - `embed_sparse()` returns `[{} for _ in texts]`
+- **Acceptance Criteria:**
+  - Implements `EmbeddingRepository`
+  - Unit tests mock `google.generativeai`
+  - `pytest tests/unit/test_gemini_embedding.py` passes
+
+---
+
+### T-105 · Embedding Model Versioning (Qdrant Payload)
+- **Status:** `[ ]`
+- **Goal:** Track which embedding model generated each vector by storing `embedding_model_name` and `embedding_model_version` in each chunk's Qdrant payload. Detect model mismatch on startup to prevent silent vector corruption.
+- **Files:**
+  - `src/infrastructure/vectordb/qdrant.py` — modify `upsert()` and add `_validate_embedding_model()`
+  - `src/domain/entities/chunk.py` — add optional `embedding_model: str | None = None` field
+- **Changes to `upsert()`:**
+  ```python
+  # Add to every point's payload:
+  payload["embedding_model_name"] = settings.embeddings.provider
+  payload["embedding_model_version"] = self._get_model_version()
+  ```
+- **New `_validate_embedding_model()` method:**
+  - Sample a few existing points from the collection
+  - If `embedding_model_name` in payload differs from `settings.embeddings.provider`, raise `VectorStoreError` with message: `"Embedding model mismatch: collection was built with '{existing}' but current config is '{current}'. Run rebuild_embeddings.py --recreate-collection to re-index."`
+  - Called during `QdrantVectorStore.__init__` (after collection auto-create check)
+  - Skip validation if collection is empty or has no `embedding_model_name` in payload (legacy data)
+- **Acceptance Criteria:**
+  - Switching `EMBEDDINGS__PROVIDER` with an existing non-empty collection raises `VectorStoreError` at startup
+  - `rebuild_embeddings.py --recreate-collection` succeeds after the error
+  - `pytest tests/unit/test_qdrant_versioning.py` passes (mock Qdrant client)
+
+---
+
+### T-106 · Redis Embedding Cache
+- **Status:** `[ ]`
+- **Goal:** Implement a transparent caching layer for any `EmbeddingRepository`. Caches dense vectors in Redis to avoid redundant API calls (and costs). Uses the decorator pattern — wraps any provider without modifying it.
+- **Files:**
+  - `src/infrastructure/embeddings/cached_embedding_provider.py`
+- **Dependencies:** `redis>=5.0.0` (already in `pyproject.toml` for the existing Redis service); `src/core/settings.py` `RedisSettings` (already exists)
+- **Cache key:** `sha256(text + "|" + model_name + "|" + model_version)` → hex string
+- **Storage:** Redis hash or string per key; value = JSON-serialized `list[float]`
+- **TTL:** `settings.embeddings.cache.ttl_seconds` (default 7 days = 604800 s)
+- **Interface:**
+  ```python
+  class CachedEmbeddingProvider(EmbeddingRepository):
+      def __init__(self, inner: EmbeddingRepository, redis_client: Redis, ttl: int): ...
+  ```
+- **Behavior:**
+  - `embed(texts)`: for each text, check cache; call `inner.embed()` only for misses; populate cache on miss
+  - `embed_sparse(texts)`: pass through to inner (sparse vectors are not cached — they are BM25-based or cheap)
+  - `embed_both(texts)`: cache dense part; call inner for misses; combine
+  - Log cache hit/miss count per batch at DEBUG level
+  - Prometheus counter: `rag_embedding_cache_hits_total`, `rag_embedding_cache_misses_total`
+- **Acceptance Criteria:**
+  - Second call with same texts returns from cache without calling inner provider
+  - TTL is set correctly (verify with Redis `TTL` command in tests)
+  - Provider works correctly when Redis is unavailable (log warning, fall through to inner)
+  - `pytest tests/unit/test_cached_embedding_provider.py` passes (mock Redis)
+
+---
+
+### T-107 · Factory & Config Wiring
+- **Status:** `[ ]`
+- **Goal:** Extend `get_embedding_provider()` factory to instantiate all new providers (T-101–T-104) and optionally wrap with `CachedEmbeddingProvider` (T-106). Single entry point — no other code needs to know which provider is active.
+- **Files:**
+  - `src/infrastructure/embeddings/__init__.py`
+- **Logic:**
+  ```python
+  def get_embedding_provider(settings: EmbeddingSettings) -> EmbeddingRepository:
+      provider = _create_provider(settings)           # routes by settings.provider
+      if settings.cache.enabled:
+          provider = CachedEmbeddingProvider(provider, redis_client, settings.cache.ttl_seconds)
+      return provider
+  ```
+- **Error handling:** If an API provider is selected but its `api_key` is `None`, raise `ConfigurationError` with message: `"Provider '{name}' requires an API key. Set {ENV_VAR} in your environment."`
+- **Acceptance Criteria:**
+  - `get_embedding_provider(settings)` returns the correct type for all 7 providers
+  - `ConfigurationError` raised when API key is missing
+  - Cache is applied when `settings.cache.enabled = True`
+  - `pytest tests/unit/test_embedding_factory.py` passes
+
+---
+
+### T-108 · Rebuild Embeddings — Multi-Provider Hardening
+- **Status:** `[ ]`
+- **Goal:** Extend `scripts/rebuild_embeddings.py` to work correctly with API providers and to catch dimension/model mismatches before they corrupt the collection.
+- **Files:**
+  - `scripts/rebuild_embeddings.py`
+- **New pre-flight checks (run before any embedding):**
+  1. If provider is API-based, verify API key is set → abort with clear message if missing
+  2. If `--recreate-collection` is NOT passed: call `_validate_embedding_model()` (T-105); if mismatch detected, print error and exit 1 with hint to use `--recreate-collection`
+  3. Verify `settings.embeddings.dense_dim` matches the provider's documented output dimension → warn if mismatch
+- **API-aware batching:** For API providers, reduce default batch size to 32 (OpenAI/Voyage limits) and add per-batch sleep of 0.1s to stay under rate limits. Keep existing batch_size flag.
+- **Acceptance Criteria:**
+  - `--dry-run` with API provider prints provider name and estimated API call count
+  - Running with wrong provider and existing collection exits 1 with model mismatch message
+  - Running with `--recreate-collection` after mismatch succeeds
+
+---
+
+### T-109 · Embedding Provider Comparison Script
+- **Status:** `[ ]`
+- **Goal:** Script to benchmark multiple embedding providers against the golden QA dataset and produce a side-by-side quality + cost comparison table. Mirrors `compare_models.py` but for embedding providers.
+- **Files:**
+  - `scripts/compare_embedding_providers.py`
+- **Usage:**
+  ```bash
+  uv run python scripts/compare_embedding_providers.py \
+    --providers bge_m3 openai voyage \
+    --max-samples 50
+  ```
+- **Output table:**
+  ```
+  ┌───────────────────┬──────────┬──────────┬──────────┬─────────────┬───────────┐
+  │ Provider          │ Recall@5 │ NDCG@5   │ Latency  │ Cost/1K tok │ Status    │
+  ├───────────────────┼──────────┼──────────┼──────────┼─────────────┼───────────┤
+  │ bge_m3 (local)    │  0.843   │  0.871   │  18 ms   │  $0.00      │ PASS ✓    │
+  │ openai-3-large    │  0.861   │  0.889   │  210 ms  │  $0.13      │ PASS ✓    │
+  │ voyage-large-2    │  0.878   │  0.902   │  185 ms  │  $0.12      │ PASS ✓    │
+  └───────────────────┴──────────┴──────────┴──────────┴─────────────┴───────────┘
+  ```
+- **Flow:** For each provider: load config → embed golden queries → retrieve → compute Recall@5 + NDCG@5 → record latency + estimated cost
+- **Acceptance Criteria:**
+  - Runs with `--providers bge_m3` (self-hosted only, no API key needed) to verify mechanics
+  - Results saved to `data/exports/embedding_comparison_{timestamp}.json`
+  - Skips API providers gracefully if API key not set (prints warning, continues)
+
+---
+
 ## Dependency Graph
 
 ```
@@ -822,6 +1059,13 @@ T-061 ──► T-080 ──► T-081 ──► T-082 ──► T-083 ──► 
 T-082 ──► T-090 ──► T-091 ──► T-092 ──► T-093 ──► T-094 ──► T-095
 T-091 ──► T-096
 T-095 ──► T-097
+T-100 ──► T-101 ──► T-107
+T-100 ──► T-102 ──► T-107
+T-100 ──► T-103 ──► T-107
+T-100 ──► T-104 ──► T-107
+T-101+T-102+T-103+T-104 ──► T-106 ──► T-107
+T-105 ──► T-108
+T-107 + T-108 ──► T-109
 ```
 
 ## Quick Start Order for an Agent
@@ -835,3 +1079,4 @@ T-095 ──► T-097
 7. T-060 → T-061 _(CI/CD: ~1 session)_
 8. T-080 → T-081 → T-082 → T-083 → T-084 → T-085 _(Docker Compose: ~1 session)_
 9. T-090 → T-091 → T-092 → T-093 → T-094 → T-095 → T-096 → T-097 _(Kubernetes/EKS: ~2 sessions)_
+10. T-100 → T-101 + T-102 + T-103 + T-104 → T-105 → T-106 → T-107 → T-108 → T-109 _(Embedding Provider Expansion: ~2 sessions)_

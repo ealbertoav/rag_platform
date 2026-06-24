@@ -73,9 +73,11 @@ class QdrantVectorStore(VectorStoreRepository):
         collection: str = "rag_documents",
         api_key: str = "",
         dense_dim: int = 1024,
+        embedding_model_name: str = "",
     ) -> None:
         self.collection = collection
         self.dense_dim = dense_dim
+        self.embedding_model_name = embedding_model_name
         self._client = QdrantClient(url=url, api_key=api_key or None, check_compatibility=False)
         self._collection_ready = False
 
@@ -90,6 +92,7 @@ class QdrantVectorStore(VectorStoreRepository):
             collection=settings.qdrant.collection,
             api_key=settings.qdrant.api_key,
             dense_dim=settings.embeddings.dense_dim,
+            embedding_model_name=settings.embeddings.provider,
         )
 
     def drop_collection(self) -> None:
@@ -191,17 +194,62 @@ class QdrantVectorStore(VectorStoreRepository):
                 logger.info(
                     "Created Qdrant collection %r (%d-dim)", self.collection, self.dense_dim
                 )
+            else:
+                self._validate_embedding_model()
+        except VectorStoreError:
+            raise
         except Exception as exc:
             raise VectorStoreError("Qdrant collection setup failed", cause=exc) from exc
         self._collection_ready = True
 
-    @staticmethod
-    def _to_point(chunk: Chunk) -> PointStruct:
-        # Bind to locals so pyright can narrow the types through the assertions.
+    def get_collection_embedding_model(self) -> str | None:
+        """Return the embedding model name stored in the collection's payload.
+
+        Samples a few existing points and returns the "embedding_model_name"
+        field from the first point that has it.  Returns "None" when:
+        - The collection does not exist or cannot be queried.
+        - The collection is empty.
+        - Points pre-date model tracking (field absent from payload).
+        """
+        try:
+            if not self._client.collection_exists(self.collection):
+                return None
+            points, _ = self._client.scroll(
+                collection_name=self.collection,
+                limit=5,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — intentional fail-open probe
+            logger.debug("Cannot probe collection %r for model tracking: %s", self.collection, exc)
+            return None
+
+        for point in points:
+            payload = point.payload or {}
+            if "embedding_model_name" in payload:
+                return str(payload["embedding_model_name"])
+        return None
+
+    def _validate_embedding_model(self) -> None:
+        """Raise VectorStoreError when the collection's model differs from the current config."""
+        if not self.embedding_model_name:
+            return
+        existing_model = self.get_collection_embedding_model()
+        if existing_model is not None and existing_model != self.embedding_model_name:
+            raise VectorStoreError(
+                f"Embedding model mismatch: collection '{self.collection}' was built with "
+                f"'{existing_model}' but current config is '{self.embedding_model_name}'. "
+                f"Run: python scripts/rebuild_embeddings.py --recreate-collection"
+            )
+
+    def _to_point(self, chunk: Chunk) -> PointStruct:
         embedding = chunk.embedding
         sparse_vector = chunk.sparse_vector
         assert embedding is not None
         assert sparse_vector is not None
+        payload = chunk.model_dump(exclude={"embedding", "sparse_vector"})
+        if self.embedding_model_name:
+            payload["embedding_model_name"] = self.embedding_model_name
         return PointStruct(
             id=chunk.id,
             vector={
@@ -211,7 +259,7 @@ class QdrantVectorStore(VectorStoreRepository):
                     values=list(sparse_vector.values()),  # type: ignore[union-attr]
                 ),
             },
-            payload=chunk.model_dump(exclude={"embedding", "sparse_vector"}),
+            payload=payload,
         )
 
     @staticmethod

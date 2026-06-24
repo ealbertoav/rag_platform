@@ -1,7 +1,7 @@
 """Re-embed all chunks from the BM25 index and upsert them into Qdrant.
 
 Use this when you:
-  - Switch to a different embedding model
+  - Switch to a different embedding model (self-hosted or API-based)
   - Change embedding dimensions in configs/embeddings.yaml
   - Need to recover a corrupted Qdrant collection while the BM25
     index (with chunk text) is still intact
@@ -9,14 +9,97 @@ Use this when you:
 Usage:
     uv run python scripts/rebuild_embeddings.py
     uv run python scripts/rebuild_embeddings.py --batch-size 16 --dry-run
+    uv run python scripts/rebuild_embeddings.py --recreate-collection
+    uv run python scripts/rebuild_embeddings.py --recreate-collection --force
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+
+_API_PROVIDERS = {"openai", "voyage", "cohere", "gemini"}
+_API_BATCH_SIZE = 32   # Conservative default for API providers (rate limits)
+_API_BATCH_SLEEP = 0.1  # Seconds between batches for API providers
+
+
+def _preflight(args: argparse.Namespace, settings: object) -> None:
+    """Validate configuration before touching any data."""
+    from src.core.settings import Settings
+
+    s: Settings = settings  # type: ignore[assignment]
+    provider = s.embeddings.provider
+
+    # 1. API providers require a key
+    if provider in _API_PROVIDERS:
+        key_map = {
+            "openai": s.embeddings.openai.api_key,
+            "voyage": s.embeddings.voyage.api_key,
+            "cohere": s.embeddings.cohere.api_key,
+            "gemini": s.embeddings.gemini.api_key,
+        }
+        api_key = key_map[provider]
+        if not api_key:
+            env_var = f"EMBEDDINGS__{provider.upper()}__API_KEY"
+            print(
+                f"[error] Provider '{provider}' requires an API key.\n"
+                f"        Set {env_var} in your environment or .env file.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Provider: {provider} (API-based, key present)")
+    else:
+        print(f"Provider: {provider} (self-hosted)")
+
+    # 2. Dimension sanity check (warn only — user may intentionally change dims)
+    expected_dims = {
+        "bge_m3": 1024, "nomic": 768, "qwen_embedding": 1024,
+        "openai": s.embeddings.openai.dimensions,
+        "voyage": s.embeddings.voyage.dimensions,
+        "cohere": s.embeddings.cohere.dimensions,
+        "gemini": s.embeddings.gemini.dimensions,
+    }
+    if provider in expected_dims:
+        expected = expected_dims[provider]
+        configured = s.embeddings.dense_dim
+        if expected != configured:
+            print(
+                f"[warn] dense_dim={configured} but {provider} default is {expected}. "
+                f"Update embeddings.dense_dim in configs/embeddings.yaml if needed.",
+                file=sys.stderr,
+            )
+
+    # 3. Model mismatch guard (only when NOT recreating)
+    if not args.recreate_collection:
+        _check_qdrant_model_mismatch(s)
+
+
+def _check_qdrant_model_mismatch(settings: object) -> None:
+    """Abort if the existing collection was built with a different embedding model."""
+    from src.core.settings import Settings
+    from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+
+    s: Settings = settings  # type: ignore[assignment]
+    vector_store = QdrantVectorStore.from_settings()
+    existing_model = vector_store.get_collection_embedding_model()
+    if existing_model is None:
+        return  # empty, new, or legacy collection — nothing to check
+
+    current = s.embeddings.provider
+    if existing_model != current:
+        print(
+            f"[error] Embedding model mismatch!\n"
+            f"        Collection '{s.qdrant.collection}' was built with '{existing_model}'\n"
+            f"        but current config is '{current}'.\n"
+            f"\n"
+            f"        Run with --recreate-collection to drop and re-index:\n"
+            f"          uv run python scripts/rebuild_embeddings.py --recreate-collection",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def main() -> None:
@@ -24,8 +107,8 @@ def main() -> None:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=32,
-        help="Number of chunks to embed per batch (default: 32)",
+        default=None,
+        help="Number of chunks to embed per batch (default: 32 for local, 32 for API providers)",
     )
     parser.add_argument(
         "--dry-run",
@@ -37,12 +120,21 @@ def main() -> None:
         action="store_true",
         help="Drop and recreate the Qdrant collection before upserting",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip model-mismatch guard (use with --recreate-collection)",
+    )
     args = parser.parse_args()
 
     from src.core.settings import settings
-    from src.infrastructure.embeddings.bge_m3 import BGEM3EmbeddingProvider
+    from src.infrastructure.embeddings import get_embedding_provider
     from src.infrastructure.vectordb.bm25 import BM25Index
     from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+
+    # ── Pre-flight ─────────────────────────────────────────────────────────────
+    if not args.force:
+        _preflight(args, settings)
 
     # ── Load chunks from BM25 index ────────────────────────────────────────────
     bm25 = BM25Index.load_or_create()
@@ -52,14 +144,23 @@ def main() -> None:
         print("BM25 index is empty — ingest documents first.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Found {len(chunks)} chunks in BM25 index.")
+    provider_name = settings.embeddings.provider
+    is_api = provider_name in _API_PROVIDERS
+    batch_size = args.batch_size or (_API_BATCH_SIZE if is_api else 32)
 
+    print(f"Found {len(chunks)} chunks in BM25 index.")
     if args.dry_run:
+        if is_api:
+            n_batches = (len(chunks) + batch_size - 1) // batch_size
+            print(
+                f"Dry-run: would make ~{n_batches} API call(s) to {provider_name} "
+                f"(batch_size={batch_size})."
+            )
         print("Dry-run mode — no changes written.")
         return
 
     # ── Initialise infrastructure ───────────────────────────────────────────────
-    embedder = BGEM3EmbeddingProvider.from_settings()
+    embedder = get_embedding_provider()
     vector_store = QdrantVectorStore.from_settings()
 
     if args.recreate_collection:
@@ -80,9 +181,9 @@ def main() -> None:
     ) as progress:
         task = progress.add_task("Re-embedding", total=len(chunks))
 
-        for i in range(0, len(chunks), args.batch_size):
-            batch = chunks[i : i + args.batch_size]
-            progress.update(task, description=f"[cyan]Batch {i // args.batch_size + 1}")
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            progress.update(task, description=f"[cyan]Batch {i // batch_size + 1}")
             try:
                 dense_vecs, sparse_vecs = embedder.embed_both([c.text for c in batch])
                 embedded = [
@@ -90,13 +191,15 @@ def main() -> None:
                     for chunk, dense, sparse in zip(batch, dense_vecs, sparse_vecs, strict=True)
                 ]
                 vector_store.upsert(embedded)
+                if is_api and i + batch_size < len(chunks):
+                    time.sleep(_API_BATCH_SLEEP)
             except Exception as exc:
                 print(f"\nBatch {i}–{i + len(batch)} failed: {exc}", file=sys.stderr)
                 errors += 1
             finally:
                 progress.advance(task, len(batch))
 
-    ok = len(chunks) - errors * args.batch_size
+    ok = len(chunks) - errors * batch_size
     print(f"\n✓ Re-embedded {ok}/{len(chunks)} chunks → Qdrant '{settings.qdrant.collection}'")
     if errors:
         print(f"  {errors} batch(es) failed — check logs above.", file=sys.stderr)

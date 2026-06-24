@@ -1,8 +1,38 @@
 embeddings:
-  provider: bge_m3
+  provider: bge_m3            # bge_m3 | nomic | qwen_embedding | openai | voyage | cohere | gemini
   model_path: models/embeddings/bge-m3
   batch_size: 32
-  device: mps                  # mps | cuda | cpu
+  device: mps                 # mps | cuda | cpu
   normalize: true
   dense_dim: 1024
-  sparse_dim: 30522            # BGE-M3 lexical output
+  sparse_dim: 30522           # BGE-M3 lexical output; 0 for dense-only providers
+
+  # ── API provider credentials (override via env vars) ────────────────────────
+  # Set EMBEDDINGS__OPENAI__API_KEY (etc.) in .env — never commit real keys here.
+
+  openai:
+    api_key: ""               # EMBEDDINGS__OPENAI__API_KEY
+    model: text-embedding-3-large
+    dimensions: 3072          # text-embedding-3 supports truncation via this param
+
+  voyage:
+    api_key: ""               # EMBEDDINGS__VOYAGE__API_KEY
+    model: voyage-large-2     # voyage-code-2 is optimized for code/technical docs
+    dimensions: 1536
+
+  cohere:
+    api_key: ""               # EMBEDDINGS__COHERE__API_KEY
+    model: embed-english-v3.0 # embed-multilingual-v3.0 for mixed-language corpora
+    dimensions: 1024
+
+  gemini:
+    api_key: ""               # EMBEDDINGS__GEMINI__API_KEY
+    model: text-embedding-004
+    dimensions: 768
+
+  # ── Redis embedding cache ────────────────────────────────────────────────────
+  # Caches dense vectors to avoid redundant API calls. No-op for self-hosted
+  # providers but harmless to leave enabled.
+  cache:
+    enabled: true
+    ttl_seconds: 604800       # 7 days
