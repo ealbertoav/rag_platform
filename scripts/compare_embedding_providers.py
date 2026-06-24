@@ -1,13 +1,14 @@
 """Compare multiple embedding providers on the same golden QA dataset.
 
-Runs the retrieval pipeline for each provider (no LLM generation) and
-produces a side-by-side quality + latency + estimated cost table.
+Each provider is evaluated against its own temporary Qdrant collection built by
+re-embedding all BM25 chunks with that provider. Dense retrieval metrics are
+reported (no BM25/hybrid fusion), so scores reflect embedding quality alone.
 
 Usage:
     # Self-hosted only (no API key required)
     uv run python scripts/compare_embedding_providers.py --providers bge_m3
 
-    # Compare local vs API providers
+    # Compare local vs. API providers
     uv run python scripts/compare_embedding_providers.py \\
         --providers bge_m3 openai voyage \\
         --max-samples 50
@@ -22,17 +23,27 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import dataclasses
 import json
 import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from _benchmark_utils import add_eval_args, resolve_qa_pairs  # noqa: E402
+
+from src.domain.entities.chunk import Chunk  # noqa: E402
+from src.infrastructure.vectordb.qdrant import QdrantVectorStore  # noqa: E402
+from src.rag.retrieval.dense_retriever import DenseRetriever  # noqa: E402
 
 # ── Cost estimates (USD per 1K tokens) ────────────────────────────────────────
 # last-updated: 2025-06-24. Check provider pricing pages for current rates:
@@ -40,6 +51,8 @@ from _benchmark_utils import add_eval_args, resolve_qa_pairs  # noqa: E402
 #   Voyage:  https://docs.voyageai.com/docs/pricing
 #   Cohere:  https://cohere.com/pricing
 #   Gemini:  https://ai.google.dev/gemini-api/docs/pricing
+
+_INDEX_BATCH_SIZE = 32
 
 _COST_PER_1K: dict[str, float] = {
     "bge_m3": 0.0,
@@ -50,6 +63,7 @@ _COST_PER_1K: dict[str, float] = {
     "cohere": 0.10,    # embed-english-v3.0
     "gemini": 0.025,   # text-embedding-004
 }
+
 
 @dataclasses.dataclass
 class ProviderResult:
@@ -86,42 +100,71 @@ def _compute_ndcg_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int
     return dcg / idcg if idcg > 0 else 0.0
 
 
+def _index_chunks_for_provider(
+    provider: str,
+    chunks: list[Chunk],
+    settings: Settings,
+) -> tuple[DenseRetriever, QdrantVectorStore]:
+    """Embed *chunks* with *provider* and upsert into a temporary Qdrant collection."""
+    from src.core.constants import API_EMBEDDING_PROVIDERS
+    from src.infrastructure.embeddings import (
+        create_embedding_provider,
+        embedding_model_identifier,
+        provider_dense_dim,
+    )
+    from src.infrastructure.embeddings.batch_reindex import (
+        API_BATCH_SIZE,
+        embed_and_upsert_batch,
+        maybe_sleep_between_api_batches,
+    )
+
+    embedder = create_embedding_provider(provider, settings)
+    dense_dim = provider_dense_dim(provider, settings)
+    model_id = embedding_model_identifier(provider, settings)
+    temp_collection = f"{settings.qdrant.collection}__compare__{provider}"
+
+    vector_store = QdrantVectorStore(
+        url=settings.qdrant.url,
+        collection=temp_collection,
+        api_key=settings.qdrant.api_key,
+        dense_dim=dense_dim,
+        embedding_model_name=model_id,
+    )
+
+    try:
+        with contextlib.suppress(Exception):
+            vector_store.drop_collection()
+
+        is_api = provider in API_EMBEDDING_PROVIDERS
+        batch_size = API_BATCH_SIZE if is_api else _INDEX_BATCH_SIZE
+
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            embed_and_upsert_batch(embedder, vector_store, batch)
+            maybe_sleep_between_api_batches(
+                provider,
+                batch_start=i,
+                batch_size=batch_size,
+                total_chunks=len(chunks),
+            )
+
+        retriever = DenseRetriever(embedder=embedder, vector_store=vector_store)
+        return retriever, vector_store
+    except Exception:
+        with contextlib.suppress(Exception):
+            vector_store.drop_collection()
+        raise
+
+
 async def _run_provider(
     provider: str,
     qa_pairs: list[dict[str, object]],
-    settings: object,
+    chunks: list[Chunk],
+    settings: Settings,
     k: int = 5,
 ) -> ProviderResult:
     try:
-        from src.core.settings import Settings
-        from src.infrastructure.embeddings import create_embedding_provider
-        from src.infrastructure.vectordb.bm25 import BM25Index
-        from src.infrastructure.vectordb.qdrant import QdrantVectorStore
-        from src.rag.retrieval.hybrid_retriever import HybridRetriever
-
-        s: Settings = settings  # type: ignore[assignment]
-
-        # Construct the embedder directly for this provider — no global-state mutation.
-        embedder = create_embedding_provider(provider, s)
-
-        # Disable the embedding model mismatch guard: this script intentionally
-        # queries the same collection with different providers to compare quality.
-        vector_store = QdrantVectorStore(
-            url=s.qdrant.url,
-            collection=s.qdrant.collection,
-            api_key=s.qdrant.api_key,
-            dense_dim=s.embeddings.dense_dim,
-            embedding_model_name="",
-        )
-        bm25 = BM25Index.load_or_create()
-
-        # Lazy import to avoid circular at module level
-        from src.rag.retrieval.bm25_retriever import BM25Retriever
-        from src.rag.retrieval.dense_retriever import DenseRetriever
-
-        dense_ret = DenseRetriever(embedder=embedder, vector_store=vector_store)
-        bm25_ret = BM25Retriever(index=bm25)
-        retriever = HybridRetriever(dense=dense_ret, bm25=bm25_ret)
+        retriever, vector_store = _index_chunks_for_provider(provider, chunks, settings)
     except Exception as exc:
         return ProviderResult(
             name=provider, recall_at_5=0.0, ndcg_at_5=0.0,
@@ -134,23 +177,27 @@ async def _run_provider(
 
     recalls, ndcgs, latencies = [], [], []
 
-    for pair in qa_pairs:
-        question = pair.get("question")
-        if not isinstance(question, str) or not question:
-            continue
-        relevant = list(pair.get("relevant_chunks", []))  # type: ignore[arg-type]
+    try:
+        for pair in qa_pairs:
+            question = pair.get("question")
+            if not isinstance(question, str) or not question:
+                continue
+            relevant = list(pair.get("relevant_chunks", []))  # type: ignore[arg-type]
 
-        t0 = time.monotonic()
-        try:
-            query = Query(text=question)
-            results = await retriever.retrieve(query, top_k=k)
-            retrieved_ids = [r[0].id for r in results]
-        except RetrievalError:
-            retrieved_ids = []
-        latencies.append((time.monotonic() - t0) * 1000)
+            t0 = time.monotonic()
+            try:
+                query = Query(text=question)
+                results = retriever.retrieve(query, top_k=k)
+                retrieved_ids = [r[0].id for r in results]
+            except RetrievalError:
+                retrieved_ids = []
+            latencies.append((time.monotonic() - t0) * 1000)
 
-        recalls.append(_compute_recall_at_k(retrieved_ids, relevant, k))
-        ndcgs.append(_compute_ndcg_at_k(retrieved_ids, relevant, k))
+            recalls.append(_compute_recall_at_k(retrieved_ids, relevant, k))
+            ndcgs.append(_compute_ndcg_at_k(retrieved_ids, relevant, k))
+    finally:
+        with contextlib.suppress(Exception):
+            vector_store.drop_collection()
 
     n = len(recalls)
     return ProviderResult(
@@ -218,17 +265,29 @@ def _save_results(results: list[ProviderResult], output: str) -> None:
 
 async def run(args: argparse.Namespace) -> int:
     from src.core.settings import settings
+    from src.infrastructure.vectordb.bm25 import BM25Index
 
     qa_pairs = resolve_qa_pairs(args.qa_dataset, args.max_samples)
     if qa_pairs is None:
         return 1
 
-    print(f"Comparing {len(args.providers)} provider(s) on {len(qa_pairs)} QA pairs…\n")
+    bm25 = BM25Index.load_or_create()
+    chunks = bm25.chunks
+    if not chunks:
+        print("BM25 index is empty — ingest documents first.", file=sys.stderr)
+        return 1
+
+    print(
+        f"Comparing {len(args.providers)} provider(s) on {len(qa_pairs)} QA pairs "
+        f"({len(chunks)} indexed chunks per provider)…\n"
+    )
 
     results: list[ProviderResult] = []
     for provider in args.providers:
         print(f"  Running: {provider}")
-        result = await _run_provider(provider, qa_pairs, settings, k=args.top_k)
+        result = await _run_provider(
+            provider, qa_pairs, chunks, settings, k=args.top_k
+        )
         results.append(result)
         if result.error:
             print(f"    → skipped: {result.error}", file=sys.stderr)

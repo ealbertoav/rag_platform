@@ -62,6 +62,18 @@ class TestInterfaceConformance:
     def test_implements_vector_store_repository(self, store: QdrantVectorStore):
         assert isinstance(store, VectorStoreRepository)
 
+    def test_from_settings_uses_full_model_identifier(self):
+        with (
+            patch("src.infrastructure.vectordb.qdrant.QdrantClient"),
+            patch(
+                "src.infrastructure.embeddings.embedding_model_identifier",
+                return_value="openai:text-embedding-3-large",
+            ) as mock_identifier,
+        ):
+            instance = QdrantVectorStore.from_settings()
+        mock_identifier.assert_called_once()
+        assert instance.embedding_model_name == "openai:text-embedding-3-large"
+
     def test_from_settings_returns_instance(self):
         with patch("src.infrastructure.vectordb.qdrant.QdrantClient"):
             instance = QdrantVectorStore.from_settings()

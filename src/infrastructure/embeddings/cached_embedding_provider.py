@@ -21,7 +21,7 @@ import hashlib
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from src.domain.repositories.embedding_repository import (
     DenseVector,
@@ -239,7 +239,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         from redis.exceptions import RedisError as _RedisError  # type: ignore[import-untyped]
 
         try:
-            return client.mget(keys)  # type: ignore[return-value]
+            return cast(list[str | None], client.mget(keys))
         except _RedisError as exc:  # type: ignore[misc]
             logger.warning(
                 "Redis mget failed (%s); bypassing cache for this batch, will retry in %.0fs",

@@ -87,13 +87,14 @@ class QdrantVectorStore(VectorStoreRepository):
     @classmethod
     def from_settings(cls) -> QdrantVectorStore:
         from src.core.settings import settings
+        from src.infrastructure.embeddings import embedding_model_identifier
 
         return cls(
             url=settings.qdrant.url,
             collection=settings.qdrant.collection,
             api_key=settings.qdrant.api_key,
             dense_dim=settings.embeddings.dense_dim,
-            embedding_model_name=settings.embeddings.provider,
+            embedding_model_name=embedding_model_identifier(settings.embeddings.provider, settings),
         )
 
     def drop_collection(self) -> None:

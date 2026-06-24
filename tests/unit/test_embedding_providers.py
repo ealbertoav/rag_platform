@@ -191,3 +191,59 @@ class TestGetEmbeddingProvider:
             pytest.raises(ValueError, match="Unknown"),
         ):
             get_embedding_provider()
+
+
+class TestCreateEmbeddingProvider:
+    def test_uses_provider_default_model_path_when_not_active(self):
+        from src.infrastructure.embeddings import create_embedding_provider
+
+        settings = _mock_settings(
+            **{
+                "embeddings.provider": "bge_m3",
+                "embeddings.model_path": "models/embeddings/bge-m3",
+            }
+        )
+        provider = create_embedding_provider("nomic", settings)
+        assert isinstance(provider, NomicEmbeddingProvider), (
+            f"expected NomicEmbeddingProvider, got {provider.__class__.__name__}"
+        )
+        assert provider.model_path == "nomic-ai/nomic-embed-text-v1.5"
+
+    def test_uses_configured_model_path_for_active_provider(self):
+        from src.infrastructure.embeddings import create_embedding_provider
+
+        settings = _mock_settings(
+            **{
+                "embeddings.provider": "nomic",
+                "embeddings.model_path": "custom/nomic-path",
+            }
+        )
+        provider = create_embedding_provider("nomic", settings)
+        assert isinstance(provider, NomicEmbeddingProvider), (
+            f"expected NomicEmbeddingProvider, got {provider.__class__.__name__}"
+        )
+        assert provider.model_path == "custom/nomic-path"
+
+
+class TestEmbeddingModelIdentifier:
+    def test_includes_api_model_name(self):
+        from src.infrastructure.embeddings import embedding_model_identifier
+
+        settings = _mock_settings(
+            **{
+                "embeddings.provider": "openai",
+                "embeddings.openai.model": "text-embedding-3-small",
+            }
+        )
+        assert embedding_model_identifier("openai", settings) == "openai:text-embedding-3-small"
+
+    def test_includes_self_hosted_model_path(self):
+        from src.infrastructure.embeddings import embedding_model_identifier
+
+        settings = _mock_settings(
+            **{
+                "embeddings.provider": "bge_m3",
+                "embeddings.model_path": "models/embeddings/bge-m3",
+            }
+        )
+        assert embedding_model_identifier("bge_m3", settings) == "bge_m3:models/embeddings/bge-m3"

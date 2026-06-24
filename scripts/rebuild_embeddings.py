@@ -17,17 +17,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
-from src.core.constants import API_EMBEDDING_PROVIDERS
+from src.core.constants import API_EMBEDDING_PROVIDERS, SELF_HOSTED_EMBEDDING_DEFAULT_DIMS
+from src.infrastructure.embeddings.batch_reindex import (
+    API_BATCH_SIZE,
+    embed_and_upsert_batch,
+    maybe_sleep_between_api_batches,
+)
 
-_API_BATCH_SIZE = 32   # Conservative default for API providers (rate limits)
-# 0.1 s keeps throughput at ~320 texts/s — well under the most restrictive
-# provider limit (Cohere: 100 req/min on free tier; OpenAI/Voyage: 3000+ RPM).
-# Increase via --batch-size (larger batches) rather than removing this sleep.
-_API_BATCH_SLEEP = 0.1  # seconds between batches for API providers
+_DEFAULT_BATCH_SIZE = 32
 
 
 def _check_api_key(settings: object) -> None:
@@ -71,16 +71,15 @@ def _check_api_key(settings: object) -> None:
     print(f"Provider: {provider} (API-based, key present)")
 
 
-def _preflight(args: argparse.Namespace, settings: object) -> None:
-    """Validate dimensions and model mismatch (skipped with --force)."""
+def _preflight_dimensions(settings: object) -> None:
+    """Warn when dense_dim does not match the provider default."""
     from src.core.settings import Settings
 
     s: Settings = settings  # type: ignore[assignment]
     provider = s.embeddings.provider
 
-    # 1. Dimension sanity check (warn only — user may intentionally change dimming)
     expected_dims = {
-        "bge_m3": 1024, "nomic": 768, "qwen_embedding": 1024,
+        **SELF_HOSTED_EMBEDDING_DEFAULT_DIMS,
         "openai": s.embeddings.openai.dimensions,
         "voyage": s.embeddings.voyage.dimensions,
         "cohere": s.embeddings.cohere.dimensions,
@@ -96,18 +95,17 @@ def _preflight(args: argparse.Namespace, settings: object) -> None:
                 file=sys.stderr,
             )
 
-    # 2. Model mismatch guard (only when NOT recreating).
-    # Delegates to QdrantVectorStore._validate_embedding_model() — the single
-    # authoritative check — so the comparison logic lives in one place.
-    if not args.recreate_collection:
-        from src.core.exceptions import VectorStoreError
-        from src.infrastructure.vectordb.qdrant import QdrantVectorStore
 
-        try:
-            QdrantVectorStore.from_settings().validate_embedding_model()
-        except VectorStoreError as exc:
-            print(f"\n[error] {exc}\n", file=sys.stderr)
-            sys.exit(1)
+def _preflight_model_mismatch() -> None:
+    """Abort when the collection was built with a different embedding model."""
+    from src.core.exceptions import VectorStoreError
+    from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+
+    try:
+        QdrantVectorStore.from_settings().validate_embedding_model()
+    except VectorStoreError as exc:
+        print(f"\n[error] {exc}\n", file=sys.stderr)
+        sys.exit(1)
 
 
 def main() -> None:
@@ -131,7 +129,10 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Skip model-mismatch guard (use with --recreate-collection)",
+        help=(
+            "Skip dense_dim warning checks "
+            "(model-mismatch guard still runs unless --recreate-collection)"
+        ),
     )
     args = parser.parse_args()
 
@@ -141,9 +142,11 @@ def main() -> None:
     from src.infrastructure.vectordb.qdrant import QdrantVectorStore
 
     # ── Pre-flight ─────────────────────────────────────────────────────────────
-    _check_api_key(settings)          # always — gives clear error before any API call
+    _check_api_key(settings)  # always — gives clear error before any API call
     if not args.force:
-        _preflight(args, settings)    # dimension + model-mismatch checks (skipped with --force)
+        _preflight_dimensions(settings)
+    if not args.recreate_collection:
+        _preflight_model_mismatch()  # always enforced unless rebuilding the collection
 
     # ── Load chunks from BM25 index ────────────────────────────────────────────
     bm25 = BM25Index.load_or_create()
@@ -155,7 +158,7 @@ def main() -> None:
 
     provider_name = settings.embeddings.provider
     is_api = provider_name in API_EMBEDDING_PROVIDERS
-    batch_size = args.batch_size or (_API_BATCH_SIZE if is_api else 32)
+    batch_size = args.batch_size or (API_BATCH_SIZE if is_api else _DEFAULT_BATCH_SIZE)
 
     print(f"Found {len(chunks)} chunks in BM25 index.")
     if args.dry_run:
@@ -195,15 +198,14 @@ def main() -> None:
             batch = chunks[i : i + batch_size]
             progress.update(task, description=f"[cyan]Batch {i // batch_size + 1}")
             try:
-                dense_vecs, sparse_vecs = embedder.embed_both([c.text for c in batch])
-                embedded = [
-                    chunk.model_copy(update={"embedding": dense, "sparse_vector": sparse})
-                    for chunk, dense, sparse in zip(batch, dense_vecs, sparse_vecs, strict=True)
-                ]
-                vector_store.upsert(embedded)
+                embed_and_upsert_batch(embedder, vector_store, batch)
                 ok += len(batch)
-                if is_api and i + batch_size < len(chunks):
-                    time.sleep(_API_BATCH_SLEEP)
+                maybe_sleep_between_api_batches(
+                    provider_name,
+                    batch_start=i,
+                    batch_size=batch_size,
+                    total_chunks=len(chunks),
+                )
             except Exception as exc:
                 print(f"\nBatch {i}–{i + len(batch)} failed: {exc}", file=sys.stderr)
                 errors += 1

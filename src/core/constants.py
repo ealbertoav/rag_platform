@@ -45,3 +45,15 @@ RRF_K = 60  # constant in Reciprocal Rank Fusion: score = Σ 1/(k + rank_i)
 
 # ── Embedding providers ─────────────────────────────────────────────────────────
 API_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"openai", "voyage", "cohere", "gemini"})
+
+SELF_HOSTED_EMBEDDING_MODEL_PATHS: dict[str, str] = {
+    "bge_m3": "models/embeddings/bge-m3",
+    "nomic": "nomic-ai/nomic-embed-text-v1.5",
+    "qwen_embedding": "Qwen/Qwen3-Embedding-0.6B",
+}
+
+SELF_HOSTED_EMBEDDING_DEFAULT_DIMS: dict[str, int] = {
+    "bge_m3": 1024,
+    "nomic": 768,
+    "qwen_embedding": 1024,
+}

@@ -4,6 +4,11 @@ from typing import TYPE_CHECKING
 
 from pydantic import SecretStr
 
+from src.core.constants import (
+    API_EMBEDDING_PROVIDERS,
+    SELF_HOSTED_EMBEDDING_DEFAULT_DIMS,
+    SELF_HOSTED_EMBEDDING_MODEL_PATHS,
+)
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.infrastructure.embeddings.bge_m3 import BGEM3EmbeddingProvider
 from src.infrastructure.embeddings.nomic import NomicEmbeddingProvider
@@ -69,12 +74,62 @@ def get_embedding_provider() -> EmbeddingRepository:
     return provider
 
 
+def _self_hosted_model_path(name: str, settings: Settings) -> str:
+    """Return the model path for a self-hosted provider.
+
+    Uses the configured "model_path" when it matches the active provider;
+    otherwise falls back to each provider's canonical default so benchmarking
+    scripts can instantiate alternate providers without mutating global config.
+    """
+    cfg = settings.embeddings
+    if name == cfg.provider:
+        return cfg.model_path
+    return SELF_HOSTED_EMBEDDING_MODEL_PATHS[name]
+
+
+def provider_dense_dim(name: str, settings: Settings) -> int:
+    """Return the dense vector dimension for *name*."""
+    if name in API_EMBEDDING_PROVIDERS:
+        emb = settings.embeddings
+        match name:
+            case "openai":
+                return emb.openai.dimensions
+            case "voyage":
+                return emb.voyage.dimensions
+            case "cohere":
+                return emb.cohere.dimensions
+            case "gemini":
+                return emb.gemini.dimensions
+    return SELF_HOSTED_EMBEDDING_DEFAULT_DIMS[name]
+
+
+def embedding_model_identifier(provider_name: str, settings: Settings) -> str:
+    """Return a stable string that uniquely identifies the active model.
+
+    Includes both the provider name and the specific model name/path so that
+    switching models within the same provider (e.g. text-embedding-3-large →
+    text-embedding-3-small) produces different cache keys and Qdrant payloads.
+    """
+    emb = settings.embeddings
+    api_model: str | None = None
+    if provider_name == "openai":
+        api_model = emb.openai.model
+    elif provider_name == "voyage":
+        api_model = emb.voyage.model
+    elif provider_name == "cohere":
+        api_model = emb.cohere.model
+    elif provider_name == "gemini":
+        api_model = emb.gemini.model
+    model = api_model if api_model is not None else _self_hosted_model_path(provider_name, settings)
+    return f"{provider_name}:{model}"
+
+
 def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
     match name:
         case "bge_m3":
             cfg = settings.embeddings
             return BGEM3EmbeddingProvider(
-                model_path=cfg.model_path,
+                model_path=_self_hosted_model_path(name, settings),
                 device=cfg.device,
                 batch_size=cfg.batch_size,
                 normalize=cfg.normalize,
@@ -82,7 +137,7 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
         case "nomic":
             cfg = settings.embeddings
             return NomicEmbeddingProvider(
-                model_path=cfg.model_path,
+                model_path=_self_hosted_model_path(name, settings),
                 device=cfg.device,
                 batch_size=cfg.batch_size,
                 normalize=cfg.normalize,
@@ -90,7 +145,7 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
         case "qwen_embedding":
             cfg = settings.embeddings
             return QwenEmbeddingProvider(
-                model_path=cfg.model_path,
+                model_path=_self_hosted_model_path(name, settings),
                 device=cfg.device,
                 batch_size=cfg.batch_size,
                 normalize=cfg.normalize,
@@ -131,27 +186,6 @@ def _require_api_key(provider: str, api_key: SecretStr) -> None:
         )
 
 
-def _model_identifier(provider_name: str, settings: Settings) -> str:
-    """Return a stable string that uniquely identifies the active model.
-
-    Includes both the provider name and the specific model name/path so that
-    switching models within the same provider (e.g. text-embedding-3-large →
-    text-embedding-3-small) produces different cache keys.
-    """
-    emb = settings.embeddings
-    api_model: str | None = None
-    if provider_name == "openai":
-        api_model = emb.openai.model
-    elif provider_name == "voyage":
-        api_model = emb.voyage.model
-    elif provider_name == "cohere":
-        api_model = emb.cohere.model
-    elif provider_name == "gemini":
-        api_model = emb.gemini.model
-    model = api_model if api_model is not None else emb.model_path
-    return f"{provider_name}:{model}"
-
-
 def _wrap_with_cache(
     inner: EmbeddingRepository, provider_name: str, settings: Settings
 ) -> EmbeddingRepository:
@@ -162,7 +196,7 @@ def _wrap_with_cache(
         redis_url=settings.redis.url,
         redis_password=settings.redis.password.get_secret_value(),
         ttl_seconds=settings.embeddings.cache.ttl_seconds,
-        model_identifier=_model_identifier(provider_name, settings),
+        model_identifier=embedding_model_identifier(provider_name, settings),
     )
 
 
@@ -171,5 +205,7 @@ __all__ = [
     "NomicEmbeddingProvider",
     "QwenEmbeddingProvider",
     "create_embedding_provider",
+    "embedding_model_identifier",
     "get_embedding_provider",
+    "provider_dense_dim",
 ]
