@@ -37,6 +37,22 @@ class AgentDecision:
     clarification: str = ""
 
 
+@dataclasses.dataclass
+class AgentRunResult:
+    """Output of an agentic retrieval and generation run."""
+
+    answer: Answer
+    iterations: int
+    actions: list[AgentAction]
+
+
+@dataclasses.dataclass
+class AgentRetrieveResult:
+    chunks: list[Chunk]
+    iterations: int
+    actions: list[AgentAction]
+
+
 class AgentPipeline:
     """Tool-calling agent layer over the RAG stack.
 
@@ -62,28 +78,45 @@ class AgentPipeline:
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
-    async def chat(self, question: str) -> AsyncIterator[str]:
+    async def chat(
+        self,
+        question: str,
+        *,
+        max_iterations: int | None = None,
+    ) -> AsyncIterator[str]:
         """Run the agentic loop and stream the final answer."""
-        chunks = await self._agentic_retrieve(question)
-        context = "\n\n".join(c.text for c in chunks)
+        max_iter = max_iterations if max_iterations is not None else self._max_iterations
+        result = await self._agentic_retrieve(question, max_iterations=max_iter)
+        context = "\n\n".join(c.text for c in result.chunks)
         return self._pipeline.generation.stream(question, context)
 
-    async def chat_full(self, question: str) -> Answer:
-        """Run the agentic loop and return a complete Answer."""
+    async def chat_full(
+        self,
+        question: str,
+        *,
+        max_iterations: int | None = None,
+    ) -> AgentRunResult:
+        """Run the agentic loop and return a complete result."""
         import time
 
+        max_iter = max_iterations if max_iterations is not None else self._max_iterations
         t0 = time.monotonic()
-        chunks = await self._agentic_retrieve(question)
-        context = "\n\n".join(c.text for c in chunks)
-        sources = [c.id for c in chunks]
+        run = await self._agentic_retrieve(question, max_iterations=max_iter)
+        context = "\n\n".join(c.text for c in run.chunks)
+        sources = [c.id for c in run.chunks]
         answer = self._pipeline.generation.generate(question, context, sources)
         elapsed = (time.monotonic() - t0) * 1000
-        return answer.model_copy(
+        final_answer = answer.model_copy(
             update={
                 "query_id": Query(text=question).id,
                 "latency_ms": elapsed,
                 "token_count": len(answer.text.split()),
             }
+        )
+        return AgentRunResult(
+            answer=final_answer,
+            iterations=run.iterations,
+            actions=run.actions,
         )
 
     # ── Factory ────────────────────────────────────────────────────────────────
@@ -94,17 +127,25 @@ class AgentPipeline:
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
-    async def _agentic_retrieve(self, question: str) -> list[Chunk]:
+    async def _agentic_retrieve(
+        self,
+        question: str,
+        *,
+        max_iterations: int | None = None,
+    ) -> AgentRetrieveResult:
         """Iterative retrieval loop — returns the final merged chunk list."""
+        max_iter = max_iterations if max_iterations is not None else self._max_iterations
         query = Query(text=question)
         retrieval = await self._pipeline.retrieval.retrieve(query)
         chunks: list[Chunk] = list(retrieval.chunks)
+        actions: list[AgentAction] = []
 
-        for iteration in range(self._max_iterations):
+        for iteration in range(max_iter):
             if not chunks:
                 break
 
             decision = self._decide(question, chunks)
+            actions.append(decision.action)
             logger.debug(
                 "Agent iteration %d: %s — %s",
                 iteration + 1,
@@ -113,20 +154,19 @@ class AgentPipeline:
             )
 
             if decision.action == AgentAction.ANSWER:
-                break
+                return AgentRetrieveResult(
+                    chunks=chunks,
+                    iterations=iteration + 1,
+                    actions=actions,
+                )
 
             if decision.action == AgentAction.CLARIFY:
-                # Surface the clarifying question as part of the answer text by
-                # returning an empty chunk list; the generation layer will respond
-                # with the no-context fallback message.
                 logger.info("Agent: clarification needed — %s", decision.clarification)
-                chunks = []
-                break
+                return AgentRetrieveResult(chunks=[], iterations=iteration + 1, actions=actions)
 
             if decision.action == AgentAction.RETRIEVE_MORE and decision.refined_query:
                 refined_query = Query(text=decision.refined_query)
                 refined = await self._pipeline.retrieval.retrieve(refined_query)
-                # Merge via RRF: existing chunks + new results
                 from src.domain.repositories.vector_store_repository import SearchResult
 
                 existing: list[SearchResult] = [(c, 1.0) for c in chunks]
@@ -143,9 +183,17 @@ class AgentPipeline:
                     graph_sr: list[SearchResult] = [(c, 1.0) for c in graph_chunks]
                     merged = rrf_fuse(existing, graph_sr, top_k=len(chunks) + len(graph_chunks))
                     chunks = [c for c, _ in merged]
-                break  # one graph lookup per session
+                return AgentRetrieveResult(
+                    chunks=chunks,
+                    iterations=iteration + 1,
+                    actions=actions,
+                )
 
-        return chunks
+        return AgentRetrieveResult(
+            chunks=chunks,
+            iterations=min(max_iter, max(1, len(actions))),
+            actions=actions,
+        )
 
     def _decide(self, question: str, chunks: list[Chunk]) -> AgentDecision:
         """Ask the LLM whether to answer or refine retrieval."""

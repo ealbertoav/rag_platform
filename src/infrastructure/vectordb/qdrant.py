@@ -6,6 +6,9 @@ from typing import Any
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
     PointIdsList,
     PointStruct,
     SparseIndexParams,
@@ -172,6 +175,37 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant delete failed", cause=exc) from exc
+
+    def delete_by_document_id(self, document_id: str) -> list[str]:
+        """Delete all points whose payload document_id matches. Returns deleted chunk IDs."""
+        self._ensure_collection()
+        deleted: list[str] = []
+        offset: Any | None = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self.collection,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchValue(value=document_id),
+                        )
+                    ]
+                ),
+                limit=100,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            if not points:
+                break
+            ids = [str(p.id) for p in points]
+            if ids:
+                self.delete(ids)
+                deleted.extend(ids)
+            if offset is None:
+                break
+        return deleted
 
     def count(self) -> int:
         try:

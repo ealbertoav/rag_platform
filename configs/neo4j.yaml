@@ -1,0 +1,12 @@
+neo4j:
+  enabled: false
+  uri: bolt://localhost:7687
+  user: neo4j
+  password: ""
+  database: neo4j
+  max_hops: 2
+  extract_entities_on_ingest: true
+
+metadata:
+  enabled: true
+  db_path: data/processed/metadata.db

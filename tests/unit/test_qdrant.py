@@ -441,3 +441,84 @@ class TestQdrantMisc:
         _, kwargs = mock_client.upsert.call_args
         payload = kwargs["points"][0].payload
         assert payload["embedding_model_name"] == "bge_m3:models/bge-m3"
+
+
+class TestDeleteByDocumentId:
+    def test_deletes_matching_points(self, store: QdrantVectorStore, mock_client: MagicMock):
+        p1 = MagicMock(id="c1")
+        mock_client.scroll.return_value = ([p1], None)
+        deleted = store.delete_by_document_id("doc-1")
+        assert deleted == ["c1"]
+        mock_client.delete.assert_called_once()
+
+    def test_paginates_until_empty(self, store: QdrantVectorStore, mock_client: MagicMock):
+        p1, p2 = MagicMock(id="c1"), MagicMock(id="c2")
+        mock_client.scroll.side_effect = [
+            ([p1], "page-2"),
+            ([p2], None),
+        ]
+        deleted = store.delete_by_document_id("doc-1")
+        assert deleted == ["c1", "c2"]
+        assert mock_client.delete.call_count == 2
+
+    def test_stops_when_no_points(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.scroll.return_value = ([], None)
+        assert store.delete_by_document_id("doc-1") == []
+
+
+class TestCollectionEmbeddingModelHelpers:
+    def test_get_model_from_collection_metadata(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(metadata={"embedding_model_name": "openai:text-embedding-3-large"})
+        )
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.get_collection_embedding_model() == "openai:text-embedding-3-large"
+        mock_client.scroll.assert_not_called()
+
+    def test_get_model_from_payload_when_no_metadata(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(config=MagicMock(metadata={}))
+        point = MagicMock()
+        point.payload = {"embedding_model_name": "bge_m3:local"}
+        mock_client.scroll.return_value = ([point], None)
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.get_collection_embedding_model() == "bge_m3:local"
+
+    def test_read_metadata_returns_none_on_probe_error(self, mock_client: MagicMock):
+        mock_client.collection_exists.side_effect = RuntimeError("down")
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store._read_collection_metadata_model() is None
+
+    def test_write_metadata_skips_empty_name(self, mock_client: MagicMock):
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        store._write_collection_metadata_model("")
+        mock_client.update_collection.assert_not_called()
+
+    def test_write_metadata_logs_on_failure(self, mock_client: MagicMock, caplog):
+        import logging
+
+        mock_client.update_collection.side_effect = RuntimeError("fail")
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        with caplog.at_level(logging.DEBUG):
+            store._write_collection_metadata_model("bge_m3:local")
+        assert "Cannot update collection" in caplog.text
+
+    def test_scan_models_paginates_until_offset_none(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        p1 = MagicMock()
+        p1.payload = {"embedding_model_name": "model-a"}
+        p2 = MagicMock()
+        p2.payload = {"embedding_model_name": "model-a"}
+        mock_client.scroll.side_effect = [
+            ([p1], "page-2"),
+            ([p2], None),
+        ]
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store._scan_payload_embedding_models() == {"model-a"}

@@ -7,6 +7,8 @@ from src.core.settings import (
     EmbeddingSettings,
     LLMSettings,
     LoggingSettings,
+    MetadataSettings,
+    Neo4jSettings,
     QdrantSettings,
     QueryExpansionSettings,
     RerankerSettings,
@@ -30,6 +32,8 @@ class TestSettingsSingleton:
         assert isinstance(settings.compression, CompressionSettings)
         assert isinstance(settings.api, APISettings)
         assert isinstance(settings.logging, LoggingSettings)
+        assert isinstance(settings.neo4j, Neo4jSettings)
+        assert isinstance(settings.metadata, MetadataSettings)
 
 
 class TestYamlDefaults:
@@ -50,6 +54,13 @@ class TestYamlDefaults:
         assert settings.retrieval.top_k_dense == 50
         assert settings.retrieval.top_k_final == 5
         assert settings.retrieval.hybrid_alpha == pytest.approx(0.7)
+        assert settings.retrieval.hybrid_fusion == "rrf"
+
+    def test_neo4j_defaults_from_yaml(self):
+        assert settings.neo4j.enabled is False
+
+    def test_metadata_defaults_from_yaml(self):
+        assert settings.metadata.enabled is True
 
     def test_reranker_defaults_from_yaml(self):
         assert settings.reranker.provider == "bge_reranker"

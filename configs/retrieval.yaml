@@ -8,8 +8,9 @@ chunking:
 
 retrieval:
   top_k_dense: 50
-  top_k_final: 5
-  hybrid_alpha: 0.7            # 1.0 = dense only, 0.0 = BM25 only
+  top_k_final: 5               # max chunks passed to generation after rerank/compression
+  hybrid_alpha: 0.7            # weighted_linear only: 1.0 = dense, 0.0 = BM25
+  hybrid_fusion: rrf             # rrf (default) | weighted_linear
 
 reranker:
   provider: bge_reranker

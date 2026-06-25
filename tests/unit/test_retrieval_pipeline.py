@@ -135,6 +135,27 @@ class TestRetrievalServiceExpansion:
         result = await svc.retrieve(_query())
         assert result.query.expanded_texts == []
 
+    @pytest.mark.asyncio
+    async def test_multi_query_fusion_calls_hybrid_per_variant(self):
+        svc = _service(with_expander=True, n_chunks=2)
+        await svc.retrieve(_query())
+        # original + 1 variant → 2 hybrid calls
+        assert svc._hybrid.retrieve.call_count == 2  # type: ignore[union-attr]
+
+
+class TestRetrievalServiceTopKFinal:
+    @pytest.mark.asyncio
+    async def test_top_k_final_limits_output_chunks(self):
+        svc = RetrievalService(
+            dense_retriever=_dense_mock(),
+            hybrid_retriever=_hybrid_mock([_chunk(i) for i in range(10)]),
+            top_k_retrieval=10,
+            top_k_rerank=10,
+            top_k_final=2,
+        )
+        result = await svc.retrieve(_query())
+        assert len(result.chunks) == 2
+
 
 class TestRetrievalServiceReranking:
     @pytest.mark.asyncio
@@ -219,7 +240,10 @@ class TestRetrievalPipelineFromSettings:
             patch("src.rag.retrieval.hybrid_retriever.HybridRetriever"),
             patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
         ):
-            mock_settings.retrieval = MagicMock(hybrid_alpha=0.7, top_k_dense=10)
+            mock_settings.retrieval = MagicMock(
+                hybrid_alpha=0.7, top_k_dense=10, top_k_final=5, hybrid_fusion="rrf"
+            )
+            mock_settings.neo4j = MagicMock(enabled=False)
             mock_settings.reranker = MagicMock(top_k=5)
             mock_settings.query_expansion = MagicMock(enabled=False)
             mock_settings.compression = MagicMock(enabled=False)
@@ -245,7 +269,10 @@ class TestRetrievalPipelineFromSettings:
             patch("src.rag.compression.contextual_compression.ContextualCompressor.from_settings"),
             patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
         ):
-            mock_settings.retrieval = MagicMock(hybrid_alpha=0.5, top_k_dense=20)
+            mock_settings.retrieval = MagicMock(
+                hybrid_alpha=0.5, top_k_dense=20, top_k_final=5, hybrid_fusion="rrf"
+            )
+            mock_settings.neo4j = MagicMock(enabled=False)
             mock_settings.reranker = MagicMock(top_k=5)
             mock_settings.query_expansion = MagicMock(enabled=True)
             mock_settings.compression = MagicMock(enabled=True)
@@ -253,3 +280,74 @@ class TestRetrievalPipelineFromSettings:
             pipeline = RetrievalPipeline.from_settings(llm=mock_llm.return_value)
 
         assert isinstance(pipeline, RetrievalPipeline)
+
+
+class TestBuildGraphRetriever:
+    def test_returns_none_when_neo4j_disabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_graph_retriever
+
+        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+            mock_settings.neo4j = MagicMock(enabled=False)
+            assert _build_graph_retriever(MagicMock(), MagicMock()) is None
+
+    def test_returns_retriever_when_enabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_graph_retriever
+
+        graph_mock = MagicMock()
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.graph_retriever.GraphRetriever.from_settings",
+                return_value=graph_mock,
+            ),
+        ):
+            mock_settings.neo4j = MagicMock(enabled=True)
+            result = _build_graph_retriever(MagicMock(), MagicMock())
+        assert result is graph_mock
+
+    def test_returns_none_on_failure(self, caplog):
+        import logging
+
+        from src.rag.pipelines.retrieval_pipeline import _build_graph_retriever
+
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.graph_retriever.GraphRetriever.from_settings",
+                side_effect=RuntimeError("neo4j down"),
+            ),
+            caplog.at_level(logging.WARNING, logger="src.rag.pipelines.retrieval_pipeline"),
+        ):
+            mock_settings.neo4j = MagicMock(enabled=True)
+            assert _build_graph_retriever(MagicMock(), MagicMock()) is None
+        assert "Graph retriever unavailable" in caplog.text
+
+    def test_from_settings_wires_graph_when_neo4j_enabled(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+            ) as mock_llm,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
+            patch("src.rag.retrieval.dense_retriever.DenseRetriever"),
+            patch("src.rag.retrieval.hybrid_retriever.HybridRetriever") as mock_hybrid,
+            patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
+            patch(
+                "src.rag.pipelines.retrieval_pipeline._build_graph_retriever",
+                return_value=MagicMock(),
+            ),
+        ):
+            mock_settings.retrieval = MagicMock(
+                hybrid_alpha=0.7, top_k_dense=10, top_k_final=5, hybrid_fusion="rrf"
+            )
+            mock_settings.neo4j = MagicMock(enabled=True)
+            mock_settings.reranker = MagicMock(top_k=5)
+            mock_settings.query_expansion = MagicMock(enabled=False)
+            mock_settings.compression = MagicMock(enabled=False)
+            mock_llm.return_value = MagicMock()
+            RetrievalPipeline.from_settings()
+            _, kwargs = mock_hybrid.call_args
+            assert kwargs["graph_retriever"] is not None
