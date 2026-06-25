@@ -1,11 +1,13 @@
 """T-013 integration tests — QdrantVectorStore (requires running Qdrant).
 
 Run with:
-    make qdrant-up   # start Qdrant via Docker
+    make qdrant-up # start Qdrant via Docker
     uv run pytest tests/integration/test_qdrant.py -v
 """
 
 from __future__ import annotations
+
+from uuid import NAMESPACE_DNS, uuid5
 
 import pytest
 
@@ -15,11 +17,16 @@ _QDRANT_URL = "http://localhost:6333"
 _COLLECTION = "test_integration"
 
 
+def _chunk_id(i: int) -> str:
+    """Stable UUID point IDs — Qdrant rejects arbitrary string IDs."""
+    return str(uuid5(NAMESPACE_DNS, f"integ-chunk-{i:04d}"))
+
+
 def _reachable() -> bool:
     try:
         from qdrant_client import QdrantClient
 
-        QdrantClient(url=_QDRANT_URL, timeout=2).get_collections()
+        QdrantClient(url=_QDRANT_URL, timeout=2, check_compatibility=False).get_collections()
         return True
     except Exception:
         return False
@@ -30,7 +37,7 @@ pytestmark = pytest.mark.skipif(not _reachable(), reason="Qdrant not reachable a
 
 def _chunk(i: int) -> Chunk:
     return Chunk(
-        id=f"integ-chunk-{i:04d}",
+        id=_chunk_id(i),
         document_id="integ-doc-1",
         text=f"Integration test chunk number {i}",
         embedding=[float(j + i) / 100 for j in range(4)],
@@ -47,8 +54,8 @@ def store():
     yield s
     import contextlib
 
-    with contextlib.suppress(Exception):
-        s._client.delete_collection(_COLLECTION)
+    with contextlib.suppress(OSError, ConnectionError, TimeoutError):
+        s.drop_collection()
 
 
 class TestQdrantIntegration:
@@ -80,7 +87,7 @@ class TestQdrantIntegration:
 
     def test_delete_removes_chunks(self, store):
         before = store.count()
-        store.delete(["integ-chunk-0000"])
+        store.delete([_chunk_id(0)])
         after = store.count()
         assert after == before - 1
 

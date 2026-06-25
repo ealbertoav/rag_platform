@@ -1,6 +1,6 @@
 # RAG Platform
 
-A production-grade, **local** Retrieval-Augmented Generation platform built with Clean Architecture and Domain-Driven Design. Runs entirely on Apple Silicon (M-series) with no external API keys required.
+A production-grade Retrieval-Augmented Generation platform built with Clean Architecture and Domain-Driven Design. Runs fully self-hosted on Apple Silicon (M-series) by default; API-based embedding providers (OpenAI, Voyage AI, Cohere, Gemini) can be enabled with a single config change.
 
 ---
 
@@ -18,6 +18,7 @@ A production-grade, **local** Retrieval-Augmented Generation platform built with
   - [Chat](#chat)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
+  - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
   - [Development Hot-Reload](#development-hot-reload)
@@ -103,9 +104,11 @@ flowchart LR
 |---|---|
 | LLM (inference) | [llama.cpp](https://github.com/ggerganov/llama.cpp) via `llama-cpp-python` |
 | Default model | Qwen3-30B (GGUF) |
-| Embeddings | [BGE-M3](https://huggingface.co/BAAI/bge-m3) · [Nomic-Embed-Text v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) · [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) |
+| Embeddings (self-hosted) | [BGE-M3](https://huggingface.co/BAAI/bge-m3) · [Nomic-Embed-Text v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) · [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) |
+| Embeddings (API, optional) | OpenAI · Voyage AI · Cohere · Gemini (`uv sync --extra api-embeddings`) |
+| Embedding cache | Redis (transparent decorator, configurable TTL) |
 | Reranker | [BGE-Reranker-v2-M3](https://huggingface.co/BAAI/bge-reranker-v2-m3) |
-| Vector DB | [Qdrant](https://qdrant.tech) (self-hosted) |
+| Vector DB | [Qdrant](https://qdrant.tech) (self-hosted, with embedding model versioning) |
 | Sparse search | BM25 via `rank-bm25` |
 | Knowledge graph | [Neo4j](https://neo4j.com) (optional, `uv sync --extra graph`) |
 | API framework | [FastAPI](https://fastapi.tiangolo.com) |
@@ -191,10 +194,21 @@ All configuration lives in `configs/*.yaml` with environment variable overrides.
 ```bash
 # Key settings (use __ as nested delimiter)
 LLM__MODEL_PATH=models/llm/your-model.gguf
-LLM__N_GPU_LAYERS=-1          # -1 = all layers on Metal
-EMBEDDINGS__DEVICE=mps        # mps | cuda | cpu
+LLM__N_GPU_LAYERS=-1                       # -1 = all layers on Metal
+EMBEDDINGS__PROVIDER=bge_m3                # bge_m3 | nomic | qwen_embedding | openai | voyage | cohere | gemini
+EMBEDDINGS__DEVICE=mps                     # mps | cuda | cpu
 QDRANT__URL=http://localhost:6333
 QDRANT__COLLECTION=rag_documents
+
+# API embedding providers (only required when EMBEDDINGS__PROVIDER matches)
+EMBEDDINGS__OPENAI__API_KEY=
+EMBEDDINGS__VOYAGE__API_KEY=
+EMBEDDINGS__COHERE__API_KEY=
+EMBEDDINGS__GEMINI__API_KEY=
+
+# Embedding cache (disabled by default — set true to enable Redis caching)
+EMBEDDINGS__CACHE__ENABLED=false
+REDIS__URL=redis://localhost:6379
 ```
 
 | File | Purpose |
@@ -202,7 +216,7 @@ QDRANT__COLLECTION=rag_documents
 | `configs/llm/qwen3-30b.yaml` | Default LLM profile (llama.cpp + Qwen3-30B) |
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
-| `configs/embeddings.yaml` | Embedding model, batch size, vector dimensions |
+| `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking, hybrid search alpha, reranker settings |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -292,7 +306,7 @@ uv run python scripts/run_evals.py \
 
 ### Rebuild Embeddings
 
-Use this when you switch to a different embedding model or need to recover a corrupted Qdrant collection. The BM25 index (which persists chunk text) is used as the source of truth.
+Use this when you switch to a different embedding model or need to recover a corrupted Qdrant collection. The BM25 index (which persists chunk text) is used as the source of truth. Works with any provider — self-hosted or API-based.
 
 ```bash
 # Preview: count chunks without writing anything
@@ -304,15 +318,17 @@ uv run python scripts/rebuild_embeddings.py
 # Start fresh: drop Qdrant collection, re-embed everything
 uv run python scripts/rebuild_embeddings.py --recreate-collection
 
-# Custom batch size (default: 32)
+# Custom batch size (default: 32; API providers default to 32 with rate-limit pacing)
 uv run python scripts/rebuild_embeddings.py --batch-size 16
 ```
+
+> **Model mismatch guard:** Before writing, the script checks the collection's tracked `embedding_model_name` (collection metadata, or the first tagged point on legacy collections). If it differs from the current config — including API model or dimension changes — the script aborts with a clear error. Use `--recreate-collection` to re-index from scratch.
 
 ```mermaid
 flowchart LR
     BM[("BM25 Index<br/>(chunk text)")]
-    --> EMB["BGE-M3<br/>embed_both()"]
-    --> QD[("Qdrant<br/>upsert")]
+    --> EMB["Active Provider<br/>embed_both()"]
+    --> QD[("Qdrant<br/>upsert + model tag")]
     style BM fill:#fff3cd,stroke:#856404
     style QD fill:#d1ecf1,stroke:#0c5460
 ```
@@ -391,6 +407,41 @@ uv run python scripts/compare_models.py \
 ```
 
 The winning model is determined by real evaluation data — Faithfulness + Relevance + Recall@5 + Context Precision on **your** documents, not generic benchmarks.
+
+---
+
+### Compare Embedding Providers
+
+Benchmark multiple embedding providers against the same golden QA dataset and get a side-by-side quality, latency, and estimated cost table:
+
+```bash
+# Self-hosted only (no API key required)
+uv run python scripts/compare_embedding_providers.py --providers bge_m3
+
+# Compare local vs API providers
+uv run python scripts/compare_embedding_providers.py \
+  --providers bge_m3 openai voyage \
+  --max-samples 50
+
+# Save results to a custom path
+uv run python scripts/compare_embedding_providers.py \
+  --providers bge_m3 openai voyage cohere \
+  --output data/exports/embedding_comparison.json
+```
+
+**Output:**
+
+```
+┌───────────────────┬──────────┬──────────┬──────────┬─────────────┬───────────┐
+│ Provider          │ Recall@5 │ NDCG@5   │ Latency  │ Cost/1K tok │ Status    │
+├───────────────────┼──────────┼──────────┼──────────┼─────────────┼───────────┤
+│ bge_m3 (local)    │  0.843   │  0.871   │  18 ms   │  $0.000     │ OK ✓      │
+│ openai            │  0.861   │  0.889   │  210 ms  │  $0.130     │ OK ✓      │
+│ voyage            │  0.878   │  0.902   │  185 ms  │  $0.120     │ OK ✓      │
+└───────────────────┴──────────┴──────────┴──────────┴─────────────┴───────────┘
+```
+
+API providers that are not configured (no key set) are skipped with a warning rather than aborting the run. Results are saved to `data/exports/embedding_comparison_{timestamp}.json`.
 
 ---
 
@@ -660,24 +711,69 @@ print("Sources:", answer.sources)
 
 ## Embedding Providers
 
-Three providers are available. Switch via `EMBEDDINGS__PROVIDER` env var (or `configs/embeddings.yaml`). After switching, update `EMBEDDINGS__DENSE_DIM` and run `python scripts/rebuild_embeddings.py --recreate-collection`.
+Seven providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER` (env var or `configs/embeddings.yaml`). After switching, update `EMBEDDINGS__DENSE_DIM` to match the new model and run `python scripts/rebuild_embeddings.py --recreate-collection`.
 
-| Provider | `EMBEDDINGS__PROVIDER` | Dim | Sparse | Model path |
+### Self-hosted (no API key, run locally)
+
+| Provider | `EMBEDDINGS__PROVIDER` | Dim | Sparse | Source |
 |---|---|---|---|---|
-| BGE-M3 (default) | `bge_m3` | 1024 | ✓ native | `models/embeddings/bge-m3` |
-| Nomic-Embed-Text v1.5 | `nomic` | 768 | ✗ (BM25 only) | `nomic-ai/nomic-embed-text-v1.5` |
-| Qwen3-Embedding-0.6B | `qwen_embedding` | 1024 | ✗ (BM25 only) | `Qwen/Qwen3-Embedding-0.6B` |
+| BGE-M3 **(default)** | `bge_m3` | 1024 | ✓ native | `models/embeddings/bge-m3` |
+| Nomic-Embed-Text v1.5 | `nomic` | 768 | ✗ (BM25) | `nomic-ai/nomic-embed-text-v1.5` |
+| Qwen3-Embedding-0.6B | `qwen_embedding` | 1024 | ✗ (BM25) | `Qwen/Qwen3-Embedding-0.6B` |
+
+### API-based (requires key + `uv sync --extra api-embeddings`)
+
+| Provider | `EMBEDDINGS__PROVIDER` | Dim | Default model | Key env var |
+|---|---|---|---|---|
+| OpenAI | `openai` | 3072 | `text-embedding-3-large` | `EMBEDDINGS__OPENAI__API_KEY` |
+| Voyage AI | `voyage` | 1536 | `voyage-large-2` | `EMBEDDINGS__VOYAGE__API_KEY` |
+| Cohere | `cohere` | 1024 | `embed-english-v3.0` | `EMBEDDINGS__COHERE__API_KEY` |
+| Gemini | `gemini` | 768 | `text-embedding-004` | `EMBEDDINGS__GEMINI__API_KEY` |
+
+All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`; changing dimensions after indexing requires `--recreate-collection`.
 
 ```bash
-# Example: switch to Nomic
-EMBEDDINGS__PROVIDER=nomic
-EMBEDDINGS__MODEL_PATH=nomic-ai/nomic-embed-text-v1.5
-EMBEDDINGS__DENSE_DIM=768
+# Switch to Voyage AI
+EMBEDDINGS__PROVIDER=voyage
+EMBEDDINGS__VOYAGE__API_KEY=your-key
+EMBEDDINGS__DENSE_DIM=1536
+
+uv run python scripts/rebuild_embeddings.py --recreate-collection
+
+# Switch back to self-hosted BGE-M3
+EMBEDDINGS__PROVIDER=bge_m3
+EMBEDDINGS__DENSE_DIM=1024
 
 uv run python scripts/rebuild_embeddings.py --recreate-collection
 ```
 
-> **Sparse vectors:** BGE-M3 produces both dense and sparse vectors in a single pass, enabling Qdrant native sparse search. Nomic and Qwen3-Embedding are dense-only — BM25 (independent of the embedding model) continues to provide sparse retrieval.
+### Embedding cache
+
+When `EMBEDDINGS__CACHE__ENABLED=true`, dense vectors are cached in Redis using a SHA-256 key of `text + model_identifier`. This eliminates redundant API calls during re-ingestion or repeated queries. Caching is disabled by default — set `EMBEDDINGS__CACHE__ENABLED=true` to activate it.
+
+```bash
+EMBEDDINGS__CACHE__ENABLED=true
+EMBEDDINGS__CACHE__TTL_SECONDS=604800   # 7 days
+REDIS__URL=redis://localhost:6379
+```
+
+Cache metrics are exposed on `/metrics`: `rag_embedding_cache_hits_total` and `rag_embedding_cache_misses_total`. If Redis is unavailable the provider falls through transparently — no error, no data loss.
+
+### Embedding model versioning
+
+Each upserted point carries an `embedding_model_name` payload field. New collections also store the same value in **Qdrant collection metadata** for O(1) validation. On startup (and in `rebuild_embeddings.py` preflight), `QdrantVectorStore` compares that tracked name to the current config and aborts on mismatch — preventing silent vector corruption when switching providers, models, or dimensions.
+
+Identifiers follow `provider:model` for self-hosted providers and `provider:model@dim` for API providers (the `@dim` suffix captures OpenAI `text-embedding-3` truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`):
+
+```
+VectorStoreError: Embedding model mismatch: collection 'rag_documents' was built with
+'bge_m3:models/embeddings/bge-m3' but current config is 'openai:text-embedding-3-large@512'.
+Run: python scripts/rebuild_embeddings.py --recreate-collection
+```
+
+Legacy collections without metadata fall back to the first tagged point payload; a successful match backfills collection metadata automatically.
+
+> **Sparse vectors:** BGE-M3 produces both dense and sparse vectors in a single forward pass, enabling Qdrant native sparse search. All other providers are dense-only — BM25 (maintained independently of the embedding model) continues to provide lexical retrieval.
 
 ---
 
@@ -839,13 +935,17 @@ make test-unit
 # All tests including integration
 make test
 
+# Qdrant integration tests (requires running Qdrant — skipped in CI)
+make qdrant-up
+uv run pytest tests/integration/test_qdrant.py -v
+
 # Benchmark suite
 uv run pytest tests/benchmarks/ -v -s
 ```
 
 **Test coverage:** 97 source files · 39 test files · 640+ unit tests.
 
-Integration tests auto-skip when models / Qdrant are absent.
+Integration tests auto-skip when models or Qdrant are absent (CI runs them but does not start Docker services).
 
 ---
 
@@ -970,7 +1070,7 @@ scrape_configs:
 ```mermaid
 flowchart LR
     PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
-    L --> U["2️⃣ Unit Tests<br/>568+ tests<br/>coverage upload"]
+    L --> U["2️⃣ Unit Tests<br/>640+ tests<br/>coverage upload"]
     U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
     U --> R["4️⃣ Retrieval Regression<br/>Recall@5 gate<br/>auto-skip if no golden data"]
 

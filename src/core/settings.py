@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -47,14 +47,62 @@ class LLMSettings(BaseModel):
     stop_tokens: list[str] = Field(default_factory=lambda: ["<|im_end|>"])
 
 
+# ── API embedding provider config blocks (all optional) ───────────────────────
+
+
+class OpenAIEmbeddingConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "text-embedding-3-large"
+    dimensions: int = 3072  # text-embedding-3 supports truncation via this param
+
+
+class VoyageEmbeddingConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "voyage-large-2"
+    dimensions: int = 1536
+
+
+class CohereEmbeddingConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "embed-english-v3.0"
+    dimensions: int = 1024
+
+
+class GeminiEmbeddingConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "text-embedding-004"
+    dimensions: int = 768
+
+
+class EmbeddingCacheSettings(BaseModel):
+    enabled: bool = False  # opt-in: avoids Redis round-trips for self-hosted providers
+    ttl_seconds: int = 604800  # 7 days
+
+
 class EmbeddingSettings(BaseModel):
-    provider: Literal["bge_m3", "nomic", "qwen_embedding"] = "bge_m3"
+    provider: Literal[
+        "bge_m3",
+        "nomic",
+        "qwen_embedding",  # self-hosted
+        "openai",
+        "voyage",
+        "cohere",
+        "gemini",  # API-based
+    ] = "bge_m3"
     model_path: str = "models/embeddings/bge-m3"
     batch_size: int = 32
     device: Literal["mps", "cuda", "cpu"] = "mps"
     normalize: bool = True
     dense_dim: int = 1024
     sparse_dim: int = 30522
+
+    # Per-provider API config (populated from env vars or YAML)
+    openai: OpenAIEmbeddingConfig = Field(default_factory=OpenAIEmbeddingConfig)
+    voyage: VoyageEmbeddingConfig = Field(default_factory=VoyageEmbeddingConfig)
+    cohere: CohereEmbeddingConfig = Field(default_factory=CohereEmbeddingConfig)
+    gemini: GeminiEmbeddingConfig = Field(default_factory=GeminiEmbeddingConfig)
+
+    cache: EmbeddingCacheSettings = Field(default_factory=EmbeddingCacheSettings)
 
 
 class RerankerSettings(BaseModel):
@@ -68,6 +116,11 @@ class QdrantSettings(BaseModel):
     url: str = "http://localhost:6333"
     collection: str = "rag_documents"
     api_key: str = ""
+
+
+class RedisSettings(BaseModel):
+    url: str = "redis://localhost:6379"
+    password: SecretStr = SecretStr("")
 
 
 class RetrievalSettings(BaseModel):
@@ -134,6 +187,7 @@ class Settings(BaseSettings):
     embeddings: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     query_expansion: QueryExpansionSettings = Field(default_factory=QueryExpansionSettings)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)

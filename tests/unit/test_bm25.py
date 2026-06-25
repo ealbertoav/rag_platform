@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -242,3 +243,33 @@ class TestBM25Retriever:
         retriever.index(_CORPUS)
         retriever.save()
         assert path.exists()
+
+
+class TestBM25IndexErrors:
+    def test_save_os_error_raises(self, tmp_path: Path):
+        idx = BM25Index(index_path=tmp_path / "bm25.pkl")
+        idx.index(_CORPUS)
+        with (
+            patch("pathlib.Path.open", side_effect=OSError("disk full")),
+            pytest.raises(VectorStoreError, match="Cannot save"),
+        ):
+            idx.save()
+
+    def test_load_corrupt_pickle_raises(self, tmp_path: Path):
+        path = tmp_path / "bm25.pkl"
+        path.write_bytes(b"not-a-pickle")
+        with pytest.raises(VectorStoreError, match="Cannot load"):
+            BM25Index(index_path=path).load()
+
+    def test_chunks_property_returns_snapshot(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        chunks = idx.chunks
+        assert len(chunks) == len(_CORPUS)
+        chunks.clear()
+        assert idx.size == len(_CORPUS)
+
+    def test_get_by_id_miss_returns_none(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        assert idx.get_by_id("missing-id") is None

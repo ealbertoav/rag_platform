@@ -28,6 +28,16 @@ LLM_TOKENS_TOTAL = Counter(
     "Total tokens produced by the LLM",
 )
 
+EMBEDDING_CACHE_HITS = Counter(
+    "rag_embedding_cache_hits_total",
+    "Total embedding vectors served from Redis cache",
+)
+
+EMBEDDING_CACHE_MISSES = Counter(
+    "rag_embedding_cache_misses_total",
+    "Total embedding vectors computed (cache miss)",
+)
+
 # ── Recording helpers ──────────────────────────────────────────────────────────
 
 

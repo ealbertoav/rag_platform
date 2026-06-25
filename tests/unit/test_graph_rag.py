@@ -218,3 +218,85 @@ class TestNeo4jGraphRepository:
     def test_search_empty_entities_returns_empty(self):
         repo = Neo4jGraphRepository()
         assert repo.search_by_entities([], top_k=5) == []
+
+    def test_upsert_with_relations(self):
+        from src.infrastructure.vectordb.neo4j_graph import GraphRelation
+
+        repo = Neo4jGraphRepository()
+        mock_session = MagicMock()
+        mock_driver = MagicMock()
+        mock_driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        repo._driver = mock_driver
+
+        rel = GraphRelation(subject="EKS", relation="uses", object="IAM")
+        repo.upsert([rel], chunk_id="c0", document_id="doc-1")
+        mock_session.execute_write.assert_called_once()
+
+    def test_search_by_entities_returns_results(self):
+        repo = Neo4jGraphRepository()
+        mock_session = MagicMock()
+        mock_session.execute_read.return_value = [("c0", 1.0)]
+        mock_driver = MagicMock()
+        mock_driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        repo._driver = mock_driver
+
+        results = repo.search_by_entities(["EKS"], top_k=3)
+        assert results == [("c0", 1.0)]
+
+    def test_close_clears_driver(self):
+        repo = Neo4jGraphRepository()
+        mock_driver = MagicMock()
+        repo._driver = mock_driver
+        repo.close()
+        mock_driver.close.assert_called_once()
+        assert repo._driver is None
+
+    def test_from_settings_with_neo4j_config(self):
+        mock_settings = MagicMock()
+        mock_settings.neo4j = MagicMock(uri="bolt://neo4j:7687", user="admin", password="secret")
+        with patch("src.core.settings.settings", mock_settings):
+            repo = Neo4jGraphRepository.from_settings()
+        assert repo.uri == "bolt://neo4j:7687"
+        assert repo.user == "admin"
+        assert repo.password == "secret"
+
+    def test_upsert_failure_raises_retrieval_error(self):
+        from src.core.exceptions import RetrievalError
+        from src.infrastructure.vectordb.neo4j_graph import GraphRelation
+
+        repo = Neo4jGraphRepository()
+        mock_driver = MagicMock()
+        mock_driver.session.side_effect = RuntimeError("neo4j down")
+        repo._driver = mock_driver
+        with pytest.raises(RetrievalError, match="upsert"):
+            repo.upsert([GraphRelation("A", "r", "B")], chunk_id="c0")
+
+    def test_search_failure_raises_retrieval_error(self):
+        from src.core.exceptions import RetrievalError
+
+        repo = Neo4jGraphRepository()
+        mock_driver = MagicMock()
+        mock_driver.session.side_effect = RuntimeError("neo4j down")
+        repo._driver = mock_driver
+        with pytest.raises(RetrievalError, match="search"):
+            repo.search_by_entities(["EKS"], top_k=3)
+
+
+class TestNeo4jCypherHelpers:
+    def test_upsert_relation_runs_cypher(self):
+        from src.infrastructure.vectordb.neo4j_graph import GraphRelation, _upsert_relation
+
+        tx = MagicMock()
+        rel = GraphRelation(subject="A", relation="rel", object="B")
+        _upsert_relation(tx, rel, "c1", "doc-1")
+        tx.run.assert_called_once()
+
+    def test_search_chunks_returns_scores(self):
+        from src.infrastructure.vectordb.neo4j_graph import _search_chunks
+
+        tx = MagicMock()
+        tx.run.return_value = [{"chunk_id": "c1", "score": 0.75}]
+        results = _search_chunks(tx, ["A", "B"], top_k=5)
+        assert results == [("c1", 0.75)]

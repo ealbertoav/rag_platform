@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -229,3 +229,63 @@ class TestContextPrecisionMetric:
         with patch(_CTX_PREC, return_value=0.75):
             result = ContextPrecisionMetric().score(_sample())
         assert result.metric == "context_precision"
+
+
+# ── Ragas infrastructure ───────────────────────────────────────────────────────
+
+
+class TestRagasInfrastructure:
+    def test_make_ragas_dataset(self):
+        from src.evals.generation import _make_ragas_dataset
+
+        with patch("datasets.Dataset.from_dict") as mock_from_dict:
+            _make_ragas_dataset(_sample())
+        mock_from_dict.assert_called_once()
+        call_kwargs = mock_from_dict.call_args[0][0]
+        assert call_kwargs["question"] == [_sample().question]
+
+    def test_get_ragas_metric_imports_faithfulness(self):
+        fake_metrics = MagicMock()
+        fake_metrics.faithfulness = MagicMock(name="faithfulness")
+        fake_ragas = MagicMock(metrics=fake_metrics)
+        with patch.dict("sys.modules", {"ragas": fake_ragas, "ragas.metrics": fake_metrics}):
+            metric = FaithfulnessMetric()._get_ragas_metric()
+        assert metric is fake_metrics.faithfulness
+
+    def test_get_ragas_metric_imports_relevance(self):
+        fake_metrics = MagicMock()
+        fake_metrics.answer_relevancy = MagicMock(name="answer_relevancy")
+        fake_ragas = MagicMock(metrics=fake_metrics)
+        with patch.dict("sys.modules", {"ragas": fake_ragas, "ragas.metrics": fake_metrics}):
+            metric = RelevanceMetric()._get_ragas_metric()
+        assert metric is fake_metrics.answer_relevancy
+
+    def test_get_ragas_metric_imports_context_precision(self):
+        fake_metrics = MagicMock()
+        fake_metrics.context_precision = MagicMock(name="context_precision")
+        fake_ragas = MagicMock(metrics=fake_metrics)
+        with patch.dict("sys.modules", {"ragas": fake_ragas, "ragas.metrics": fake_metrics}):
+            metric = ContextPrecisionMetric()._get_ragas_metric()
+        assert metric is fake_metrics.context_precision
+
+
+class TestHallucinationDeepeval:
+    def test_deepeval_score_path(self):
+        mock_metric = MagicMock()
+        mock_metric.score = 0.05
+        fake_hm = MagicMock(return_value=mock_metric)
+        fake_test_case = MagicMock()
+        fake_deepeval = MagicMock(
+            metrics=MagicMock(HallucinationMetric=fake_hm),
+            test_case=MagicMock(LLMTestCase=fake_test_case),
+        )
+        with patch.dict(
+            "sys.modules",
+            {
+                "deepeval": fake_deepeval,
+                "deepeval.metrics": fake_deepeval.metrics,
+                "deepeval.test_case": fake_deepeval.test_case,
+            },
+        ):
+            raw = HallucinationMetric(threshold=0.1)._deepeval_score(_sample())
+        assert raw == pytest.approx(0.05)

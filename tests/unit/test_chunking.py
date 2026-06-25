@@ -166,6 +166,19 @@ class TestSemanticChunker:
         chunker = get_chunker("semantic", encode=_ones_encoder)
         assert isinstance(chunker, SemanticChunker)
 
+    def test_lazy_loads_sentence_transformer_when_encode_not_injected(self):
+        from unittest.mock import MagicMock, patch
+
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array([[1.0, 0.0], [0.9, 0.1]])
+        chunker = SemanticChunker(model_name="test-model")
+        with patch("sentence_transformers.SentenceTransformer", return_value=mock_model):
+            encode_fn = chunker._get_encode()
+            result = encode_fn(["a", "b"])
+        mock_model.encode.assert_called_once_with(["a", "b"])
+        assert result is not None
+        assert chunker._get_encode() is encode_fn
+
 
 # ── ParentChildChunker ─────────────────────────────────────────────────────────
 

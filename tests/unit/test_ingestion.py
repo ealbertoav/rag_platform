@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -221,6 +221,24 @@ class TestIngestionPipelineDirectory:
         pipeline, _, _, bm25 = _pipeline()
         pipeline.save_indexes()
         bm25.save.assert_called_once()
+
+
+class TestIngestionPipelineFromSettings:
+    def test_from_settings_builds_pipeline(self):
+        from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
+
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch("src.rag.chunking.get_chunker") as mock_chunker,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+        ):
+            mock_settings.chunking = MagicMock(strategy="recursive", chunk_size=512, overlap=64)
+            pipeline = IngestionPipeline.from_settings()
+
+        assert isinstance(pipeline, IngestionPipeline)
+        mock_chunker.assert_called_once_with("recursive", chunk_size=512, overlap=64)
 
 
 # ── embed_both default ─────────────────────────────────────────────────────────
