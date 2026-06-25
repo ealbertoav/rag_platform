@@ -206,8 +206,8 @@ EMBEDDINGS__VOYAGE__API_KEY=
 EMBEDDINGS__COHERE__API_KEY=
 EMBEDDINGS__GEMINI__API_KEY=
 
-# Embedding cache
-EMBEDDINGS__CACHE__ENABLED=true
+# Embedding cache (disabled by default — set true to enable Redis caching)
+EMBEDDINGS__CACHE__ENABLED=false
 REDIS__URL=redis://localhost:6379
 ```
 
@@ -322,7 +322,7 @@ uv run python scripts/rebuild_embeddings.py --recreate-collection
 uv run python scripts/rebuild_embeddings.py --batch-size 16
 ```
 
-> **Model mismatch guard:** The script reads the `embedding_model_name` field stored in every Qdrant point's payload. If the collection was built with a different provider than the current config, the script aborts with a clear error before touching any data. Use `--recreate-collection` to re-index from scratch.
+> **Model mismatch guard:** Before writing, the script checks the collection's tracked `embedding_model_name` (collection metadata, or the first tagged point on legacy collections). If it differs from the current config — including API model or dimension changes — the script aborts with a clear error. Use `--recreate-collection` to re-index from scratch.
 
 ```mermaid
 flowchart LR
@@ -730,7 +730,7 @@ Seven providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER
 | Cohere | `cohere` | 1024 | `embed-english-v3.0` | `EMBEDDINGS__COHERE__API_KEY` |
 | Gemini | `gemini` | 768 | `text-embedding-004` | `EMBEDDINGS__GEMINI__API_KEY` |
 
-All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`.
+All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`; changing dimensions after indexing requires `--recreate-collection`.
 
 ```bash
 # Switch to Voyage AI
@@ -761,13 +761,17 @@ Cache metrics are exposed on `/metrics`: `rag_embedding_cache_hits_total` and `r
 
 ### Embedding model versioning
 
-Every point upserted into Qdrant carries an `embedding_model_name` payload field. On startup, `QdrantVectorStore` samples the existing collection and aborts if the stored model differs from the current config — preventing silent vector corruption when switching providers.
+Each upserted point carries an `embedding_model_name` payload field. New collections also store the same value in **Qdrant collection metadata** for O(1) validation. On startup (and in `rebuild_embeddings.py` preflight), `QdrantVectorStore` compares that tracked name to the current config and aborts on mismatch — preventing silent vector corruption when switching providers, models, or dimensions.
+
+Identifiers follow `provider:model` for self-hosted providers and `provider:model@dim` for API providers (the `@dim` suffix captures OpenAI `text-embedding-3` truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`):
 
 ```
 VectorStoreError: Embedding model mismatch: collection 'rag_documents' was built with
-'bge_m3' but current config is 'openai'.
+'bge_m3:models/embeddings/bge-m3' but current config is 'openai:text-embedding-3-large@512'.
 Run: python scripts/rebuild_embeddings.py --recreate-collection
 ```
+
+Legacy collections without metadata fall back to the first tagged point payload; a successful match backfills collection metadata automatically.
 
 > **Sparse vectors:** BGE-M3 produces both dense and sparse vectors in a single forward pass, enabling Qdrant native sparse search. All other providers are dense-only — BM25 (maintained independently of the embedding model) continues to provide lexical retrieval.
 
@@ -931,13 +935,17 @@ make test-unit
 # All tests including integration
 make test
 
+# Qdrant integration tests (requires running Qdrant — skipped in CI)
+make qdrant-up
+uv run pytest tests/integration/test_qdrant.py -v
+
 # Benchmark suite
 uv run pytest tests/benchmarks/ -v -s
 ```
 
 **Test coverage:** 97 source files · 39 test files · 640+ unit tests.
 
-Integration tests auto-skip when models / Qdrant are absent.
+Integration tests auto-skip when models or Qdrant are absent (CI runs them but does not start Docker services).
 
 ---
 
@@ -1062,7 +1070,7 @@ scrape_configs:
 ```mermaid
 flowchart LR
     PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
-    L --> U["2️⃣ Unit Tests<br/>568+ tests<br/>coverage upload"]
+    L --> U["2️⃣ Unit Tests<br/>640+ tests<br/>coverage upload"]
     U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
     U --> R["4️⃣ Retrieval Regression<br/>Recall@5 gate<br/>auto-skip if no golden data"]
 
