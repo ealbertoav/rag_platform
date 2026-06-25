@@ -1293,7 +1293,7 @@
 ---
 
 ### T-121 · Document Augmentation (Synthetic Questions)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** At ingest time, generate N synthetic questions per chunk and store them as additional indexable content — inspired by RAG_Techniques `document_augmentation.py`.
 - **Inputs:** T-015 (ingestion), T-030 (LLM), T-013 (Qdrant upsert)
 - **Outputs:** Each chunk may have companion "question chunks" indexed alongside the source chunk.

@@ -182,6 +182,11 @@ class ContextualHeadersSettings(BaseModel):
     exclude_from_llm_context: bool = True
 
 
+class AugmentationSettings(BaseModel):
+    enabled: bool = False
+    n_questions: int = Field(default=3, gt=0)
+
+
 class ChunkingSettings(BaseModel):
     strategy: Literal["recursive", "semantic", "parent_child"] = "recursive"
     chunk_size: int = Field(default=500, gt=0)
@@ -192,6 +197,7 @@ class ChunkingSettings(BaseModel):
     parent_chunk_size: int = Field(default=1500, gt=0)
     child_chunk_size: int = Field(default=400, gt=0)
     contextual_headers: ContextualHeadersSettings = Field(default_factory=ContextualHeadersSettings)
+    augmentation: AugmentationSettings = Field(default_factory=AugmentationSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────

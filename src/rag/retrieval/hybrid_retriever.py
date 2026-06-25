@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from src.domain.entities.query import Query
 from src.domain.repositories.vector_store_repository import SearchResult
+from src.rag.enrichment.document_augmentation import resolve_synthetic_questions
 from src.rag.ranking.score_fusion import rrf_fuse, weighted_linear_fuse
 from src.rag.retrieval.bm25_retriever import BM25Retriever
 from src.rag.retrieval.dense_retriever import DenseRetriever
@@ -62,9 +63,22 @@ class HybridRetriever:
             tasks.append(asyncio.to_thread(self._graph.search, query.text, expansion))
 
         gathered = await asyncio.gather(*tasks)
-        dense_results = gathered[0]
-        bm25_results = gathered[1]
-        graph_results = gathered[2] if self._graph is not None else []
+        dense_results = resolve_synthetic_questions(
+            gathered[0],
+            lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+        )
+        bm25_results = resolve_synthetic_questions(
+            gathered[1],
+            lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+        )
+        graph_results = (
+            resolve_synthetic_questions(
+                gathered[2],
+                lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+            )
+            if self._graph is not None
+            else []
+        )
 
         if self._fusion_mode == "weighted_linear" and self._graph is None:
             fused = weighted_linear_fuse(dense_results, bm25_results, alpha=self.alpha, top_k=top_k)

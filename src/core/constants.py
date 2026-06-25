@@ -16,6 +16,9 @@ CHUNK_PARENT_ID_KEY = "parent_id"
 CHUNK_HASH_KEY = "content_hash"
 CHUNK_INDEX_KEY = "chunk_index"
 CHUNK_RAW_TEXT_KEY = "raw_text"
+CHUNK_TYPE_KEY = "type"
+CHUNK_TYPE_SYNTHETIC = "synthetic_question"
+SOURCE_CHUNK_ID_KEY = "source_chunk_id"
 
 # ── Supported document types ───────────────────────────────────────────────────
 SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(

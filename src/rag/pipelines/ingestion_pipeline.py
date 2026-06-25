@@ -62,12 +62,14 @@ class IngestionPipeline:
         bm25: BM25Index,
         metadata: MetadataRepository | None = None,
         graph_indexer: object | None = None,
+        augmentor: object | None = None,
     ) -> None:
         self._service = service
         self._vector_store = vector_store
         self._bm25 = bm25
         self._metadata = metadata
         self._graph_indexer = graph_indexer
+        self._augmentor = augmentor
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -111,20 +113,30 @@ class IngestionPipeline:
                 self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
             return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
 
+        indexed_chunks = list(chunks)
+        if self._augmentor is not None:
+            augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
+            indexed_chunks.extend(augmented)
+
         self._index_graph(chunks, document.id)
-        self._vector_store.upsert(chunks)
-        self._bm25.add(chunks)
+        self._vector_store.upsert(indexed_chunks)
+        self._bm25.add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
             self._metadata.upsert_document(
                 source,
                 doc_hash,
-                [c.id for c in chunks],
+                [c.id for c in indexed_chunks],
                 duration_ms=elapsed_ms,
             )
 
-        logger.info("Ingested %s → %d chunks", path.name, len(chunks))
+        logger.info(
+            "Ingested %s → %d chunks (%d augmented)",
+            path.name,
+            len(chunks),
+            len(indexed_chunks) - len(chunks),
+        )
         return IngestionResult(
             source=source,
             chunk_count=len(chunks),
@@ -217,6 +229,7 @@ class IngestionPipeline:
 
         metadata = SQLiteMetadataStore.from_settings() if settings.metadata.enabled else None
         graph_indexer = _build_graph_indexer() if settings.neo4j.enabled else None
+        augmentor = _build_augmentor(embedder, cfg.augmentation)
 
         return cls(
             service=service,
@@ -224,6 +237,7 @@ class IngestionPipeline:
             bm25=bm25,
             metadata=metadata,
             graph_indexer=graph_indexer,
+            augmentor=augmentor,
         )
 
 
@@ -246,4 +260,23 @@ def _build_graph_indexer() -> object | None:
         )
     except Exception as exc:
         logger.warning("Graph indexer unavailable: %s", exc)
+        return None
+
+
+def _build_augmentor(embedder: object, cfg: object) -> object | None:
+    """Build document augmentor when synthetic question generation is enabled."""
+    if not getattr(cfg, "enabled", False):
+        return None
+    try:
+        from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
+        from src.rag.enrichment.document_augmentation import DocumentAugmentor
+
+        llm = LlamaCppProvider.from_settings()
+        return DocumentAugmentor(
+            llm=llm,
+            embedder=embedder,  # type: ignore[arg-type]
+            n_questions=getattr(cfg, "n_questions", 3),
+        )
+    except Exception as exc:
+        logger.warning("Document augmentor unavailable: %s", exc)
         return None

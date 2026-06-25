@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from src.core.constants import CHUNK_RAW_TEXT_KEY
 from src.domain.entities.chunk import Chunk
+from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.contextual_compression import ContextualCompressor
 from src.rag.compression.token_reducer import (
     count_tokens,
@@ -146,6 +148,19 @@ class TestCompressEnabled:
         comp = _compressor()
         comp.compress("q", _chunks(3))
         assert comp._llm.generate.call_count == 3  # type: ignore[attr-defined]
+
+    def test_syncs_raw_text_after_compression(self):
+        """CCH stores the pre-compression body in raw_text; compression must update it."""
+        chunk = Chunk(
+            id="c0",
+            document_id="doc",
+            text="[Document: report.pdf | Section: Revenue | Page: 1]\nLong original body.",
+            metadata={CHUNK_RAW_TEXT_KEY: "Long original body."},
+        )
+        result = _compressor("Short extract.").compress("q", [chunk])
+        assert result[0].text == "Short extract."
+        assert result[0].metadata[CHUNK_RAW_TEXT_KEY] == "Short extract."
+        assert chunk_context_text(result[0]) == "Short extract."
 
 
 # ── from_settings ──────────────────────────────────────────────────────────────

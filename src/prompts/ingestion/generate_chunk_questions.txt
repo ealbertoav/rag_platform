@@ -1,0 +1,11 @@
+Given the following passage, generate $n questions that a reader might ask to find this content in a document search system.
+
+Rules:
+- Each question must be answerable using ONLY the provided passage
+- Questions should vary in phrasing and cover different aspects of the passage
+- Output ONLY valid JSON — a list of question strings, nothing else
+
+Passage:
+$passage
+
+JSON output:

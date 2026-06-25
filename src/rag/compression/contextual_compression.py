@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from string import Template
 
+from src.core.constants import CHUNK_RAW_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
 from src.rag.chunking.contextual_headers import chunk_context_text
@@ -58,7 +59,10 @@ class ContextualCompressor:
             text = truncate_to_tokens(text, remaining_tokens)
             if not text:
                 continue
-            result.append(chunk.model_copy(update={"text": text}))
+            update: dict[str, object] = {"text": text}
+            if CHUNK_RAW_TEXT_KEY in chunk.metadata:
+                update["metadata"] = {**chunk.metadata, CHUNK_RAW_TEXT_KEY: text}
+            result.append(chunk.model_copy(update=update))
             remaining_tokens -= count_tokens(text)
 
         logger.debug(
