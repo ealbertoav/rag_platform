@@ -91,6 +91,18 @@ class TestEnsureCollection:
         s._ensure_collection()
         mock_client.create_collection.assert_called_once()
 
+    def test_create_collection_stores_embedding_model_metadata(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = False
+        s = QdrantVectorStore(
+            collection="new_col",
+            dense_dim=4,
+            embedding_model_name="openai:text-embedding-3-large@3072",
+        )
+        s._client = mock_client
+        s._ensure_collection()
+        _, kwargs = mock_client.create_collection.call_args
+        assert kwargs["metadata"] == {"embedding_model_name": "openai:text-embedding-3-large@3072"}
+
     def test_skips_creation_when_exists(self, mock_client: MagicMock):
         mock_client.collection_exists.return_value = True
         s = QdrantVectorStore(collection="existing", dense_dim=4)
@@ -267,8 +279,13 @@ class TestEmbeddingModelValidation:
         point.payload = {"embedding_model_name": model_name} if model_name else {}
         return point
 
+    @staticmethod
+    def _legacy_collection(mock_client: MagicMock) -> None:
+        mock_client.get_collection.return_value = MagicMock(config=MagicMock(metadata={}))
+
     def test_finds_tagged_model_beyond_first_scroll_page(self, mock_client: MagicMock):
         mock_client.collection_exists.return_value = True
+        self._legacy_collection(mock_client)
         mock_client.scroll.side_effect = [
             ([self._point(None)] * 5, "page-2"),
             ([self._point("openai:text-embedding-3-large")], None),
@@ -288,6 +305,7 @@ class TestEmbeddingModelValidation:
 
     def test_raises_when_collection_has_multiple_models(self, mock_client: MagicMock):
         mock_client.collection_exists.return_value = True
+        self._legacy_collection(mock_client)
         mock_client.scroll.return_value = (
             [
                 self._point("openai:text-embedding-3-large"),
@@ -308,6 +326,7 @@ class TestEmbeddingModelValidation:
 
     def test_passes_when_untagged_points_precede_tagged_match(self, mock_client: MagicMock):
         mock_client.collection_exists.return_value = True
+        self._legacy_collection(mock_client)
         mock_client.scroll.side_effect = [
             ([self._point(None)] * 3, "page-2"),
             ([self._point("openai:text-embedding-3-large")], None),
@@ -339,18 +358,39 @@ class TestQdrantMisc:
         store._client = mock_client
         assert store.get_collection_embedding_model() is None
 
-    def test_collect_models_scroll_failure_returns_empty(self, mock_client: MagicMock):
+    def test_scan_models_scroll_failure_returns_empty(self, mock_client: MagicMock):
         mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(config=MagicMock(metadata={}))
         mock_client.scroll.side_effect = RuntimeError("down")
         store = QdrantVectorStore(collection="test_col", dense_dim=4)
         store._client = mock_client
-        assert store._collect_embedding_models() == set()
+        assert store._scan_payload_embedding_models() == set()
 
-    def test_collect_models_collection_exists_failure(self, mock_client: MagicMock):
+    def test_scan_models_collection_exists_failure(self, mock_client: MagicMock):
         mock_client.collection_exists.side_effect = RuntimeError("down")
         store = QdrantVectorStore(collection="test_col", dense_dim=4)
         store._client = mock_client
-        assert store._collect_embedding_models() == set()
+        assert store._scan_payload_embedding_models() == set()
+
+    def test_validate_uses_collection_metadata_without_scrolling(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(
+                metadata={"embedding_model_name": "openai:text-embedding-3-large@3072"}
+            )
+        )
+        store = QdrantVectorStore(
+            collection="test_col",
+            dense_dim=4,
+            embedding_model_name="openai:text-embedding-3-large@3072",
+        )
+        store._client = mock_client
+        store._collection_ready = True
+
+        store.validate_embedding_model()
+
+        mock_client.scroll.assert_not_called()
+        assert store._model_validated is True
 
     def test_search_dense_wraps_error(self, store: QdrantVectorStore, mock_client: MagicMock):
         mock_client.query_points.side_effect = RuntimeError("search failed")

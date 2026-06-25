@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 _DENSE = "dense"
 _SPARSE = "sparse"
 _EXPANSION = 3  # multiplier for hybrid search candidate pool
+_EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
 
 
 # ── RRF fusion (module-level so it can be tested independently) ────────────────
@@ -185,6 +186,11 @@ class QdrantVectorStore(VectorStoreRepository):
         collection_existed: bool
         try:
             if not self._client.collection_exists(self.collection):
+                metadata = (
+                    {_EMBEDDING_MODEL_METADATA_KEY: self.embedding_model_name}
+                    if self.embedding_model_name
+                    else None
+                )
                 self._client.create_collection(
                     collection_name=self.collection,
                     vectors_config={
@@ -193,6 +199,7 @@ class QdrantVectorStore(VectorStoreRepository):
                     sparse_vectors_config={
                         _SPARSE: SparseVectorParams(index=SparseIndexParams(on_disk=False)),
                     },
+                    metadata=metadata,
                 )
                 logger.info(
                     "Created Qdrant collection %r (%d-dim)", self.collection, self.dense_dim
@@ -207,23 +214,51 @@ class QdrantVectorStore(VectorStoreRepository):
         self._collection_ready = True
 
     def get_collection_embedding_model(self) -> str | None:
-        """Return the embedding model name stored in the collection's payload.
+        """Return the embedding model tracked for this collection.
 
-        Paginates through existing points and returns the sole
-        "embedding_model_name" when every tagged point agrees.  Returns
-        "None" when:
-
-        - The collection does not exist or cannot be queried.
-        - The collection is empty.
-        - No points carry model tracking (legacy data).
+        Reads collection metadata first (O(1)).  Legacy collections without
+        metadata fall back to the first tagged point payload.  Returns "None"
+        when the collection is missing, empty, or has no model tracking.
         """
-        models = self._collect_embedding_models()
+        metadata_model = self._read_collection_metadata_model()
+        if metadata_model is not None:
+            return metadata_model
+
+        models = self._scan_payload_embedding_models(stop_after_first=True)
         if not models:
             return None
         return next(iter(models))
 
-    def _collect_embedding_models(self) -> set[str]:
-        """Return distinct "embedding_model_name" values found in the collection."""
+    def _read_collection_metadata_model(self) -> str | None:
+        """Return embedding model name stored in collection metadata, if any."""
+        try:
+            if not self._client.collection_exists(self.collection):
+                return None
+            info = self._client.get_collection(self.collection)
+        except Exception as exc:  # noqa: BLE001 — intentional fail-open probe
+            logger.debug("Cannot read collection %r metadata: %s", self.collection, exc)
+            return None
+
+        metadata = info.config.metadata or {}
+        value = metadata.get(_EMBEDDING_MODEL_METADATA_KEY)
+        if isinstance(value, str) and value:
+            return value
+        return None
+
+    def _write_collection_metadata_model(self, model_name: str) -> None:
+        """Persist the active embedding model on the collection for O(1) checks."""
+        if not model_name:
+            return
+        try:
+            self._client.update_collection(
+                collection_name=self.collection,
+                metadata={_EMBEDDING_MODEL_METADATA_KEY: model_name},
+            )
+        except Exception as exc:  # noqa: BLE001 — metadata backfill is best-effort
+            logger.debug("Cannot update collection %r metadata: %s", self.collection, exc)
+
+    def _scan_payload_embedding_models(self, *, stop_after_first: bool = False) -> set[str]:
+        """Return distinct embedding_model_name values found in point payloads."""
         try:
             if not self._client.collection_exists(self.collection):
                 return set()
@@ -250,8 +285,13 @@ class QdrantVectorStore(VectorStoreRepository):
 
             for point in points:
                 payload = point.payload or {}
-                if "embedding_model_name" in payload:
-                    models.add(str(payload["embedding_model_name"]))
+                if _EMBEDDING_MODEL_METADATA_KEY in payload:
+                    models.add(str(payload[_EMBEDDING_MODEL_METADATA_KEY]))
+
+            if len(models) > 1:
+                return models
+            if stop_after_first and models:
+                return models
 
             if offset is None:
                 break
@@ -271,7 +311,13 @@ class QdrantVectorStore(VectorStoreRepository):
         if not self.embedding_model_name:
             self._model_validated = True
             return
-        models = self._collect_embedding_models()
+
+        metadata_model = self._read_collection_metadata_model()
+        if metadata_model is not None:
+            models = {metadata_model}
+        else:
+            models = self._scan_payload_embedding_models(stop_after_first=True)
+
         if len(models) > 1:
             raise VectorStoreError(
                 f"Embedding model mismatch: collection '{self.collection}' contains "
@@ -285,6 +331,8 @@ class QdrantVectorStore(VectorStoreRepository):
                 f"'{existing_model}' but current config is '{self.embedding_model_name}'. "
                 f"Run: python scripts/rebuild_embeddings.py --recreate-collection"
             )
+        if metadata_model is None and existing_model == self.embedding_model_name:
+            self._write_collection_metadata_model(self.embedding_model_name)
         self._model_validated = True
 
     def _to_point(self, chunk: Chunk) -> PointStruct:

@@ -229,13 +229,12 @@ class TestEmbeddingModelIdentifier:
     def test_includes_api_model_name(self):
         from src.infrastructure.embeddings import embedding_model_identifier
 
-        settings = _mock_settings(
-            **{
-                "embeddings.provider": "openai",
-                "embeddings.openai.model": "text-embedding-3-small",
-            }
+        settings = _api_settings("openai")
+        settings.embeddings.openai.model = "text-embedding-3-small"
+        settings.embeddings.openai.dimensions = 1536
+        assert (
+            embedding_model_identifier("openai", settings) == "openai:text-embedding-3-small@1536"
         )
-        assert embedding_model_identifier("openai", settings) == "openai:text-embedding-3-small"
 
     def test_includes_self_hosted_model_path(self):
         from src.infrastructure.embeddings import embedding_model_identifier
@@ -247,6 +246,14 @@ class TestEmbeddingModelIdentifier:
             }
         )
         assert embedding_model_identifier("bge_m3", settings) == "bge_m3:models/embeddings/bge-m3"
+
+    def test_openai_includes_effective_dimensions(self):
+        from src.infrastructure.embeddings import embedding_model_identifier
+
+        settings = _api_settings("openai")
+        settings.embeddings.openai.model = "text-embedding-3-large"
+        settings.embeddings.openai.dimensions = 512
+        assert embedding_model_identifier("openai", settings) == "openai:text-embedding-3-large@512"
 
 
 class TestProviderDenseDim:
@@ -351,9 +358,9 @@ class TestEmbeddingModelIdentifierExtended:
         from src.infrastructure.embeddings import embedding_model_identifier
 
         settings = _api_settings()
-        assert embedding_model_identifier("voyage", settings) == "voyage:voyage-large-2"
-        assert embedding_model_identifier("cohere", settings) == "cohere:embed-english-v3.0"
-        assert embedding_model_identifier("gemini", settings) == "gemini:text-embedding-004"
+        assert embedding_model_identifier("voyage", settings) == "voyage:voyage-large-2@1024"
+        assert embedding_model_identifier("cohere", settings) == "cohere:embed-english-v3.0@1024"
+        assert embedding_model_identifier("gemini", settings) == "gemini:text-embedding-004@768"
 
 
 class TestCreateProviderApi:

@@ -111,6 +111,10 @@ def embedding_model_identifier(provider_name: str, settings: Settings) -> str:
     Includes both the provider name and the specific model name/path so that
     switching models within the same provider (e.g. text-embedding-3-large →
     text-embedding-3-small) produces different cache keys and Qdrant payloads.
+
+    API providers also append the effective dense dimension (``@512``) so that
+    OpenAI text-embedding-3 truncation and other dimension overrides produce
+    distinct identifiers.
     """
     emb = settings.embeddings
     api_model: str | None = None
@@ -123,7 +127,10 @@ def embedding_model_identifier(provider_name: str, settings: Settings) -> str:
     elif provider_name == "gemini":
         api_model = emb.gemini.model
     model = api_model if api_model is not None else _self_hosted_model_path(provider_name, settings)
-    return f"{provider_name}:{model}"
+    base = f"{provider_name}:{model}"
+    if provider_name in API_EMBEDDING_PROVIDERS:
+        return f"{base}@{provider_dense_dim(provider_name, settings)}"
+    return base
 
 
 def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
