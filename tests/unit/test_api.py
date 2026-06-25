@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
+from src.core.settings import settings
 from src.domain.entities.answer import Answer
 from src.main import create_app
 from src.rag.pipelines.ingestion_pipeline import IngestionResult
@@ -87,6 +90,10 @@ def _client(app):
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+def _allow_ingest_root(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    monkeypatch.setattr(settings.api, "ingest_allowed_roots", [str(root)])
+
+
 # ── /health ────────────────────────────────────────────────────────────────────
 
 
@@ -115,7 +122,8 @@ class TestHealth:
 
 class TestIngestPath:
     @pytest.mark.asyncio
-    async def test_existing_file_returns_200(self, app_client, tmp_path):
+    async def test_existing_file_returns_200(self, app_client, tmp_path, monkeypatch):
+        _allow_ingest_root(monkeypatch, tmp_path)
         md = tmp_path / "doc.md"
         md.write_text("# Hello")
         app_client.state.ingestion_pipeline.ingest_file.return_value = IngestionResult(
@@ -126,7 +134,8 @@ class TestIngestPath:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_returns_chunk_count(self, app_client, tmp_path):
+    async def test_returns_chunk_count(self, app_client, tmp_path, monkeypatch):
+        _allow_ingest_root(monkeypatch, tmp_path)
         md = tmp_path / "doc.md"
         md.write_text("# Hello")
         app_client.state.ingestion_pipeline.ingest_file.return_value = IngestionResult(
@@ -137,13 +146,15 @@ class TestIngestPath:
         assert data["chunk_count"] == 7
 
     @pytest.mark.asyncio
-    async def test_missing_file_returns_404(self, app_client):
+    async def test_missing_file_returns_404(self, app_client, tmp_path, monkeypatch):
+        _allow_ingest_root(monkeypatch, tmp_path)
         async with _client(app_client) as c:
-            resp = await c.post("/ingest/path", json={"source": "/nonexistent/file.md"})
+            resp = await c.post("/ingest/path", json={"source": str(tmp_path / "missing.md")})
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_directory_ingest_sums_chunk_count(self, app_client, tmp_path):
+    async def test_directory_ingest_sums_chunk_count(self, app_client, tmp_path, monkeypatch):
+        _allow_ingest_root(monkeypatch, tmp_path)
         sub = tmp_path / "docs"
         sub.mkdir()
         app_client.state.ingestion_pipeline.ingest_directory.return_value = [
@@ -156,7 +167,8 @@ class TestIngestPath:
         assert data["content_hash"] == ""
 
     @pytest.mark.asyncio
-    async def test_ingestion_error_returns_422(self, app_client, tmp_path):
+    async def test_ingestion_error_returns_422(self, app_client, tmp_path, monkeypatch):
+        _allow_ingest_root(monkeypatch, tmp_path)
         from src.core.exceptions import IngestionError
 
         md = tmp_path / "doc.md"
@@ -165,6 +177,13 @@ class TestIngestPath:
         async with _client(app_client) as c:
             resp = await c.post("/ingest/path", json={"source": str(md)})
         assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_path_outside_allowed_root_returns_403(self, app_client, monkeypatch):
+        _allow_ingest_root(monkeypatch, Path("/allowed/only"))
+        async with _client(app_client) as c:
+            resp = await c.post("/ingest/path", json={"source": "/etc/passwd"})
+        assert resp.status_code == 403
 
 
 # ── /ingest/upload ─────────────────────────────────────────────────────────────
@@ -198,8 +217,45 @@ class TestIngestUpload:
             )
         assert resp.status_code == 422
 
+    @pytest.mark.asyncio
+    async def test_upload_too_large_returns_413(self, app_client, monkeypatch):
+        monkeypatch.setattr(settings.api, "max_upload_bytes", 4)
+        async with _client(app_client) as c:
+            resp = await c.post(
+                "/ingest/upload",
+                files={"file": ("big.md", b"12345", "text/markdown")},
+            )
+        assert resp.status_code == 413
 
-# ── /chat (streaming) ──────────────────────────────────────────────────────────
+
+# ── API key auth ───────────────────────────────────────────────────────────────
+
+
+class TestApiKeyAuth:
+    @pytest.mark.asyncio
+    async def test_chat_requires_api_key_when_configured(self, app_client, monkeypatch):
+        monkeypatch.setattr(settings.api, "api_key", SecretStr("secret-key"))
+        async with _client(app_client) as c:
+            resp = await c.post("/chat", json={"question": "q"})
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_chat_accepts_valid_api_key(self, app_client, monkeypatch):
+        monkeypatch.setattr(settings.api, "api_key", SecretStr("secret-key"))
+        async with _client(app_client) as c:
+            resp = await c.post(
+                "/chat",
+                json={"question": "q"},
+                headers={"X-API-Key": "secret-key"},
+            )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_health_unauthenticated_when_api_key_configured(self, app_client, monkeypatch):
+        monkeypatch.setattr(settings.api, "api_key", SecretStr("secret-key"))
+        async with _client(app_client) as c:
+            resp = await c.get("/health")
+        assert resp.status_code == 200
 
 
 class TestChatStream:

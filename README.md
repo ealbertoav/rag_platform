@@ -232,6 +232,11 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 # SQLite metadata store (ingestion history + content-hash dedup)
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
+
+# API security (optional — local dev leaves API key empty)
+API__API_KEY=                          # when set, require X-API-Key on /ingest, /chat, /evals
+API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
+# API__INGEST_ALLOWED_ROOTS='["data/raw"]'  # JSON list; /ingest/path restricted to these dirs
 ```
 
 | File | Purpose |
@@ -265,6 +270,11 @@ uv run python scripts/ingest.py --list
 ```
 
 Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes old chunks and upserts new ones. Deduplication uses a content hash stored in the SQLite metadata store (`data/processed/metadata.db` by default).
+
+**Security notes:**
+- `POST /ingest/path` only reads files under `api.ingest_allowed_roots` (default: `data/raw`). It cannot ingest arbitrary server paths such as `/etc/passwd`.
+- `POST /ingest/upload` reads uploads in bounded chunks (`api.max_upload_bytes`, default 10 MiB) and accepts only supported extensions.
+- Set `API__API_KEY` to require an `X-API-Key` header on `/ingest`, `/chat`, and `/evals/run`. `/health` and `/metrics` stay public.
 
 #### Ingestion Flow
 

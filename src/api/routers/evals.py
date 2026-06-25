@@ -4,9 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.api.dependencies import get_chat_pipeline
+from src.api.security import require_api_key
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 
-router = APIRouter(prefix="/evals", tags=["evals"])
+router = APIRouter(
+    prefix="/evals",
+    tags=["evals"],
+    dependencies=[Depends(require_api_key)],
+)
 
 
 class EvalsRunResponse(BaseModel):

@@ -168,6 +168,11 @@ class APISettings(BaseModel):
     port: int = Field(default=8000, ge=1, le=65535)
     reload: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    api_key: SecretStr = SecretStr("")
+    max_upload_bytes: int = Field(default=10_485_760, gt=0)  # 10 MiB
+    ingest_allowed_roots: list[str] = Field(
+        default_factory=lambda: [str(ROOT / "data" / "raw")]
+    )
 
 
 class LoggingSettings(BaseModel):

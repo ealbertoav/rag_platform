@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import pickle
 from pathlib import Path
@@ -7,11 +8,13 @@ from typing import Any
 
 from rank_bm25 import BM25Okapi
 
-from src.core.constants import BM25_INDEX_PATH
+from src.core.constants import BM25_INDEX_PATH, BM25_LEGACY_PICKLE_PATH
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 
 logger = logging.getLogger(__name__)
+
+_INDEX_FORMAT_VERSION = 1
 
 
 def _tokenize(text: str) -> list[str]:
@@ -26,6 +29,8 @@ class BM25Index:
     `add()` rebuilds the index from the full chunk list each time.  This is
     acceptable for corpus sizes typical in enterprise RAG (≤ millions of
     chunks) where a full rebuild takes well under a second.
+
+    Chunks are persisted as JSON (not pickle) to avoid unsafe deserialization.
     """
 
     def __init__(self, index_path: Path | None = None) -> None:
@@ -91,36 +96,52 @@ class BM25Index:
     # ── Persistence ────────────────────────────────────────────────────────────
 
     def save(self) -> None:
-        """Pickle the index to *self._path*."""
+        """Persist chunk metadata as JSON and rebuild BM25 on a load."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, Any] = {"chunks": self._chunks, "bm25": self._bm25}
+        payload = {
+            "version": _INDEX_FORMAT_VERSION,
+            "chunks": [chunk.model_dump(mode="json") for chunk in self._chunks],
+        }
         try:
-            with self._path.open("wb") as fh:
-                pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            with self._path.open("w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
             logger.info("BM25 index saved to %s", self._path)
         except OSError as exc:
             raise VectorStoreError(f"Cannot save BM25 index to {self._path}", cause=exc) from exc
 
     def load(self) -> None:
-        """Load the index from *self._path*.  Raises "VectorStoreError" if missing."""
+        """Load chunks from JSON at *self._path*."""
         try:
-            with self._path.open("rb") as fh:
-                payload: dict[str, Any] = pickle.load(fh)  # noqa: S301
-            self._chunks = payload["chunks"]
-            self._bm25 = payload["bm25"]
-            logger.info("BM25 index loaded from %s (%d chunks)", self._path, len(self._chunks))
+            with self._path.open(encoding="utf-8") as fh:
+                payload: dict[str, Any] = json.load(fh)
         except FileNotFoundError as exc:
             raise VectorStoreError(f"BM25 index not found at {self._path}", cause=exc) from exc
-        except (OSError, KeyError, pickle.UnpicklingError) as exc:
+        except (OSError, json.JSONDecodeError) as exc:
             raise VectorStoreError(f"Cannot load BM25 index from {self._path}", cause=exc) from exc
+
+        raw_chunks = payload.get("chunks")
+        if not isinstance(raw_chunks, list):
+            raise VectorStoreError(f"Invalid BM25 index format at {self._path}")
+
+        self._chunks = [Chunk.model_validate(item) for item in raw_chunks]
+        self._rebuild()
+        logger.info("BM25 index loaded from %s (%d chunks)", self._path, len(self._chunks))
 
     @classmethod
     def load_or_create(cls, index_path: Path | None = None) -> BM25Index:
         """Return a loaded index if the file exists, otherwise an empty one."""
         instance = cls(index_path)
-        path = instance._path
-        if path.exists():
+        json_path = instance._path
+        legacy_path = (
+            BM25_LEGACY_PICKLE_PATH if index_path is None else json_path.with_suffix(".pkl")
+        )
+
+        if json_path.exists():
             instance.load()
+        elif legacy_path.exists():
+            instance._load_legacy_pickle(legacy_path)
+            instance.save()
+            logger.info("Migrated BM25 index from pickle to JSON at %s", json_path)
         return instance
 
     # ── Properties ─────────────────────────────────────────────────────────────
@@ -142,6 +163,22 @@ class BM25Index:
         return None
 
     # ── Internals ──────────────────────────────────────────────────────────────
+
+    def _load_legacy_pickle(self, path: Path) -> None:
+        """Load a legacy pickle index and rebuild the in-memory BM25 model."""
+        try:
+            with path.open("rb") as fh:
+                payload: dict[str, Any] = pickle.load(fh)  # noqa: S301
+        except (OSError, pickle.UnpicklingError) as exc:
+            raise VectorStoreError(f"Cannot load legacy BM25 index from {path}", cause=exc) from exc
+
+        chunks = payload.get("chunks")
+        if not isinstance(chunks, list):
+            raise VectorStoreError(f"Invalid legacy BM25 index format at {path}")
+
+        self._chunks = list(chunks)
+        self._rebuild()
+        logger.info("BM25 legacy pickle loaded from %s (%d chunks)", path, len(self._chunks))
 
     def _rebuild(self) -> None:
         if not self._chunks:
