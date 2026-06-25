@@ -34,6 +34,8 @@ async def run(args: argparse.Namespace) -> int:
         recall_threshold=args.recall_threshold,
         faithfulness_threshold=args.faith_threshold,
         relevance_threshold=args.relev_threshold,
+        context_precision_threshold=args.ctx_threshold,
+        hallucination_threshold=args.halluc_threshold,
     )
 
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")

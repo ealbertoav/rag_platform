@@ -70,3 +70,5 @@ def add_eval_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--recall-threshold", type=float, default=0.5)
     parser.add_argument("--faith-threshold", type=float, default=0.8)
     parser.add_argument("--relev-threshold", type=float, default=0.75)
+    parser.add_argument("--ctx-threshold", type=float, default=0.7)
+    parser.add_argument("--halluc-threshold", type=float, default=0.1)

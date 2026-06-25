@@ -27,6 +27,7 @@ class ModelResult:
     recall_at_5: float
     faithfulness: float
     relevance: float
+    hallucination: float
     latency_s: float
     passed: bool
     error: str = ""
@@ -38,6 +39,8 @@ async def _run_one(
     recall_threshold: float,
     faith_threshold: float,
     relev_threshold: float,
+    ctx_threshold: float,
+    halluc_threshold: float,
 ) -> ModelResult:
     import importlib
     import time
@@ -58,6 +61,8 @@ async def _run_one(
             recall_threshold=recall_threshold,
             faithfulness_threshold=faith_threshold,
             relevance_threshold=relev_threshold,
+            context_precision_threshold=ctx_threshold,
+            hallucination_threshold=halluc_threshold,
         )
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         report = await benchmark.run(pipeline, qa_pairs, timestamp=ts)
@@ -68,6 +73,7 @@ async def _run_one(
             recall_at_5=report.mean_recall_at_5,
             faithfulness=report.mean_faithfulness,
             relevance=report.mean_relevance,
+            hallucination=report.mean_hallucination,
             latency_s=round(elapsed, 1),
             passed=report.passed,
         )
@@ -77,6 +83,7 @@ async def _run_one(
             recall_at_5=0.0,
             faithfulness=0.0,
             relevance=0.0,
+            hallucination=0.0,
             latency_s=0.0,
             passed=False,
             error=str(exc),
@@ -89,6 +96,7 @@ def _print_table(results: list[ModelResult]) -> None:
     table.add_column("Recall@5", justify="right")
     table.add_column("Faithfulness", justify="right")
     table.add_column("Relevance", justify="right")
+    table.add_column("Hallucination", justify="right")
     table.add_column("Latency (s)", justify="right")
     table.add_column("Status", justify="center")
 
@@ -101,6 +109,7 @@ def _print_table(results: list[ModelResult]) -> None:
             f"{r.recall_at_5:.3f}",
             f"{r.faithfulness:.3f}",
             f"{r.relevance:.3f}",
+            f"{r.hallucination:.3f}",
             f"{r.latency_s:.1f}",
             status,
         )
@@ -128,6 +137,8 @@ async def run(args: argparse.Namespace) -> int:
             args.recall_threshold,
             args.faith_threshold,
             args.relev_threshold,
+            args.ctx_threshold,
+            args.halluc_threshold,
         )
         results.append(result)
 

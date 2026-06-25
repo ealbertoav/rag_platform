@@ -8,6 +8,7 @@ from pathlib import Path
 from src.domain.entities.evaluation import EvalSample
 from src.evals.generation.context_precision import ContextPrecisionMetric
 from src.evals.generation.faithfulness import FaithfulnessMetric
+from src.evals.generation.hallucination import HallucinationMetric
 from src.evals.generation.relevance import RelevanceMetric
 from src.evals.retrieval.recall_at_k import recall_at_k
 
@@ -25,6 +26,7 @@ class SampleResult:
     faithfulness: float
     relevance: float
     context_precision: float
+    hallucination: float
 
     def to_dict(self) -> dict[str, object]:
         return dataclasses.asdict(self)  # type: ignore[return-value]
@@ -38,10 +40,12 @@ class BenchmarkReport:
     mean_faithfulness: float
     mean_relevance: float
     mean_context_precision: float
+    mean_hallucination: float
     recall_threshold: float
     faithfulness_threshold: float
     relevance_threshold: float
     context_precision_threshold: float
+    hallucination_threshold: float
     passed: bool
     per_sample: list[SampleResult] = dataclasses.field(default_factory=list)
 
@@ -54,6 +58,7 @@ class BenchmarkReport:
             "mean_faithfulness": self.mean_faithfulness,
             "mean_relevance": self.mean_relevance,
             "mean_context_precision": self.mean_context_precision,
+            "mean_hallucination": self.mean_hallucination,
             "passed": self.passed,
             "per_sample": [s.to_dict() for s in self.per_sample],
         }
@@ -68,7 +73,8 @@ class BenchmarkReport:
             f"  Recall@5           {self.mean_recall_at_5:.3f}  (threshold {self.recall_threshold})\n"  # noqa: E501
             f"  Faithfulness       {self.mean_faithfulness:.3f}  (threshold {self.faithfulness_threshold})\n"  # noqa: E501
             f"  Relevance          {self.mean_relevance:.3f}  (threshold {self.relevance_threshold})\n"  # noqa: E501
-            f"  Context Precision  {self.mean_context_precision:.3f}  (threshold {self.context_precision_threshold})"  # noqa: E501
+            f"  Context Precision  {self.mean_context_precision:.3f}  (threshold {self.context_precision_threshold})\n"  # noqa: E501
+            f"  Hallucination      {self.mean_hallucination:.3f}  (threshold {self.hallucination_threshold}, lower is better)"  # noqa: E501
         )
 
 
@@ -78,7 +84,7 @@ class RAGBenchmark:
     For each QA pair:
       1. Runs "ChatPipeline.benchmark()" → generated answer and context texts
       2. Computes Recall@5 against ground-truth relevant chunk IDs
-      3. Scores Faithfulness and Relevance via Ragas
+      3. Scores generation quality via Ragas and DeepEval hallucination
     """
 
     def __init__(
@@ -86,22 +92,26 @@ class RAGBenchmark:
         faithfulness: FaithfulnessMetric | None = None,
         relevance: RelevanceMetric | None = None,
         context_precision: ContextPrecisionMetric | None = None,
+        hallucination: HallucinationMetric | None = None,
         recall_k: int = 5,
         recall_threshold: float = 0.5,
         faithfulness_threshold: float = 0.8,
         relevance_threshold: float = 0.75,
         context_precision_threshold: float = 0.7,
+        hallucination_threshold: float = 0.1,
     ) -> None:
         self._faith = faithfulness or FaithfulnessMetric(threshold=faithfulness_threshold)
         self._relev = relevance or RelevanceMetric(threshold=relevance_threshold)
         self._ctx = context_precision or ContextPrecisionMetric(
             threshold=context_precision_threshold
         )
+        self._halluc = hallucination or HallucinationMetric(threshold=hallucination_threshold)
         self._k = recall_k
         self._recall_threshold = recall_threshold
         self._faith_threshold = faithfulness_threshold
         self._relev_threshold = relevance_threshold
         self._ctx_threshold = context_precision_threshold
+        self._halluc_threshold = hallucination_threshold
 
     async def run(
         self,
@@ -135,6 +145,7 @@ class RAGBenchmark:
                         faithfulness=0.0,
                         relevance=0.0,
                         context_precision=0.0,
+                        hallucination=0.0,
                     )
                 )
                 continue
@@ -151,6 +162,7 @@ class RAGBenchmark:
             faith_score = self._faith.score(sample).score
             relev_score = self._relev.score(sample).score
             ctx_score = self._ctx.score(sample).score
+            halluc_score = self._halluc.score(sample).score
 
             results.append(
                 SampleResult(
@@ -163,16 +175,18 @@ class RAGBenchmark:
                     faithfulness=faith_score,
                     relevance=relev_score,
                     context_precision=ctx_score,
+                    hallucination=halluc_score,
                 )
             )
             logger.debug(
-                "[%d/%d] R@5=%.2f faith=%.2f relev=%.2f ctx=%.2f",
+                "[%d/%d] R@5=%.2f faith=%.2f relev=%.2f ctx=%.2f hall=%.2f",
                 i + 1,
                 len(qa_pairs),
                 r5,
                 faith_score,
                 relev_score,
                 ctx_score,
+                halluc_score,
             )
 
         n = len(results) or 1
@@ -180,12 +194,14 @@ class RAGBenchmark:
         mean_f = sum(r.faithfulness for r in results) / n
         mean_v = sum(r.relevance for r in results) / n
         mean_c = sum(r.context_precision for r in results) / n
+        mean_h = sum(r.hallucination for r in results) / n
 
         passed = (
             mean_r >= self._recall_threshold
             and mean_f >= self._faith_threshold
             and mean_v >= self._relev_threshold
             and mean_c >= self._ctx_threshold
+            and mean_h < self._halluc_threshold
         )
 
         return BenchmarkReport(
@@ -195,10 +211,12 @@ class RAGBenchmark:
             mean_faithfulness=mean_f,
             mean_relevance=mean_v,
             mean_context_precision=mean_c,
+            mean_hallucination=mean_h,
             recall_threshold=self._recall_threshold,
             faithfulness_threshold=self._faith_threshold,
             relevance_threshold=self._relev_threshold,
             context_precision_threshold=self._ctx_threshold,
+            hallucination_threshold=self._halluc_threshold,
             passed=passed,
             per_sample=results,
         )
