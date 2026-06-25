@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -193,3 +193,50 @@ class TestChatPipelineFull:
     async def test_chat_full_query_id_set(self):
         result = await _pipeline().chat_full("q")
         assert result.query_id != ""
+
+
+class TestChatPipelineProperties:
+    def test_retrieval_property(self):
+        p = _pipeline()
+        assert p.retrieval is p._retrieval
+
+    def test_generation_property(self):
+        p = _pipeline()
+        assert p.generation is p._generation
+
+
+class TestChatPipelineBenchmark:
+    @pytest.mark.asyncio
+    async def test_benchmark_returns_answer_and_context_texts(self):
+        chunks = [_chunk(0), _chunk(1)]
+        p = _pipeline(chunks=chunks)
+        answer, context_texts = await p.benchmark("question")
+        assert answer.text == "LLM answer"
+        assert context_texts == [c.text for c in chunks]
+        assert set(answer.sources) == {"c0", "c1"}
+
+
+class TestChatPipelineFromSettings:
+    def test_from_settings_builds_pipeline(self):
+        mock_retrieval = MagicMock()
+        mock_generation = MagicMock()
+        with (
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+            ) as mock_llm,
+            patch(
+                "src.rag.pipelines.chat_pipeline.RetrievalPipeline.from_settings",
+                return_value=mock_retrieval,
+            ),
+            patch(
+                "src.rag.pipelines.chat_pipeline.GenerationService.from_settings",
+                return_value=mock_generation,
+            ) as mock_gen,
+        ):
+            mock_llm.return_value = MagicMock()
+            pipeline = ChatPipeline.from_settings()
+
+        assert isinstance(pipeline, ChatPipeline)
+        assert pipeline.retrieval is mock_retrieval
+        assert pipeline.generation is mock_generation
+        mock_gen.assert_called_once()

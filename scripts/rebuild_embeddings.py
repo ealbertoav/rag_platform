@@ -74,19 +74,13 @@ def _check_api_key(settings: object) -> None:
 def _preflight_dimensions(settings: object) -> None:
     """Warn when dense_dim does not match the provider default."""
     from src.core.settings import Settings
+    from src.infrastructure.embeddings import provider_dense_dim
 
     s: Settings = settings  # type: ignore[assignment]
     provider = s.embeddings.provider
 
-    expected_dims = {
-        **SELF_HOSTED_EMBEDDING_DEFAULT_DIMS,
-        "openai": s.embeddings.openai.dimensions,
-        "voyage": s.embeddings.voyage.dimensions,
-        "cohere": s.embeddings.cohere.dimensions,
-        "gemini": s.embeddings.gemini.dimensions,
-    }
-    if provider in expected_dims:
-        expected = expected_dims[provider]
+    if provider in SELF_HOSTED_EMBEDDING_DEFAULT_DIMS or provider in API_EMBEDDING_PROVIDERS:
+        expected = provider_dense_dim(provider, s)
         configured = s.embeddings.dense_dim
         if expected != configured:
             print(

@@ -118,6 +118,62 @@ class TestIngestPath:
             resp = await c.post("/ingest/path", json={"source": "/nonexistent/file.md"})
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_directory_ingest_sums_chunk_count(self, app_client, tmp_path):
+        sub = tmp_path / "docs"
+        sub.mkdir()
+        app_client.state.ingestion_pipeline.ingest_directory.return_value = [
+            IngestionResult(source=str(sub / "a.md"), chunk_count=2, content_hash="a"),
+            IngestionResult(source=str(sub / "b.md"), chunk_count=3, content_hash="b"),
+        ]
+        async with _client(app_client) as c:
+            data = (await c.post("/ingest/path", json={"source": str(sub)})).json()
+        assert data["chunk_count"] == 5
+        assert data["content_hash"] == ""
+
+    @pytest.mark.asyncio
+    async def test_ingestion_error_returns_422(self, app_client, tmp_path):
+        from src.core.exceptions import IngestionError
+
+        md = tmp_path / "doc.md"
+        md.write_text("# Hello")
+        app_client.state.ingestion_pipeline.ingest_file.side_effect = IngestionError("bad file")
+        async with _client(app_client) as c:
+            resp = await c.post("/ingest/path", json={"source": str(md)})
+        assert resp.status_code == 422
+
+
+# ── /ingest/upload ─────────────────────────────────────────────────────────────
+
+
+class TestIngestUpload:
+    @pytest.mark.asyncio
+    async def test_upload_returns_200(self, app_client):
+        app_client.state.ingestion_pipeline.ingest_file.return_value = IngestionResult(
+            source="upload.md", chunk_count=4, content_hash="xyz"
+        )
+        async with _client(app_client) as c:
+            resp = await c.post(
+                "/ingest/upload",
+                files={"file": ("upload.md", b"# Title\n\nBody", "text/markdown")},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["chunk_count"] == 4
+        assert data["content_hash"] == "xyz"
+
+    @pytest.mark.asyncio
+    async def test_upload_ingestion_error_returns_422(self, app_client):
+        from src.core.exceptions import IngestionError
+
+        app_client.state.ingestion_pipeline.ingest_file.side_effect = IngestionError("fail")
+        async with _client(app_client) as c:
+            resp = await c.post(
+                "/ingest/upload",
+                files={"file": ("bad.md", b"content", "text/markdown")},
+            )
+        assert resp.status_code == 422
+
 
 # ── /chat (streaming) ──────────────────────────────────────────────────────────
 

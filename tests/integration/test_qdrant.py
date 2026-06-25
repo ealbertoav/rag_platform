@@ -1,7 +1,7 @@
 """T-013 integration tests — QdrantVectorStore (requires running Qdrant).
 
 Run with:
-    make qdrant-up   # start Qdrant via Docker
+    make qdrant-up # start Qdrant via Docker
     uv run pytest tests/integration/test_qdrant.py -v
 """
 
@@ -19,9 +19,9 @@ def _reachable() -> bool:
     try:
         from qdrant_client import QdrantClient
 
-        QdrantClient(url=_QDRANT_URL, timeout=2).get_collections()
+        QdrantClient(url=_QDRANT_URL, timeout=2, check_compatibility=False).get_collections()
         return True
-    except Exception:
+    except (OSError, ConnectionError, TimeoutError):
         return False
 
 
@@ -47,8 +47,8 @@ def store():
     yield s
     import contextlib
 
-    with contextlib.suppress(Exception):
-        s._client.delete_collection(_COLLECTION)
+    with contextlib.suppress(OSError, ConnectionError, TimeoutError):
+        s.drop_collection()
 
 
 class TestQdrantIntegration:

@@ -9,6 +9,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redis.exceptions import ConnectionError as RedisConnError
 
 from src.infrastructure.embeddings.cached_embedding_provider import (
     CachedEmbeddingProvider,
@@ -38,7 +39,8 @@ def _make_provider(inner: MagicMock | None = None) -> CachedEmbeddingProvider:
 
 class TestCacheHitMiss:
     def test_cache_miss_calls_inner_and_writes(self) -> None:
-        provider = _make_provider()
+        inner = _make_inner()
+        provider = _make_provider(inner)
         mock_redis = MagicMock()
         mock_redis.mget.return_value = [None, None]
         mock_pipeline = MagicMock()
@@ -47,7 +49,7 @@ class TestCacheHitMiss:
 
         result = provider.embed(_TEXTS)
 
-        provider._inner.embed.assert_called_once_with(_TEXTS)
+        inner.embed.assert_called_once_with(_TEXTS)
         assert mock_pipeline.set.call_count == 2
         mock_pipeline.execute.assert_called_once()
         assert result == _VECS
@@ -55,14 +57,15 @@ class TestCacheHitMiss:
     def test_cache_hit_skips_inner(self) -> None:
         import json
 
-        provider = _make_provider()
+        inner = _make_inner()
+        provider = _make_provider(inner)
         mock_redis = MagicMock()
         mock_redis.mget.return_value = [json.dumps(v) for v in _VECS]
         provider._redis = mock_redis
 
         result = provider.embed(_TEXTS)
 
-        provider._inner.embed.assert_not_called()
+        inner.embed.assert_not_called()
         assert result == _VECS
 
     def test_empty_texts_returns_empty(self) -> None:
@@ -75,8 +78,6 @@ class TestCacheHitMiss:
 
 class TestRedisRecovery:
     def test_mget_failure_resets_client_and_schedules_retry(self) -> None:
-        from redis.exceptions import ConnectionError as RedisConnError
-
         provider = _make_provider()
         mock_redis = MagicMock()
         mock_redis.mget.side_effect = RedisConnError("connection lost")
@@ -90,8 +91,6 @@ class TestRedisRecovery:
         assert provider._next_retry_at > time.monotonic()
 
     def test_pipeline_execute_failure_resets_client(self) -> None:
-        from redis.exceptions import ConnectionError as RedisConnError
-
         provider = _make_provider()
         mock_redis = MagicMock()
         mock_redis.mget.return_value = [None, None]
@@ -108,8 +107,6 @@ class TestRedisRecovery:
         assert provider._next_retry_at > time.monotonic()
 
     def test_client_retried_after_cooldown(self) -> None:
-        from redis.exceptions import ConnectionError as RedisConnError
-
         provider = _make_provider()
         mock_redis = MagicMock()
         mock_redis.mget.side_effect = RedisConnError("connection lost")
@@ -119,7 +116,7 @@ class TestRedisRecovery:
         provider.embed(_TEXTS)
         assert provider._redis is None
 
-        # During cooldown: _get_client returns None without attempting reconnect
+        # During cooldown: _get_client returns None without attempting reconnection
         with patch(
             "src.infrastructure.embeddings.cached_embedding_provider.time.monotonic",
             return_value=provider._next_retry_at - 1,
@@ -127,7 +124,7 @@ class TestRedisRecovery:
             client = provider._get_client()
         assert client is None
 
-        # After cooldown: _get_client attempts reconnect
+        # After cooldown: _get_client attempts reconnection
         provider._next_retry_at = 0.0
         new_redis = MagicMock()
         new_redis.mget.return_value = [None, None]
@@ -252,3 +249,84 @@ class TestEmbedBoth:
     def test_empty_texts_returns_empty(self) -> None:
         provider = _make_provider()
         assert provider.embed_both([]) == ([], [])
+
+
+# ── embed_query / embed_sparse delegation ─────────────────────────────────────
+
+
+class TestDelegation:
+    def test_embed_query_delegates_to_inner(self) -> None:
+        inner = _make_inner()
+        inner.embed_query.return_value = _VECS
+        provider = _make_provider(inner)
+        result = provider.embed_query(_TEXTS)
+        inner.embed_query.assert_called_once_with(_TEXTS)
+        assert result == _VECS
+
+    def test_embed_sparse_delegates_to_inner(self) -> None:
+        inner = _make_inner()
+        provider = _make_provider(inner)
+        provider.embed_sparse(_TEXTS)
+        inner.embed_sparse.assert_called_once_with(_TEXTS)
+
+
+# ── Lazy Redis client connection ───────────────────────────────────────────────
+
+
+class TestGetClient:
+    def test_lazy_connect_success(self) -> None:
+        provider = _make_provider()
+        mock_client = MagicMock()
+        mock_client.ping.return_value = True
+
+        with patch(
+            "redis.Redis.from_url",
+            return_value=mock_client,
+        ):
+            client = provider._get_client()
+
+        assert client is mock_client
+        assert provider._redis is mock_client
+
+    def test_import_error_disables_cache_permanently(self) -> None:
+        provider = _make_provider()
+        with patch.dict("sys.modules", {"redis": None}):
+            client = provider._get_client()
+        assert client is None
+        assert provider._next_retry_at == float("inf")
+
+    def test_connection_failure_sets_cooldown(self) -> None:
+        provider = _make_provider()
+        with patch("redis.Redis.from_url", side_effect=RedisConnError("down")):
+            client = provider._get_client()
+        assert client is None
+        assert provider._next_retry_at > time.monotonic()
+
+
+# ── Cache metrics ──────────────────────────────────────────────────────────────
+
+
+class TestCacheMetrics:
+    def test_records_prometheus_metrics_on_embed(self) -> None:
+        provider = _make_provider()
+        mock_redis = MagicMock()
+        mock_redis.mget.return_value = [None, None]
+        mock_redis.pipeline.return_value = MagicMock()
+        provider._redis = mock_redis
+
+        hits = MagicMock()
+        misses = MagicMock()
+        with (
+            patch("src.observability.metrics.EMBEDDING_CACHE_HITS", hits),
+            patch("src.observability.metrics.EMBEDDING_CACHE_MISSES", misses),
+        ):
+            provider.embed(_TEXTS)
+
+        hits.inc.assert_called_once_with(0)
+        misses.inc.assert_called_once_with(2)
+
+    def test_record_metrics_import_error_is_noop(self) -> None:
+        from src.infrastructure.embeddings import cached_embedding_provider as mod
+
+        with patch.dict("sys.modules", {"src.observability.metrics": None}):
+            mod._record_cache_metrics(hits=1, misses=2)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -197,3 +197,63 @@ class TestRetrievalPipeline:
         pipeline = RetrievalPipeline(service=_service())
         result = pipeline.retrieve_sync(_query())
         assert isinstance(result, RetrievalResult)
+
+    def test_service_property(self):
+        svc = _service()
+        pipeline = RetrievalPipeline(service=svc)
+        assert pipeline.service is svc
+
+
+class TestRetrievalPipelineFromSettings:
+    def test_from_settings_builds_pipeline(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+            ) as mock_llm,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch(
+                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"
+            ),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
+            patch("src.rag.retrieval.dense_retriever.DenseRetriever"),
+            patch("src.rag.retrieval.hybrid_retriever.HybridRetriever"),
+            patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
+        ):
+            mock_settings.retrieval = MagicMock(hybrid_alpha=0.7, top_k_dense=10)
+            mock_settings.reranker = MagicMock(top_k=5)
+            mock_settings.query_expansion = MagicMock(enabled=False)
+            mock_settings.compression = MagicMock(enabled=False)
+            mock_llm.return_value = MagicMock()
+            pipeline = RetrievalPipeline.from_settings()
+
+        assert isinstance(pipeline, RetrievalPipeline)
+        assert isinstance(pipeline.service, RetrievalService)
+
+    def test_from_settings_with_expansion_and_compression(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+            ) as mock_llm,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch(
+                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"
+            ),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
+            patch("src.rag.retrieval.dense_retriever.DenseRetriever"),
+            patch("src.rag.retrieval.hybrid_retriever.HybridRetriever"),
+            patch("src.rag.retrieval.query_expansion.QueryExpander.from_settings"),
+            patch("src.rag.compression.contextual_compression.ContextualCompressor.from_settings"),
+            patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
+        ):
+            mock_settings.retrieval = MagicMock(hybrid_alpha=0.5, top_k_dense=20)
+            mock_settings.reranker = MagicMock(top_k=5)
+            mock_settings.query_expansion = MagicMock(enabled=True)
+            mock_settings.compression = MagicMock(enabled=True)
+            mock_llm.return_value = MagicMock()
+            pipeline = RetrievalPipeline.from_settings(llm=mock_llm.return_value)
+
+        assert isinstance(pipeline, RetrievalPipeline)

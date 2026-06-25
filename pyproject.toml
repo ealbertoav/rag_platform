@@ -39,8 +39,9 @@ dependencies = [
     "prometheus-client>=0.20.0",
     "opentelemetry-sdk>=1.25.0",
     "opentelemetry-exporter-otlp>=1.25.0",
-    # Storage
+    # Storage / cache
     "aiosqlite>=0.20.0",
+    "redis>=5.0.0",
     # Utilities
     "tenacity>=9.0.0",  # 9.1.4 conflicts with opentelemetry-sdk<=1.42.1
     "httpx>=0.27.0",
@@ -126,3 +127,11 @@ ignore_errors = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # qdrant-client version probe when Docker is not running (integration skip checks)
+    "ignore:Failed to obtain server version:UserWarning:qdrant_client.qdrant_remote",
+    # SWIG bindings from torch/sentence-transformers on Python 3.13 (upstream)
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]

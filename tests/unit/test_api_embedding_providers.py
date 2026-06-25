@@ -1,6 +1,6 @@
 """Unit tests for the four API-based embedding providers.
 
-All HTTP calls are mocked — no real API keys or network access required.
+All HTTP calls are mocked — no real API keys or network access are required.
 """
 
 from __future__ import annotations
@@ -359,7 +359,7 @@ class TestGeminiEmbeddingProvider:
 
         # Patch only google.generativeai — do NOT also patch "google" (the namespace
         # package may already be installed via other deps and overriding it breaks import
-        # resolution for sys.modules["google.generativeai"]).
+        # resolution for sys.modules[ "google.generativeai"]).
         with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
             provider._call_api(["hello"], "RETRIEVAL_DOCUMENT")
             mock_genai.configure.assert_called_once_with(api_key="gem-test-key")
@@ -383,3 +383,67 @@ class TestGeminiEmbeddingProvider:
             result = provider.embed(["test"])
         assert len(result) == 1
         assert call_count == 3
+
+
+# ── from_settings ──────────────────────────────────────────────────────────────
+
+
+class TestFromSettings:
+    def test_openai_from_settings(self) -> None:
+        from pydantic import SecretStr
+
+        from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
+
+        mock_settings = MagicMock()
+        mock_settings.embeddings.openai = MagicMock(
+            api_key=SecretStr("sk-test"),
+            model="text-embedding-3-small",
+            dimensions=512,
+        )
+        with patch("src.core.settings.settings", mock_settings):
+            provider = OpenAIEmbeddingProvider.from_settings()
+        assert provider.api_key == "sk-test"
+        assert provider.model == "text-embedding-3-small"
+
+    def test_voyage_from_settings(self) -> None:
+        from pydantic import SecretStr
+
+        from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
+        mock_settings = MagicMock()
+        mock_settings.embeddings.voyage = MagicMock(
+            api_key=SecretStr("voy-test"),
+            model="voyage-code-2",
+        )
+        with patch("src.core.settings.settings", mock_settings):
+            provider = VoyageEmbeddingProvider.from_settings()
+        assert provider.api_key == "voy-test"
+        assert provider.model == "voyage-code-2"
+
+    def test_cohere_from_settings(self) -> None:
+        from pydantic import SecretStr
+
+        from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
+
+        mock_settings = MagicMock()
+        mock_settings.embeddings.cohere = MagicMock(
+            api_key=SecretStr("co-test"),
+            model="embed-multilingual-v3.0",
+        )
+        with patch("src.core.settings.settings", mock_settings):
+            provider = CohereEmbeddingProvider.from_settings()
+        assert provider.api_key == "co-test"
+
+    def test_gemini_from_settings(self) -> None:
+        from pydantic import SecretStr
+
+        from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
+
+        mock_settings = MagicMock()
+        mock_settings.embeddings.gemini = MagicMock(
+            api_key=SecretStr("gem-test"),
+            model="text-embedding-004",
+        )
+        with patch("src.core.settings.settings", mock_settings):
+            provider = GeminiEmbeddingProvider.from_settings()
+        assert provider.api_key == "gem-test"

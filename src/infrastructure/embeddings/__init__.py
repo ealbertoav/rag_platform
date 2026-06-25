@@ -93,7 +93,9 @@ def provider_dense_dim(name: str, settings: Settings) -> int:
         emb = settings.embeddings
         match name:
             case "openai":
-                return emb.openai.dimensions
+                from src.infrastructure.embeddings.openai_provider import openai_effective_dense_dim
+
+                return openai_effective_dense_dim(emb.openai.model, emb.openai.dimensions)
             case "voyage":
                 return emb.voyage.dimensions
             case "cohere":
@@ -151,25 +153,33 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
                 normalize=cfg.normalize,
             )
         case "openai":
-            _require_api_key(name, settings.embeddings.openai.api_key)
+            cfg = settings.embeddings.openai
+            _require_api_key(name, cfg.api_key)
             from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
 
-            return OpenAIEmbeddingProvider.from_settings()
+            return OpenAIEmbeddingProvider(
+                api_key=cfg.api_key.get_secret_value(),
+                model=cfg.model,
+                dimensions=cfg.dimensions,
+            )
         case "voyage":
-            _require_api_key(name, settings.embeddings.voyage.api_key)
+            cfg = settings.embeddings.voyage
+            _require_api_key(name, cfg.api_key)
             from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
-            return VoyageEmbeddingProvider.from_settings()
+            return VoyageEmbeddingProvider(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
         case "cohere":
-            _require_api_key(name, settings.embeddings.cohere.api_key)
+            cfg = settings.embeddings.cohere
+            _require_api_key(name, cfg.api_key)
             from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
 
-            return CohereEmbeddingProvider.from_settings()
+            return CohereEmbeddingProvider(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
         case "gemini":
-            _require_api_key(name, settings.embeddings.gemini.api_key)
+            cfg = settings.embeddings.gemini
+            _require_api_key(name, cfg.api_key)
             from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
-            return GeminiEmbeddingProvider.from_settings()
+            return GeminiEmbeddingProvider(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
         case _:
             raise ValueError(f"Unknown embedding provider: {name!r}")
 

@@ -20,7 +20,7 @@ def _retriever(
     results: list[tuple[Chunk, float]] | None = None,
 ) -> tuple[DenseRetriever, MagicMock, MagicMock]:
     embedder = MagicMock()
-    embedder.embed.return_value = [embedding if embedding is not None else _VEC]
+    embedder.embed_query.return_value = [embedding if embedding is not None else _VEC]
     vector_store = MagicMock()
     vector_store.search_dense.return_value = results if results is not None else [(_CHUNK, 0.9)]
     return DenseRetriever(embedder=embedder, vector_store=vector_store), embedder, vector_store
@@ -49,12 +49,12 @@ class TestRetrieve:
     def test_calls_embed_for_unembedded_query(self):
         retriever, embedder, _ = _retriever()
         retriever.retrieve(_query(), top_k=5)
-        embedder.embed.assert_called_once_with(["What is IAM?"])
+        embedder.embed_query.assert_called_once_with(["What is IAM?"])
 
     def test_skips_embed_when_embedding_present(self):
         retriever, embedder, _ = _retriever()
         retriever.retrieve(_query(embedding=_VEC), top_k=5)
-        embedder.embed.assert_not_called()  # type: ignore[attr-defined]
+        embedder.embed_query.assert_not_called()  # type: ignore[attr-defined]
 
     def test_uses_precomputed_embedding_for_search(self):
         retriever, _, vector_store = _retriever()
@@ -92,7 +92,7 @@ class TestEmbedQuery:
         q = _query(embedding=_VEC)
         result = retriever.embed_query(q)
         assert result is q
-        embedder.embed.assert_not_called()  # type: ignore[attr-defined]
+        embedder.embed_query.assert_not_called()  # type: ignore[attr-defined]
 
     def test_original_text_preserved(self):
         retriever, *_ = _retriever()
@@ -102,4 +102,4 @@ class TestEmbedQuery:
     def test_embeds_query_text(self):
         retriever, embedder, _ = _retriever()
         retriever.embed_query(_query("specific question"))
-        embedder.embed.assert_called_once_with(["specific question"])
+        embedder.embed_query.assert_called_once_with(["specific question"])

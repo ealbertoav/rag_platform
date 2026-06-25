@@ -24,6 +24,23 @@ logger = logging.getLogger(__name__)
 
 _MAX_BATCH = 2048
 _SUPPORTS_DIM_TRUNCATION = {"text-embedding-3-large", "text-embedding-3-small"}
+_OPENAI_NATIVE_DIMS: dict[str, int] = {
+    "text-embedding-3-large": 3072,
+    "text-embedding-3-small": 1536,
+    "text-embedding-ada-002": 1536,
+}
+
+
+def openai_effective_dense_dim(model: str, dimensions: int | None) -> int:
+    """Return the dense vector size an OpenAI model will actually produce.
+
+    Dimension truncation via the API "dimensions" param only applies to the
+    text-embedding-3 family; other models always emit their native size.
+    """
+    if model in _SUPPORTS_DIM_TRUNCATION:
+        native = _OPENAI_NATIVE_DIMS[model]
+        return dimensions if dimensions is not None else native
+    return _OPENAI_NATIVE_DIMS.get(model, dimensions or 1536)
 
 
 def _is_rate_limit(exc: BaseException) -> bool:

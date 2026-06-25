@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -40,6 +41,13 @@ def _qwen(model: MagicMock | None = None) -> QwenEmbeddingProvider:
     return p
 
 
+def _sentence_transformer_import_error() -> patch.dict:
+    """Block real sentence-transformers import (avoids heavy deps + SWIG noise)."""
+    fake_module = MagicMock()
+    fake_module.SentenceTransformer = MagicMock(side_effect=OSError("not found"))
+    return patch.dict(sys.modules, {"sentence_transformers": fake_module})
+
+
 # ── NomicEmbeddingProvider ─────────────────────────────────────────────────────
 
 
@@ -75,11 +83,7 @@ class TestNomicProvider:
 
     def test_model_load_error_raises_embedding_error(self):
         p = NomicEmbeddingProvider(model_path="bad/path")
-        _ST = "src.infrastructure.embeddings.sentence_transformer_base.SentenceTransformer"
-        with (
-            patch(_ST, side_effect=OSError("not found"), create=True),
-            pytest.raises(EmbeddingError),
-        ):
+        with _sentence_transformer_import_error(), pytest.raises(EmbeddingError):
             p._get_model()
 
     def test_encode_failure_raises_embedding_error(self):
@@ -123,11 +127,7 @@ class TestQwenProvider:
 
     def test_model_load_error_raises_embedding_error(self):
         p = QwenEmbeddingProvider(model_path="bad/path")
-        _ST = "src.infrastructure.embeddings.sentence_transformer_base.SentenceTransformer"
-        with (
-            patch(_ST, side_effect=OSError("not found"), create=True),
-            pytest.raises(EmbeddingError),
-        ):
+        with _sentence_transformer_import_error(), pytest.raises(EmbeddingError):
             p._get_model()
 
     def test_from_settings_returns_instance(self):
@@ -247,3 +247,171 @@ class TestEmbeddingModelIdentifier:
             }
         )
         assert embedding_model_identifier("bge_m3", settings) == "bge_m3:models/embeddings/bge-m3"
+
+
+class TestProviderDenseDim:
+    def test_openai_ada_uses_native_dim_not_configured_truncation(self):
+        from src.infrastructure.embeddings import provider_dense_dim
+
+        settings = _mock_settings(
+            **{
+                "embeddings.openai.model": "text-embedding-ada-002",
+                "embeddings.openai.dimensions": 512,
+            }
+        )
+        assert provider_dense_dim("openai", settings) == 1536
+
+    def test_openai_v3_respects_configured_dimensions(self):
+        from src.infrastructure.embeddings import provider_dense_dim
+
+        settings = _mock_settings(
+            **{
+                "embeddings.openai.model": "text-embedding-3-large",
+                "embeddings.openai.dimensions": 512,
+            }
+        )
+        assert provider_dense_dim("openai", settings) == 512
+
+
+class TestCreateEmbeddingProviderApiSettings:
+    def test_openai_uses_passed_settings_not_global_singleton(self):
+        from pydantic import SecretStr
+
+        from src.infrastructure.embeddings import create_embedding_provider
+        from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
+
+        settings = _mock_settings(
+            **{
+                "embeddings.openai.api_key": SecretStr("passed-key"),
+                "embeddings.openai.model": "text-embedding-3-small",
+                "embeddings.openai.dimensions": 256,
+            }
+        )
+        with patch(
+            "src.core.settings.settings",
+            _mock_settings(
+                **{
+                    "embeddings.openai.api_key": SecretStr("global-key"),
+                    "embeddings.openai.model": "text-embedding-3-large",
+                    "embeddings.openai.dimensions": 3072,
+                }
+            ),
+        ):
+            provider = create_embedding_provider("openai", settings)
+
+        assert isinstance(provider, OpenAIEmbeddingProvider)
+        assert provider.api_key == "passed-key"
+        assert provider.model == "text-embedding-3-small"
+        assert provider.dimensions == 256
+
+
+def _api_settings(provider: str = "openai", *, api_key: str = "sk-test") -> MagicMock:
+    """Build a nested settings mock for API embedding provider tests."""
+    from pydantic import SecretStr
+
+    settings = MagicMock()
+    emb = MagicMock()
+    emb.provider = provider
+    emb.device = "cpu"
+    emb.batch_size = 32
+    emb.normalize = True
+    emb.model_path = "models/embeddings/bge-m3"
+    emb.cache = MagicMock(enabled=False, ttl_seconds=604800)
+    emb.openai = MagicMock(
+        api_key=SecretStr(api_key),
+        model="text-embedding-3-small",
+        dimensions=1536,
+    )
+    emb.voyage = MagicMock(api_key=SecretStr(api_key), model="voyage-large-2", dimensions=1024)
+    emb.cohere = MagicMock(api_key=SecretStr(api_key), model="embed-english-v3.0", dimensions=1024)
+    emb.gemini = MagicMock(api_key=SecretStr(api_key), model="text-embedding-004", dimensions=768)
+    settings.embeddings = emb
+    settings.redis = MagicMock(url="redis://localhost:6379", password=SecretStr(""))
+    return settings
+
+
+class TestProviderDenseDimExtended:
+    def test_voyage_cohere_gemini_dims(self):
+        from src.infrastructure.embeddings import provider_dense_dim
+
+        settings = _api_settings()
+        assert provider_dense_dim("voyage", settings) == 1024
+        assert provider_dense_dim("cohere", settings) == 1024
+        assert provider_dense_dim("gemini", settings) == 768
+
+    def test_self_hosted_provider_dims(self):
+        from src.infrastructure.embeddings import provider_dense_dim
+
+        settings = _mock_settings(**{"embeddings.provider": "nomic"})
+        assert provider_dense_dim("nomic", settings) == 768
+
+
+class TestEmbeddingModelIdentifierExtended:
+    def test_voyage_cohere_gemini(self):
+        from src.infrastructure.embeddings import embedding_model_identifier
+
+        settings = _api_settings()
+        assert embedding_model_identifier("voyage", settings) == "voyage:voyage-large-2"
+        assert embedding_model_identifier("cohere", settings) == "cohere:embed-english-v3.0"
+        assert embedding_model_identifier("gemini", settings) == "gemini:text-embedding-004"
+
+
+class TestCreateProviderApi:
+    def test_voyage_uses_passed_settings(self) -> None:
+        from src.infrastructure.embeddings import create_embedding_provider
+        from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
+        settings = _api_settings("voyage")
+        provider = create_embedding_provider("voyage", settings)
+        assert isinstance(provider, VoyageEmbeddingProvider)
+        assert provider.api_key == "sk-test"
+
+    def test_cohere_uses_passed_settings(self) -> None:
+        from src.infrastructure.embeddings import create_embedding_provider
+        from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
+
+        settings = _api_settings("cohere")
+        provider = create_embedding_provider("cohere", settings)
+        assert isinstance(provider, CohereEmbeddingProvider)
+        assert provider.api_key == "sk-test"
+
+    def test_gemini_uses_passed_settings(self) -> None:
+        from src.infrastructure.embeddings import create_embedding_provider
+        from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
+
+        settings = _api_settings("gemini")
+        provider = create_embedding_provider("gemini", settings)
+        assert isinstance(provider, GeminiEmbeddingProvider)
+        assert provider.api_key == "sk-test"
+
+    @pytest.mark.parametrize("provider", ["openai", "voyage", "cohere", "gemini"])
+    def test_missing_api_key_raises(self, provider: str) -> None:
+        from src.core.exceptions import ConfigurationError
+        from src.infrastructure.embeddings import create_embedding_provider
+
+        settings = _api_settings(provider, api_key="")
+        with pytest.raises(ConfigurationError, match="API key"):
+            create_embedding_provider(provider, settings)
+
+
+class TestCreateProviderUnknown:
+    def test_unknown_provider_raises(self):
+        from src.infrastructure.embeddings import create_embedding_provider
+
+        with pytest.raises(ValueError, match="Unknown"):
+            create_embedding_provider("not_a_provider", _mock_settings())
+
+
+class TestGetEmbeddingProviderCache:
+    def test_wraps_with_cache_when_enabled(self):
+        from src.infrastructure.embeddings.cached_embedding_provider import CachedEmbeddingProvider
+
+        settings = _mock_settings(**{"embeddings.cache.enabled": True})
+        settings.redis = MagicMock(
+            url="redis://localhost:6379",
+            password=MagicMock(get_secret_value=lambda: "")
+        )
+        settings.embeddings.cache = MagicMock(enabled=True, ttl_seconds=3600)
+        with patch("src.core.settings.settings", settings):
+            provider = get_embedding_provider()
+        assert isinstance(provider, CachedEmbeddingProvider)

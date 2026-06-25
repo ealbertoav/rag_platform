@@ -18,6 +18,7 @@ concurrency:
 
 env:
   UV_CACHE_DIR: /tmp/.uv-cache
+  OTEL_SDK_DISABLED: "true"
 
 jobs:
   # ── 1. Lint ──────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -190,3 +191,44 @@ class TestMRR:
     def test_result_in_zero_one(self):
         score = mrr(["a", "b", "c"], ["b"])
         assert 0.0 <= score <= 1.0
+
+
+# ── load_retrieval_dataset ─────────────────────────────────────────────────────
+
+
+class TestLoadRetrievalDataset:
+    def test_loads_valid_entries(self, tmp_path):
+        from src.evals.retrieval import load_retrieval_dataset
+
+        path = tmp_path / "retrieval.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {"id": "q1", "query": "What is EKS?", "relevant_chunk_ids": ["c1", "c2"]},
+                    {"id": "q2", "query": "IAM?", "relevant_chunk_ids": ["c3"]},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        samples = load_retrieval_dataset(path)
+        assert len(samples) == 2
+        assert samples[0].query_id == "q1"
+        assert samples[0].relevant_ids == ["c1", "c2"]
+        assert samples[0].retrieved_ids == []
+
+    def test_skips_non_dict_entries(self, tmp_path):
+        from src.evals.retrieval import load_retrieval_dataset
+
+        path = tmp_path / "retrieval.json"
+        path.write_text(json.dumps(["not-a-dict", {"id": "q1", "relevant_chunk_ids": []}]))
+        samples = load_retrieval_dataset(path)
+        assert len(samples) == 1
+
+    def test_coerces_bad_relevant_ids(self, tmp_path):
+        from src.evals.retrieval import load_retrieval_dataset
+
+        path = tmp_path / "retrieval.json"
+        path.write_text(json.dumps([{"id": 123, "relevant_chunk_ids": [1, "c2", None]}]))
+        samples = load_retrieval_dataset(path)
+        assert samples[0].query_id == ""
+        assert samples[0].relevant_ids == ["c2"]

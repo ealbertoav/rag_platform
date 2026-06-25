@@ -209,30 +209,53 @@ class QdrantVectorStore(VectorStoreRepository):
     def get_collection_embedding_model(self) -> str | None:
         """Return the embedding model name stored in the collection's payload.
 
-        Samples a few existing points and returns the "embedding_model_name"
-        field from the first point that has it.  Returns "None" when:
+        Paginates through existing points and returns the sole
+        "embedding_model_name" when every tagged point agrees.  Returns
+        "None" when:
+
         - The collection does not exist or cannot be queried.
         - The collection is empty.
-        - Points pre-date model tracking (field absent from payload).
+        - No points carry model tracking (legacy data).
         """
+        models = self._collect_embedding_models()
+        if not models:
+            return None
+        return next(iter(models))
+
+    def _collect_embedding_models(self) -> set[str]:
+        """Return distinct "embedding_model_name" values found in the collection."""
         try:
             if not self._client.collection_exists(self.collection):
-                return None
-            points, _ = self._client.scroll(
-                collection_name=self.collection,
-                limit=5,
-                with_payload=True,
-                with_vectors=False,
-            )
+                return set()
         except Exception as exc:  # noqa: BLE001 — intentional fail-open probe
             logger.debug("Cannot probe collection %r for model tracking: %s", self.collection, exc)
-            return None
+            return set()
 
-        for point in points:
-            payload = point.payload or {}
-            if "embedding_model_name" in payload:
-                return str(payload["embedding_model_name"])
-        return None
+        models: set[str] = set()
+        offset: Any | None = None
+        while True:
+            try:
+                points, offset = self._client.scroll(
+                    collection_name=self.collection,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+            except Exception as exc:  # noqa: BLE001 — intentional fail-open probe
+                logger.debug(
+                    "Cannot probe collection %r for model tracking: %s", self.collection, exc
+                )
+                return set()
+
+            for point in points:
+                payload = point.payload or {}
+                if "embedding_model_name" in payload:
+                    models.add(str(payload["embedding_model_name"]))
+
+            if offset is None:
+                break
+        return models
 
     def validate_embedding_model(self) -> None:
         """Raise VectorStoreError when the collection's model differs from the current config.
@@ -248,7 +271,14 @@ class QdrantVectorStore(VectorStoreRepository):
         if not self.embedding_model_name:
             self._model_validated = True
             return
-        existing_model = self.get_collection_embedding_model()
+        models = self._collect_embedding_models()
+        if len(models) > 1:
+            raise VectorStoreError(
+                f"Embedding model mismatch: collection '{self.collection}' contains "
+                f"vectors from multiple models: {sorted(models)}. "
+                f"Run: python scripts/rebuild_embeddings.py --recreate-collection"
+            )
+        existing_model = next(iter(models)) if models else None
         if existing_model is not None and existing_model != self.embedding_model_name:
             raise VectorStoreError(
                 f"Embedding model mismatch: collection '{self.collection}' was built with "
