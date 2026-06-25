@@ -408,8 +408,7 @@ class TestGetEmbeddingProviderCache:
 
         settings = _mock_settings(**{"embeddings.cache.enabled": True})
         settings.redis = MagicMock(
-            url="redis://localhost:6379",
-            password=MagicMock(get_secret_value=lambda: "")
+            url="redis://localhost:6379", password=MagicMock(get_secret_value=lambda: "")
         )
         settings.embeddings.cache = MagicMock(enabled=True, ttl_seconds=3600)
         with patch("src.core.settings.settings", settings):

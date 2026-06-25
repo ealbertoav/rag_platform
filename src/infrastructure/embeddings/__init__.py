@@ -153,33 +153,42 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
                 normalize=cfg.normalize,
             )
         case "openai":
-            cfg = settings.embeddings.openai
-            _require_api_key(name, cfg.api_key)
+            openai_cfg = settings.embeddings.openai
+            _require_api_key(name, openai_cfg.api_key)
             from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
 
             return OpenAIEmbeddingProvider(
-                api_key=cfg.api_key.get_secret_value(),
-                model=cfg.model,
-                dimensions=cfg.dimensions,
+                api_key=openai_cfg.api_key.get_secret_value(),
+                model=openai_cfg.model,
+                dimensions=openai_cfg.dimensions,
             )
         case "voyage":
-            cfg = settings.embeddings.voyage
-            _require_api_key(name, cfg.api_key)
+            voyage_cfg = settings.embeddings.voyage
+            _require_api_key(name, voyage_cfg.api_key)
             from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
-            return VoyageEmbeddingProvider(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
+            return VoyageEmbeddingProvider(
+                api_key=voyage_cfg.api_key.get_secret_value(),
+                model=voyage_cfg.model,
+            )
         case "cohere":
-            cfg = settings.embeddings.cohere
-            _require_api_key(name, cfg.api_key)
+            cohere_cfg = settings.embeddings.cohere
+            _require_api_key(name, cohere_cfg.api_key)
             from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
 
-            return CohereEmbeddingProvider(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
+            return CohereEmbeddingProvider(
+                api_key=cohere_cfg.api_key.get_secret_value(),
+                model=cohere_cfg.model,
+            )
         case "gemini":
-            cfg = settings.embeddings.gemini
-            _require_api_key(name, cfg.api_key)
+            gemini_cfg = settings.embeddings.gemini
+            _require_api_key(name, gemini_cfg.api_key)
             from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
 
-            return GeminiEmbeddingProvider(api_key=cfg.api_key.get_secret_value(), model=cfg.model)
+            return GeminiEmbeddingProvider(
+                api_key=gemini_cfg.api_key.get_secret_value(),
+                model=gemini_cfg.model,
+            )
         case _:
             raise ValueError(f"Unknown embedding provider: {name!r}")
 

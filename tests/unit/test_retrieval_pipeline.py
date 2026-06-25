@@ -212,9 +212,7 @@ class TestRetrievalPipelineFromSettings:
                 "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
             ) as mock_llm,
             patch("src.infrastructure.embeddings.get_embedding_provider"),
-            patch(
-                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"
-            ),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
             patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
             patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
             patch("src.rag.retrieval.dense_retriever.DenseRetriever"),
@@ -238,9 +236,7 @@ class TestRetrievalPipelineFromSettings:
                 "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
             ) as mock_llm,
             patch("src.infrastructure.embeddings.get_embedding_provider"),
-            patch(
-                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"
-            ),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
             patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
             patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
             patch("src.rag.retrieval.dense_retriever.DenseRetriever"),

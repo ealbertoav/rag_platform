@@ -368,9 +368,7 @@ class TestQdrantMisc:
             store.delete(["id-1"])
 
     def test_upsert_adds_embedding_model_to_payload(
-            self,
-            store: QdrantVectorStore,
-            mock_client: MagicMock
+        self, store: QdrantVectorStore, mock_client: MagicMock
     ):
         store.embedding_model_name = "bge_m3:models/bge-m3"
         store.upsert([_chunk(0)])

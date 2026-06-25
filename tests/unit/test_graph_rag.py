@@ -255,9 +255,7 @@ class TestNeo4jGraphRepository:
 
     def test_from_settings_with_neo4j_config(self):
         mock_settings = MagicMock()
-        mock_settings.neo4j = MagicMock(
-            uri="bolt://neo4j:7687", user="admin", password="secret"
-        )
+        mock_settings.neo4j = MagicMock(uri="bolt://neo4j:7687", user="admin", password="secret")
         with patch("src.core.settings.settings", mock_settings):
             repo = Neo4jGraphRepository.from_settings()
         assert repo.uri == "bolt://neo4j:7687"
