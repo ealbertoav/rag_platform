@@ -63,8 +63,7 @@ class TestSQLiteMetadataStore:
 
     def test_connect_rolls_back_on_error(self, tmp_path: Path):
         db = SQLiteMetadataStore(db_path=tmp_path / "meta.db")
-        with pytest.raises(sqlite3.OperationalError):
-            with db._connect() as conn:
-                conn.execute("SELECT * FROM no_such_table_xyz")
+        with pytest.raises(sqlite3.OperationalError), db._connect() as conn:
+            conn.execute("SELECT * FROM no_such_table_xyz")
         record = db.upsert_document("/tmp/x.md", "h1", ["c1"])
         assert record.source_path == "/tmp/x.md"
