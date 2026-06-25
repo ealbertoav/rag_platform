@@ -17,6 +17,7 @@ class EvalsRunResponse(BaseModel):
     mean_faithfulness: float
     mean_relevance: float
     mean_context_precision: float
+    mean_hallucination: float
     passed: bool
     report_path: str
     message: str
@@ -29,7 +30,8 @@ async def run_evals(
     """Run the end-to-end RAG benchmark against the golden QA dataset.
 
     Loads "datasets/goldens/qa_dataset.json", runs every question through
-    the full pipeline, computes Recall@5 / Faithfulness / Relevance, saves
+    the full pipeline, computes Recall@5 / Faithfulness / Relevance /
+    Context Precision / Hallucination, saves a timestamped report to
     a timestamped report to "data/exports/" and returns the summary.
 
     Returns 204 if the QA dataset is empty (no real samples found).
@@ -57,6 +59,7 @@ async def run_evals(
         mean_faithfulness=report.mean_faithfulness,
         mean_relevance=report.mean_relevance,
         mean_context_precision=report.mean_context_precision,
+        mean_hallucination=report.mean_hallucination,
         passed=report.passed,
         report_path=report_path,
         message=(

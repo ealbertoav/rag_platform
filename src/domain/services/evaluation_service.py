@@ -27,6 +27,7 @@ class EvaluationService:
         faithfulness_threshold: float = 0.8,
         relevance_threshold: float = 0.75,
         context_precision_threshold: float = 0.7,
+        hallucination_threshold: float = 0.1,
         qa_dataset_path: Path | None = None,
     ) -> None:
         self._pipeline = chat_pipeline
@@ -35,11 +36,13 @@ class EvaluationService:
         self._faithfulness_threshold = faithfulness_threshold
         self._relevance_threshold = relevance_threshold
         self._context_precision_threshold = context_precision_threshold
+        self._hallucination_threshold = hallucination_threshold
         self._benchmark = RAGBenchmark(
             recall_threshold=recall_threshold,
             faithfulness_threshold=faithfulness_threshold,
             relevance_threshold=relevance_threshold,
             context_precision_threshold=context_precision_threshold,
+            hallucination_threshold=hallucination_threshold,
         )
 
     async def run(self) -> BenchmarkReport:
@@ -55,10 +58,12 @@ class EvaluationService:
                 mean_faithfulness=0.0,
                 mean_relevance=0.0,
                 mean_context_precision=0.0,
+                mean_hallucination=0.0,
                 recall_threshold=self._recall_threshold,
                 faithfulness_threshold=self._faithfulness_threshold,
                 relevance_threshold=self._relevance_threshold,
                 context_precision_threshold=self._context_precision_threshold,
+                hallucination_threshold=self._hallucination_threshold,
                 passed=False,
             )
 
@@ -78,6 +83,7 @@ class EvaluationService:
             faithfulness_threshold=0.8,
             relevance_threshold=0.75,
             context_precision_threshold=0.7,
+            hallucination_threshold=0.1,
         )
 
     # ── internals ──────────────────────────────────────────────────────────────

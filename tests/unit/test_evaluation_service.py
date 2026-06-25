@@ -84,10 +84,12 @@ class TestEvaluationServiceRun:
             mean_faithfulness=0.9,
             mean_relevance=0.9,
             mean_context_precision=0.9,
+            mean_hallucination=0.05,
             recall_threshold=0.5,
             faithfulness_threshold=0.8,
             relevance_threshold=0.75,
             context_precision_threshold=0.7,
+            hallucination_threshold=0.1,
             passed=True,
         )
         svc = _service(path)
