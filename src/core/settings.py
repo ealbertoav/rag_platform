@@ -177,6 +177,11 @@ class LoggingSettings(BaseModel):
     trace_sampling_rate: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
+class ContextualHeadersSettings(BaseModel):
+    enabled: bool = False
+    exclude_from_llm_context: bool = True
+
+
 class ChunkingSettings(BaseModel):
     strategy: Literal["recursive", "semantic", "parent_child"] = "recursive"
     chunk_size: int = Field(default=500, gt=0)
@@ -186,6 +191,7 @@ class ChunkingSettings(BaseModel):
     # ParentChildChunker
     parent_chunk_size: int = Field(default=1500, gt=0)
     child_chunk_size: int = Field(default=400, gt=0)
+    contextual_headers: ContextualHeadersSettings = Field(default_factory=ContextualHeadersSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────

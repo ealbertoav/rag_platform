@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from src.core.settings import (
     APISettings,
+    ChunkingSettings,
     CompressionSettings,
     EmbeddingSettings,
     LLMSettings,
@@ -34,6 +35,7 @@ class TestSettingsSingleton:
         assert isinstance(settings.logging, LoggingSettings)
         assert isinstance(settings.neo4j, Neo4jSettings)
         assert isinstance(settings.metadata, MetadataSettings)
+        assert isinstance(settings.chunking, ChunkingSettings)
 
 
 class TestYamlDefaults:
@@ -80,6 +82,10 @@ class TestYamlDefaults:
     def test_logging_defaults_from_yaml(self):
         assert settings.logging.level == "INFO"
         assert settings.logging.format == "json"
+
+    def test_contextual_headers_defaults_from_yaml(self):
+        assert settings.chunking.contextual_headers.enabled is False
+        assert settings.chunking.contextual_headers.exclude_from_llm_context is True
 
 
 class TestEnvVarOverride:

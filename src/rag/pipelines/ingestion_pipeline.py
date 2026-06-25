@@ -206,6 +206,7 @@ class IngestionPipeline:
         cfg = settings.chunking
         chunker = get_chunker(
             cfg.strategy,
+            use_contextual_headers=cfg.contextual_headers.enabled,
             chunk_size=cfg.chunk_size,
             overlap=cfg.overlap,
         )
