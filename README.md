@@ -209,6 +209,22 @@ EMBEDDINGS__GEMINI__API_KEY=
 # Embedding cache (disabled by default — set true to enable Redis caching)
 EMBEDDINGS__CACHE__ENABLED=false
 REDIS__URL=redis://localhost:6379
+
+# Retrieval fusion (multi-query variants fused via RRF by default)
+RETRIEVAL__TOP_K_FINAL=5
+RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
+RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
+
+# Neo4j Graph RAG (disabled by default)
+NEO4J__ENABLED=false
+NEO4J__URI=bolt://localhost:7687
+NEO4J__USER=neo4j
+NEO4J__PASSWORD=
+NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
+
+# SQLite metadata store (ingestion history + content-hash dedup)
+METADATA__ENABLED=true
+METADATA__DB_PATH=data/processed/metadata.db
 ```
 
 | File | Purpose |
@@ -217,7 +233,8 @@ REDIS__URL=redis://localhost:6379
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, hybrid search alpha, reranker settings |
+| `configs/retrieval.yaml` | Chunking, hybrid fusion (`rrf` / `weighted_linear`), `top_k_final`, reranker |
+| `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
 
@@ -234,8 +251,13 @@ make ingest SOURCE=data/raw/manual.pdf
 # Ingest a directory
 make ingest SOURCE=data/raw/
 
+# List ingested documents (SQLite metadata store)
+uv run python scripts/ingest.py --list
+
 # Supported formats: .pdf, .docx, .html, .htm, .md, .markdown
 ```
+
+Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes old chunks and upserts new ones. Deduplication uses a content hash stored in the SQLite metadata store (`data/processed/metadata.db` by default).
 
 #### Ingestion Flow
 
@@ -250,7 +272,9 @@ flowchart LR
     RC & SC & PC --> EM["BGE-M3<br/>Embed Both<br/>dense + sparse"]
     EM --> QD[("Qdrant<br/>HNSW + Sparse")]
     EM --> BM[("BM25<br/>In-Memory")]
-    QD & BM --> DONE["✅ Indexed"]
+    EM --> META[("SQLite<br/>metadata.db")]
+    EM -->|neo4j.enabled| GR["Entity Extractor<br/>→ Neo4j"]
+    QD & BM & META --> DONE["✅ Indexed"]
 ```
 
 ### Start the API Server
@@ -290,6 +314,35 @@ with httpx.Client() as client:
                 token = json.loads(line[6:])["token"]
                 print(token, end="", flush=True)
 ```
+
+**Agentic RAG (multistep retrieval — streaming):**
+```bash
+curl -X POST http://localhost:8000/chat/agent \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do IAM roles work in EKS?", "max_iterations": 3}' \
+  --no-buffer
+```
+
+**Agentic RAG (full response with iteration metadata):**
+```bash
+curl -X POST http://localhost:8000/chat/agent/full \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do IAM roles work in EKS?", "max_iterations": 3}'
+```
+
+Example response from `/chat/agent/full`:
+```json
+{
+  "answer": "...",
+  "sources": ["chunk-id-1", "chunk-id-2"],
+  "latency_ms": 4200.5,
+  "token_count": 312,
+  "iterations": 2,
+  "actions": ["RETRIEVE_MORE", "ANSWER"]
+}
+```
+
+See [Agentic RAG](#agentic-rag) for action types and when to use the agent endpoints vs standard chat.
 
 ### Run Evaluations
 
@@ -624,29 +677,41 @@ docker run -d --name neo4j \
   -e NEO4J_AUTH=neo4j/yourpassword \
   neo4j:5
 
-# 3. Configure (in .env)
-# No dedicated Neo4j settings yet — defaults: bolt://localhost:7687 / neo4j / neo4j
+# 3. Enable in .env (or configs/neo4j.yaml)
+NEO4J__ENABLED=true
+NEO4J__URI=bolt://localhost:7687
+NEO4J__USER=neo4j
+NEO4J__PASSWORD=yourpassword
+NEO4J__EXTRACT_ENTITIES_ON_INGEST=true   # populate graph during ingestion
 ```
 
 ### Enabling Graph RAG in the pipeline
 
+Graph RAG is wired automatically when `neo4j.enabled=true`:
+
+- **Retrieval:** `RetrievalPipeline.from_settings()` attaches `GraphRetriever` to `HybridRetriever`; graph-matched chunks participate in RRF fusion alongside dense + BM25 results.
+- **Ingestion:** when `extract_entities_on_ingest=true`, the ingestion pipeline extracts entity triples per document and upserts them to Neo4j via `GraphIndexer`.
+- **Degradation:** if Neo4j is disabled or unreachable, the pipeline logs a warning and continues with dense + BM25 only.
+
+No manual wiring is required for the default API server (`make serve`) or CLI ingestion (`scripts/ingest.py`).
+
+<details>
+<summary>Advanced: manual GraphRetriever wiring</summary>
+
 ```python
-from src.rag.retrieval.graph_retriever import EntityExtractor, GraphRetriever
-from src.infrastructure.vectordb.neo4j_graph import Neo4jGraphRepository
+from src.rag.retrieval.graph_retriever import GraphRetriever
 from src.rag.retrieval.bm25_retriever import BM25Retriever
 from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
 
 llm = LlamaCppProvider.from_settings()
 bm25 = BM25Retriever.from_disk()
-
 graph_retriever = GraphRetriever.from_settings(llm=llm, bm25=bm25)
 
-# Inject into HybridRetriever
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
 hybrid = HybridRetriever(dense=dense, bm25=bm25, graph_retriever=graph_retriever)
 ```
 
-> **Note:** `HybridRetriever` defaults to `graph_retriever=None` — the pipeline degrades gracefully to dense + BM25 when Neo4j is absent.
+</details>
 
 ---
 
@@ -678,6 +743,23 @@ flowchart TD
 
 ### Usage
 
+**HTTP (recommended when the API server is running):**
+
+```bash
+# Streaming — same SSE format as POST /chat
+curl -X POST http://localhost:8000/chat/agent \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do IAM roles work in EKS?", "max_iterations": 3}' \
+  --no-buffer
+
+# Full response — includes iterations and actions taken
+curl -X POST http://localhost:8000/chat/agent/full \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do IAM roles work in EKS?", "max_iterations": 3}'
+```
+
+**Python (in-process):**
+
 ```python
 from src.rag.pipelines.agent_pipeline import AgentPipeline
 
@@ -689,9 +771,10 @@ async for token in await agent.chat("How do IAM roles work in EKS?"):
     print(token, end="", flush=True)
 
 # Blocking
-answer = await agent.chat_full("How do IAM roles work in EKS?")
-print(answer.text)
-print("Sources:", answer.sources)
+result = await agent.chat_full("How do IAM roles work in EKS?")
+print(result.answer.text)
+print("Sources:", result.answer.sources)
+print("Actions:", [a.value for a in result.actions])
 ```
 
 ### Agent actions
@@ -705,7 +788,7 @@ print("Sources:", answer.sources)
 
 ### Relationship to Graph RAG
 
-`GRAPH_LOOKUP` is only active when a `GraphRetriever` (T-070) is wired into `HybridRetriever`. Without Neo4j, the agent still works — it simply skips graph lookups and relies on dense + BM25.
+`GRAPH_LOOKUP` is active when `NEO4J__ENABLED=true` — `RetrievalPipeline.from_settings()` wires `GraphRetriever` automatically. Without Neo4j, the agent still works; it skips graph lookups and relies on dense + BM25 (+ multi-query RRF fusion).
 
 ---
 
@@ -784,6 +867,8 @@ Legacy collections without metadata fall back to the first tagged point payload;
 | `GET` | `/health` | Server status and model load state |
 | `POST` | `/chat` | Stream answer as Server-Sent Events |
 | `POST` | `/chat/full` | Non-streaming chat, returns complete answer |
+| `POST` | `/chat/agent` | Agentic RAG — multistep retrieval, streaming answer (`max_iterations` 1–5) |
+| `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations` and `actions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
 | `POST` | `/ingest/upload` | Ingest an uploaded file (multipart) |
 | `POST` | `/evals/run` | Run E2E benchmark — returns `204` until QA dataset is populated, `200` with Recall@5 / Faithfulness / Relevance / Context Precision report |
@@ -805,6 +890,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
+│   ├── neo4j.yaml              # Graph RAG + SQLite metadata store settings
 │   ├── evals.yaml
 │   ├── logging.yaml
 │   ├── prometheus.yml          # Prometheus scrape config (scrapes api:8000/metrics)
@@ -857,15 +943,17 @@ rag_implementation/
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · BenchmarkReport
-│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, llama.cpp
+│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, Neo4j, SQLite metadata, llama.cpp
+│   │   └── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
 │   ├── rag/                    # Chunkers, retrievers, pipelines
+│   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
 │   ├── benchmarks/             # Benchmark tests (skip without data)
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 640+ unit tests (zero external deps)
+│   └── unit/                   # 800+ unit tests (zero external deps)
 ├── .dockerignore
 ├── .env.example
 ├── .github/workflows/ci.yml
@@ -897,7 +985,9 @@ pre-commit install
 **Environment variables** use `__` as the nested delimiter:
 ```bash
 LLM__TEMPERATURE=0.0
-RETRIEVAL__HYBRID_ALPHA=0.5
+RETRIEVAL__HYBRID_FUSION=rrf
+RETRIEVAL__TOP_K_FINAL=5
+NEO4J__ENABLED=true
 EMBEDDINGS__DEVICE=cpu
 ```
 
@@ -943,7 +1033,7 @@ uv run pytest tests/integration/test_qdrant.py -v
 uv run pytest tests/benchmarks/ -v -s
 ```
 
-**Test coverage:** 97 source files · 39 test files · 640+ unit tests.
+**Test coverage:** 97 source files · 40+ test files · 847 tests (32 skipped without models/services).
 
 Integration tests auto-skip when models or Qdrant are absent (CI runs them but does not start Docker services).
 
@@ -972,6 +1062,8 @@ flowchart TD
     style RRF fill:#f0f0ff,stroke:#6666cc
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
+
+**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank and compression.
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
 
@@ -1070,7 +1162,7 @@ scrape_configs:
 ```mermaid
 flowchart LR
     PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
-    L --> U["2️⃣ Unit Tests<br/>640+ tests<br/>coverage upload"]
+    L --> U["2️⃣ Unit Tests<br/>847 tests<br/>coverage upload"]
     U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
     U --> R["4️⃣ Retrieval Regression<br/>Recall@5 gate<br/>auto-skip if no golden data"]
 

@@ -11,7 +11,7 @@ from src.core.exceptions import IngestionError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.services.ingestion_service import IngestionService
-from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult
+from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult, content_hash
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -37,27 +37,28 @@ def _embedded_chunk(i: int = 0) -> Chunk:
 
 
 class TestContentHashBehaviour:
-    def test_hash_is_16_char_hex(self, tmp_path: Path):
+    def test_hash_is_16_char_hex(self):
+        assert len(content_hash("/tmp/doc.md", "some content")) == 16
+        assert all(c in "0123456789abcdef" for c in content_hash("/tmp/doc.md", "some content"))
+
+    def test_same_content_same_source_same_hash(self):
+        text = "identical content"
+        source = "/tmp/a.md"
+        assert content_hash(source, text) == content_hash(source, text)
+
+    def test_same_content_different_source_different_hash(self):
+        text = "identical content"
+        assert content_hash("/tmp/a.md", text) != content_hash("/tmp/b.md", text)
+
+    def test_different_content_different_hash(self):
+        assert content_hash("/tmp/a.md", "content A") != content_hash("/tmp/a.md", "content B")
+
+    def test_hash_on_ingest_result(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("some content")
         pipeline, *_ = _pipeline()
         result = pipeline.ingest_file(path)
-        assert len(result.content_hash) == 16
-        assert all(c in "0123456789abcdef" for c in result.content_hash)
-
-    def test_same_content_same_hash(self, tmp_path: Path):
-        a, b = tmp_path / "a.md", tmp_path / "b.md"
-        a.write_text("identical content")
-        b.write_text("identical content")
-        pipeline, *_ = _pipeline()
-        assert pipeline.ingest_file(a).content_hash == pipeline.ingest_file(b).content_hash
-
-    def test_different_content_different_hash(self, tmp_path: Path):
-        a, b = tmp_path / "a.md", tmp_path / "b.md"
-        a.write_text("content A")
-        b.write_text("content B")
-        pipeline, *_ = _pipeline()
-        assert pipeline.ingest_file(a).content_hash != pipeline.ingest_file(b).content_hash
+        assert result.content_hash == content_hash(str(path.resolve()), "some content")
 
 
 # ── IngestionService ───────────────────────────────────────────────────────────
@@ -118,6 +119,7 @@ class TestIngestionService:
 
 def _pipeline(
     prepared_chunks: list[Chunk] | None = None,
+    metadata: MagicMock | None = None,
 ) -> tuple[IngestionPipeline, MagicMock, MagicMock, MagicMock]:
     service = MagicMock()
     service.prepare.return_value = (
@@ -125,7 +127,12 @@ def _pipeline(
     )
     vector_store = MagicMock()
     bm25 = MagicMock()
-    pipeline = IngestionPipeline(service=service, vector_store=vector_store, bm25=bm25)
+    pipeline = IngestionPipeline(
+        service=service,
+        vector_store=vector_store,
+        bm25=bm25,
+        metadata=metadata,
+    )
     return pipeline, service, vector_store, bm25
 
 
@@ -222,6 +229,24 @@ class TestIngestionPipelineDirectory:
         pipeline.save_indexes()
         bm25.save.assert_called_once()
 
+    def test_skips_unchanged_file_when_metadata_matches(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("stable content")
+        metadata = MagicMock()
+        metadata.get_by_source.return_value = MagicMock(
+            id="doc-1",
+            content_hash=content_hash(str(path.resolve()), "stable content"),
+            chunk_count=2,
+        )
+        metadata.get_chunk_ids.return_value = ["c1", "c2"]
+        pipeline, service, vector_store, bm25 = _pipeline(metadata=metadata)
+        result = pipeline.ingest_file(path)
+        assert result.skipped is True
+        service.prepare.assert_not_called()
+        vector_store.upsert.assert_not_called()
+        bm25.add.assert_not_called()
+        metadata.upsert_document.assert_called_once()
+
 
 class TestIngestionPipelineFromSettings:
     def test_from_settings_builds_pipeline(self):
@@ -233,8 +258,11 @@ class TestIngestionPipelineFromSettings:
             patch("src.infrastructure.embeddings.get_embedding_provider"),
             patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
             patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.infrastructure.metadata.sqlite_store.SQLiteMetadataStore.from_settings"),
         ):
             mock_settings.chunking = MagicMock(strategy="recursive", chunk_size=512, overlap=64)
+            mock_settings.metadata = MagicMock(enabled=True)
+            mock_settings.neo4j = MagicMock(enabled=False)
             pipeline = IngestionPipeline.from_settings()
 
         assert isinstance(pipeline, IngestionPipeline)

@@ -35,6 +35,7 @@ PROCESSED_DIR = DATA_DIR / "processed"
 CHUNKS_DIR = DATA_DIR / "chunks"
 EXPORTS_DIR = DATA_DIR / "exports"
 BM25_INDEX_PATH = PROCESSED_DIR / "bm25_index.pkl"
+METADATA_DB_PATH = PROCESSED_DIR / "metadata.db"
 
 MODELS_DIR = ROOT / "models"
 DATASETS_DIR = ROOT / "datasets"

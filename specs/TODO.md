@@ -507,15 +507,15 @@
 
 ---
 
-## Phase 7 — Future: Graph RAG (Parking Lot)
+## Phase 7 — Graph RAG & Agentic RAG (Library Code)
 
-> These are designed-for but not implemented in MVP. Architecture supports plug-in without refactoring.
+> **Status:** Core modules implemented (T-070, T-071) but **not wired** into the default API/runtime path. Production wiring is tracked in **Phase 11 (Priority 1)**.
 
 ### T-070 · Knowledge Graph Layer (Neo4j)
 - **Status:** `[x]`
 - **Goal:** Extract entity relationships from ingested documents and store in Neo4j. Add `graph_retriever.py` alongside `hybrid_retriever.py`.
 - **Files:** `src/infrastructure/vectordb/neo4j.py`, `src/rag/retrieval/graph_retriever.py`
-- **Note:** `HybridRetriever` already accepts an optional `graph_retriever` param (wired to `None` until this task).
+- **Note:** `HybridRetriever` already accepts an optional `graph_retriever` param (wired to `None` until T-111).
 
 ---
 
@@ -523,7 +523,7 @@
 - **Status:** `[x]`
 - **Goal:** Add a tool-calling agent layer that can decide when to retrieve, when to ask clarifying questions, and when to combine multiple retrievals.
 - **Files:** `src/rag/pipelines/agent_pipeline.py`
-- **Note:** Requires Graph RAG (T-070) for multi-hop reasoning.
+- **Note:** Requires Graph RAG wiring (T-111) for multi-hop reasoning. API exposure tracked in T-114.
 
 ---
 
@@ -1042,6 +1042,757 @@
 
 ---
 
+## Phase 11 — Wire Existing Code (Priority 1)
+
+> **Motivation:** Several high-value modules are implemented but not connected to the default runtime path. This phase closes the gap between library code and production behavior — inspired by RAG_Techniques patterns already partially present (fusion retrieval, query transformations, graph RAG, agentic RAG).
+>
+> **Reference repo:** `/Users/eduardo.albornoz/Projects/Personal/Self Training/RAG_Techniques`
+>
+> **Depends on:** Phases 1–3 (ingestion, retrieval, API), Phase 7 (T-070, T-071 library code)
+
+---
+
+### T-110 · Multi-Query Retrieval Fusion
+- **Status:** `[x]`
+- **Goal:** Use `Query.expanded_texts` variants in retrieval, not just the original query. Run hybrid retrieval for each query variant and fuse results with RRF — matching RAG_Techniques **query transformations** and **MemoRAG multi-query retrieval**.
+- **Inputs:** T-020 (`QueryExpander`), T-022 (`HybridRetriever`, `rrf_fuse`), T-025 (`RetrievalService`)
+- **Outputs:** Retrieval pipeline that searches with `[query.text] + query.expanded_texts` and returns deduplicated, fused top-K chunks.
+- **Files:**
+  - `src/domain/services/retrieval_service.py` — iterate variants, fuse with RRF
+  - `src/rag/retrieval/hybrid_retriever.py` — optional `retrieve_multi()` helper (or keep logic in service)
+  - `tests/unit/test_retrieval_service.py` — multi-query fusion cases
+  - `tests/integration/test_retrieval_pipeline.py` — end-to-end with mocked expander
+- **Flow:**
+  ```
+  Query
+  → QueryExpander → expanded_texts populated
+  → For each variant in [query.text] + expanded_texts:
+      → embed variant
+      → HybridRetriever.retrieve(variant_query, top_k)
+  → rrf_fuse(all result lists) → dedup by chunk ID → top_k_retrieval
+  → Reranker → Compressor → context
+  ```
+- **Config:** Reuse `query_expansion.enabled`, `query_expansion.n_variants`; no new keys required.
+- **Acceptance Criteria:**
+  - When `query_expansion.enabled=true`, retrieval runs at least once per variant (verified via mock call count)
+  - Fused output contains no duplicate chunk IDs
+  - When `query_expansion.enabled=false`, behavior is identical to current single-query path
+  - OTel span `retrieval.multi_query_fusion` records variant count and fused chunk count
+  - `pytest tests/unit/test_retrieval_service.py` passes
+
+---
+
+### T-111 · Graph RAG Production Wiring
+- **Status:** `[x]`
+- **Goal:** Wire `GraphRetriever` into `RetrievalPipeline.from_settings()` so the default hybrid path includes graph retrieval when Neo4j is configured — inspired by RAG_Techniques `graph_rag.py`.
+- **Inputs:** T-070 (`GraphRetriever`), T-022 (`HybridRetriever.graph_retriever` param), T-112 (Neo4j settings)
+- **Outputs:** `HybridRetriever` instantiated with `graph_retriever=GraphRetriever(...)` when enabled.
+- **Files:**
+  - `src/rag/pipelines/retrieval_pipeline.py` — conditional graph wiring in `from_settings()`
+  - `src/rag/pipelines/chat_pipeline.py` — ensure graph-enabled retrieval propagates
+  - `tests/unit/test_retrieval_pipeline.py` — graph on/off factory tests
+- **Config:** `neo4j.enabled: false` (default off; graceful degradation when disabled)
+- **Acceptance Criteria:**
+  - When `neo4j.enabled=false`, `HybridRetriever.graph` is `None` (current behavior preserved)
+  - When `neo4j.enabled=true` and Neo4j is reachable, graph results participate in RRF fusion
+  - When Neo4j is unreachable, pipeline logs warning and continues with dense + BM25 only
+  - `pytest tests/unit/test_graph_rag.py` passes
+
+---
+
+### T-112 · Neo4j Settings & Configuration
+- **Status:** `[x]`
+- **Goal:** Add typed `Neo4jSettings` to the settings model. Currently `Neo4jGraphRepository.from_settings()` uses `getattr(settings, "neo4j", None)` with hardcoded defaults — make configuration explicit and env-overridable.
+- **Inputs:** T-001 (`Settings`), `.env.example`, T-070 (`Neo4jGraphRepository`)
+- **Outputs:** `settings.neo4j` with URI, credentials, database name, and enable flag.
+- **Files:**
+  - `src/core/settings.py` — add `Neo4jSettings` nested model
+  - `configs/retrieval.yaml` — add `neo4j:` block (or `configs/neo4j.yaml`)
+  - `.env.example` — add `NEO4J__URI`, `NEO4J__USER`, `NEO4J__PASSWORD`, `NEO4J__ENABLED`
+  - `src/infrastructure/vectordb/neo4j.py` — read from `settings.neo4j` (remove `getattr` fallback)
+  - `tests/unit/test_settings.py` — Neo4j settings validation
+- **Config schema:**
+  ```yaml
+  neo4j:
+    enabled: false
+    uri: bolt://localhost:7687
+    user: neo4j
+    password: ""          # required when enabled=true
+    database: neo4j
+    max_hops: 2           # graph traversal depth
+  ```
+- **Acceptance Criteria:**
+  - `NEO4J__ENABLED=true` with missing password raises Pydantic validation error
+  - `from src.core.settings import settings` works with no Neo4j env vars (defaults to disabled)
+  - `pytest tests/unit/test_settings.py` passes
+
+---
+
+### T-113 · Graph Entity Extraction During Ingestion
+- **Status:** `[x]`
+- **Goal:** Populate Neo4j during ingestion so graph retrieval has data at query time — inspired by RAG_Techniques `graph_rag.py` entity/relationship extraction.
+- **Inputs:** T-015 (`IngestionPipeline`), T-070 (`EntityExtractor`, `Neo4jGraphRepository`), T-112
+- **Outputs:** Ingestion optionally extracts entities/relationships per document and upserts to Neo4j.
+- **Files:**
+  - `src/rag/pipelines/ingestion_pipeline.py` — call entity extraction after chunking
+  - `src/domain/services/ingestion_service.py` — optional graph enrichment step
+  - `src/rag/retrieval/graph_retriever.py` — ensure `EntityExtractor` is reusable from ingestion
+  - `tests/integration/test_ingestion_pipeline.py` — graph extraction with mocked Neo4j
+- **Flow:**
+  ```
+  Document → Chunker → Embed → Qdrant + BM25
+                       ↓ (if neo4j.enabled)
+              EntityExtractor → Neo4jGraphRepository.upsert_triplets()
+  ```
+- **Acceptance Criteria:**
+  - When `neo4j.enabled=false`, ingestion path unchanged (no LLM/Neo4j calls)
+  - When enabled, entities and relationships from each document appear in Neo4j
+  - Entity extraction failure on one document logs warning and continues pipeline
+  - Re-ingesting same document updates (not duplicates) graph nodes by document ID
+
+---
+
+### T-114 · Agentic RAG API Endpoint
+- **Status:** `[x]`
+- **Goal:** Expose `AgentPipeline` via FastAPI so clients can opt into multi-step retrieval — inspired by RAG_Techniques `Agentic_RAG.ipynb`, `self_rag.py`, and `crag.py`.
+- **Inputs:** T-071 (`AgentPipeline`), T-032 (FastAPI app), T-111 (graph wiring for `GRAPH_LOOKUP` action)
+- **Outputs:** New endpoint(s) for agentic chat with streaming and full-response modes.
+- **Files:**
+  - `src/api/routers/chat.py` — add `POST /chat/agent` and `POST /chat/agent/full`
+  - `src/api/dependencies.py` — `get_agent_pipeline()` factory
+  - `src/main.py` — mount agent pipeline in lifespan / app.state
+  - `src/api/schemas/chat.py` — request/response models (if not inline)
+  - `tests/unit/test_agent_pipeline.py` — existing tests remain green
+  - `tests/integration/test_chat_agent.py` — new endpoint smoke tests
+- **API contract:**
+  ```
+  POST /chat/agent
+    Body: { "question": "...", "max_iterations": 3 }
+    Response: text/event-stream (SSE tokens)
+
+  POST /chat/agent/full
+    Body: { "question": "...", "max_iterations": 3 }
+    Response: { "answer": "...", "sources": [...], "iterations": 2, "actions": [...] }
+  ```
+- **Acceptance Criteria:**
+  - `POST /chat` behavior unchanged (standard `ChatPipeline`)
+  - Agent endpoint supports `RETRIEVE_MORE`, `GRAPH_LOOKUP`, `CLARIFY`, `ANSWER` actions
+  - `max_iterations` capped at 5 regardless of client value
+  - OpenAPI docs list both standard and agent endpoints
+  - Integration test mocks LLM and verifies at least one agent iteration
+
+---
+
+### T-115 · Config Drift Resolution
+- **Status:** `[x]`
+- **Goal:** Align configuration keys with actual runtime behavior. Several settings are defined but unused, causing operator confusion.
+- **Inputs:** T-001 (`Settings`), T-025 (`RetrievalService`), `configs/retrieval.yaml`
+- **Outputs:** Every retrieval config key affects runtime behavior or is removed.
+- **Files:**
+  - `src/domain/services/retrieval_service.py` — wire `top_k_final` after reranking
+  - `src/rag/pipelines/retrieval_pipeline.py` — pass `top_k_final` from settings
+  - `src/rag/retrieval/hybrid_retriever.py` — document RRF vs `hybrid_alpha`; optionally implement weighted linear fusion as alternative strategy
+  - `src/rag/ranking/score_fusion.py` — expose fusion mode selector if implementing alpha-weighted path
+  - `configs/retrieval.yaml` — add comments clarifying each key's effect
+  - `tests/unit/test_settings.py`, `tests/unit/test_retrieval_service.py`
+- **Drift items to resolve:**
+  | Key | Current state | Target behavior |
+  |-----|---------------|-----------------|
+  | `retrieval.top_k_final` | Defined, unused | Cap final chunks after rerank/compression (default: 5) |
+  | `retrieval.hybrid_alpha` | Stored, RRF ignores | Either implement weighted fusion mode OR rename/document as legacy |
+  | `reranker.top_k` vs `top_k_final` | Both exist | Reranker selects top N; `top_k_final` trims after compression |
+- **Acceptance Criteria:**
+  - `top_k_final=5` limits chunks passed to generation (verified in unit test)
+  - README and `configs/retrieval.yaml` document fusion mode (RRF default)
+  - No silent no-op config keys remain in `RetrievalSettings`
+
+---
+
+### T-116 · Idempotent Re-Ingest by Content Hash
+- **Status:** `[x]`
+- **Goal:** Complete the idempotent ingestion spec from T-015. `content_hash` is computed but deduplication is not enforced — re-ingesting identical files should skip or update, not duplicate.
+- **Inputs:** T-015 (`IngestionPipeline`, `IngestionResult.skipped`), T-003 (`Chunk`, `Document` metadata)
+- **Outputs:** Ingestion returns `skipped=True` for unchanged documents; updates chunks when content changes.
+- **Files:**
+  - `src/domain/services/ingestion_service.py` — hash comparison logic
+  - `src/rag/pipelines/ingestion_pipeline.py` — skip/update branch
+  - `src/infrastructure/vectordb/qdrant.py` — delete stale chunks by document ID before re-upsert
+  - `src/infrastructure/vectordb/bm25.py` — remove old chunks for document before re-index
+  - `tests/unit/test_ingestion_service.py` — skip on same hash, update on changed hash
+- **Hash strategy:** `sha256(normalized_text + source_path)` stored in `Document.metadata["content_hash"]` and Qdrant payload.
+- **Acceptance Criteria:**
+  - Re-ingesting identical file → `IngestionResult.skipped=True`, zero new Qdrant upserts
+  - Re-ingesting modified file → old chunks removed, new chunks upserted
+  - `scripts/ingest.py` logs "skipped (unchanged)" per file
+  - `pytest tests/unit/test_ingestion_service.py` passes
+
+---
+
+### T-117 · SQLite Metadata Store
+- **Status:** `[x]`
+- **Goal:** Implement the metadata store referenced in T-015 flow diagram. Track document ingestion history, content hashes, chunk counts, and timestamps for operational visibility and dedup support.
+- **Inputs:** T-015, T-116 (content hash), `aiosqlite` (already in dependencies)
+- **Outputs:** Persistent SQLite DB at `data/processed/metadata.db` with document and ingestion run records.
+- **Files:**
+  - `src/infrastructure/metadata/sqlite_store.py` — CRUD for documents and ingestion runs
+  - `src/domain/repositories/metadata_repository.py` — ABC interface
+  - `src/rag/pipelines/ingestion_pipeline.py` — write metadata after each ingest
+  - `scripts/ingest.py` — `--list` flag to show ingested documents
+  - `tests/unit/test_sqlite_metadata.py`
+- **Schema:**
+  ```sql
+  documents(id, source_path, content_hash, chunk_count, ingested_at, updated_at)
+  ingestion_runs(id, document_id, status, chunks_added, chunks_skipped, duration_ms, error)
+  ```
+- **Acceptance Criteria:**
+  - Every successful ingest creates/updates a row in `documents`
+  - T-116 dedup reads hash from SQLite (not only Qdrant payload)
+  - `scripts/ingest.py --list` prints ingested files with timestamps
+  - Works without SQLite file present (auto-creates on first ingest)
+
+---
+
+## Phase 12 — Index-Time Enrichment (Priority 2)
+
+> **Motivation:** Improve recall and context quality at indexing time — inspired by RAG_Techniques **contextual chunk headers**, **document augmentation**, **HyPE**, **RSE**, and **hierarchical indices**.
+>
+> **Reference techniques:**
+> - `contextual_chunk_headers.ipynb`
+> - `document_augmentation.py`
+> - `HyPE_Hypothetical_Prompt_Embeddings.py`
+> - `relevant_segment_extraction.ipynb`
+> - `context_enrichment_window_around_chunk.py`
+> - `hierarchical_indices.py`
+>
+> **Depends on:** Phase 11 (T-115 config alignment), Phase 1 ingestion pipeline
+
+---
+
+### T-120 · Contextual Chunk Headers (CCH)
+- **Status:** `[ ]`
+- **Goal:** Prepend document title, section, and page metadata to each chunk before embedding — inspired by RAG_Techniques `contextual_chunk_headers.ipynb`. Low cost, often large recall gain.
+- **Inputs:** T-010 (loaders preserve metadata), T-011 (chunkers), T-012 (embedding)
+- **Outputs:** Chunks embedded with contextual header prefix; header excluded from LLM context optionally.
+- **Files:**
+  - `src/rag/chunking/contextual_headers.py` — `prepend_headers(document, chunk) -> str`
+  - `src/rag/chunking/__init__.py` — wrap any chunker with CCH decorator
+  - `src/prompts/ingestion/chunk_header_template.txt` — header format template
+  - `configs/retrieval.yaml` — add `chunking.contextual_headers.enabled: false`
+  - `tests/unit/test_contextual_headers.py`
+- **Header format example:**
+  ```
+  [Document: Annual Report 2023 | Section: Revenue | Page: 42]
+  {chunk_text}
+  ```
+- **Acceptance Criteria:**
+  - Disabled by default; no behavior change when `enabled=false`
+  - Embedded text includes header; `Chunk.metadata["raw_text"]` preserves text without header for display
+  - Headers derived from loader metadata (`filename`, `section`, `page`)
+  - `pytest tests/unit/test_contextual_headers.py` passes
+
+---
+
+### T-121 · Document Augmentation (Synthetic Questions)
+- **Status:** `[ ]`
+- **Goal:** At ingest time, generate N synthetic questions per chunk and store them as additional indexable content — inspired by RAG_Techniques `document_augmentation.py`.
+- **Inputs:** T-015 (ingestion), T-030 (LLM), T-013 (Qdrant upsert)
+- **Outputs:** Each chunk may have companion "question chunks" indexed alongside the source chunk.
+- **Files:**
+  - `src/rag/enrichment/document_augmentation.py` — `generate_questions(chunk, llm) -> list[str]`
+  - `src/prompts/ingestion/generate_chunk_questions.txt`
+  - `src/rag/pipelines/ingestion_pipeline.py` — optional augmentation step
+  - `configs/retrieval.yaml` — add `chunking.augmentation.enabled`, `chunking.augmentation.n_questions`
+  - `tests/unit/test_document_augmentation.py`
+- **Index strategy:** Store question text as separate Qdrant points with `metadata["type"]="synthetic_question"` and `metadata["source_chunk_id"]`.
+- **Acceptance Criteria:**
+  - Disabled by default (no extra LLM calls during ingest)
+  - When enabled, each chunk produces up to N questions indexed in Qdrant + BM25
+  - Retrieval returns source chunk (not question chunk) via `source_chunk_id` resolution
+  - Augmentation failure on one chunk logs warning and continues
+
+---
+
+### T-122 · HyPE — Hypothetical Prompt Embeddings
+- **Status:** `[ ]`
+- **Goal:** Precompute hypothetical questions per chunk at index time and embed them for question-question matching at query time — inspired by RAG_Techniques `HyPE_Hypothetical_Prompt_Embeddings.py`. Strong for FAQ-style corpora.
+- **Inputs:** T-121 (question generation — reuse or extend), T-012 (embedding), T-021 (dense retrieval)
+- **Outputs:** HyPE index alongside standard chunk index; retrieval mode selectable via config.
+- **Files:**
+  - `src/rag/enrichment/hype_indexer.py` — build HyPE vectors per chunk
+  - `src/rag/retrieval/hype_retriever.py` — embed query, search HyPE index, resolve to source chunks
+  - `src/rag/retrieval/hybrid_retriever.py` — optional fourth RRF source: HyPE results
+  - `configs/retrieval.yaml` — add `retrieval.hype.enabled: false`
+  - `tests/unit/test_hype_retriever.py`
+- **Flow:**
+  ```
+  Ingest: chunk → generate hypothetical questions → embed questions → store in Qdrant (hype collection or typed payload)
+  Query:  question → embed → search hype vectors → map to source chunks → fuse via RRF
+  ```
+- **Acceptance Criteria:**
+  - HyPE disabled by default; zero overhead when off
+  - When enabled, HyPE results participate in RRF fusion with dense + BM25 (+ graph)
+  - Benchmark script can compare HyPE-on vs HyPE-off (feeds T-150)
+
+---
+
+### T-123 · Relevant Segment Extraction (RSE)
+- **Status:** `[ ]`
+- **Goal:** After retrieval, merge adjacent relevant chunks into longer coherent segments — inspired by RAG_Techniques `relevant_segment_extraction.ipynb`. Complements `ParentChildChunker`.
+- **Inputs:** T-025 (retrieval pipeline), T-011 (`parent_child_chunker.py`)
+- **Outputs:** Post-retrieval step that expands retrieved child chunks into merged parent segments.
+- **Files:**
+  - `src/rag/enrichment/relevant_segment_extraction.py` — `merge_adjacent(chunks) -> list[Chunk]`
+  - `src/domain/services/retrieval_service.py` — call RSE after reranking, before compression
+  - `configs/retrieval.yaml` — add `retrieval.rse.enabled: false`, `retrieval.rse.max_segment_tokens`
+  - `tests/unit/test_relevant_segment_extraction.py`
+- **Merge rules:**
+  - Adjacent chunks from same document with consecutive `metadata["chunk_index"]` merge
+  - Respect `max_segment_tokens` cap (tiktoken)
+  - Never merge chunks from different documents
+- **Acceptance Criteria:**
+  - Disabled by default
+  - When enabled, adjacent retrieved chunks merge into single segment
+  - Merged segment never exceeds `max_segment_tokens`
+  - OTel span `retrieval.rse` records merge count
+
+---
+
+### T-124 · Context Window Enhancement (Parent Context on Retrieve)
+- **Status:** `[ ]`
+- **Goal:** When retrieving child chunks, include parent chunk text (and optional sibling context) in the context sent to the LLM — inspired by RAG_Techniques `context_enrichment_window_around_chunk.py`.
+- **Inputs:** T-011 (`ParentChildChunker`), T-123 (RSE — complementary)
+- **Outputs:** Retrieval resolves child → parent context before compression/generation.
+- **Files:**
+  - `src/rag/enrichment/parent_context_resolver.py` — lookup parent by `metadata["parent_id"]`
+  - `src/infrastructure/vectordb/bm25.py` — parent chunk lookup by ID
+  - `src/domain/services/retrieval_service.py` — expand context after retrieval
+  - `configs/retrieval.yaml` — add `retrieval.parent_context.enabled: false`
+  - `tests/unit/test_parent_context_resolver.py`
+- **Acceptance Criteria:**
+  - Only active when `chunking.strategy=parent_child` and `parent_context.enabled=true`
+  - Retrieved child chunks replaced/enriched with parent text for LLM context
+  - `Answer.sources` still references original retrieved child chunk IDs
+  - Falls back to child text when parent not found
+
+---
+
+### T-125 · Hierarchical Index Summaries
+- **Status:** `[ ]`
+- **Goal:** Build two-tier index: document-level summary nodes + detail chunks — inspired by RAG_Techniques `hierarchical_indices.py` and `raptor.py` (lightweight variant).
+- **Inputs:** T-015 (ingestion), T-030 (LLM for summary generation), T-013 (Qdrant)
+- **Outputs:** Summary vectors indexed alongside detail chunks; retrieval can match summaries first then drill down.
+- **Files:**
+  - `src/rag/enrichment/hierarchical_indexer.py` — generate + embed document summaries
+  - `src/rag/retrieval/hierarchical_retriever.py` — two-stage: summary search → detail search within matched docs
+  - `src/prompts/ingestion/generate_document_summary.txt`
+  - `configs/retrieval.yaml` — add `chunking.hierarchical.enabled: false`
+  - `tests/unit/test_hierarchical_retriever.py`
+- **Flow:**
+  ```
+  Ingest: document → generate summary → embed summary → store as type="summary"
+          document → detail chunks → embed → store as type="detail" with document_id
+  Query:  search summaries (top 3 docs) → search details within those docs → RRF fuse
+  ```
+- **Acceptance Criteria:**
+  - Disabled by default
+  - Summary points stored with `metadata["type"]="summary"`
+  - Two-stage retrieval returns detail chunks, not summary text, to the LLM
+  - Works with existing hybrid retriever via RRF fusion of hierarchical results
+
+---
+
+### T-126 · Proposition Chunking
+- **Status:** `[ ]`
+- **Goal:** LLM extracts atomic factual propositions from document text and indexes each proposition as a separate chunk — inspired by RAG_Techniques `proposition_chunking.ipynb`. Best for dense factual corpora (policies, contracts).
+- **Inputs:** T-011 (chunking protocol), T-030 (LLM), T-015 (ingestion)
+- **Outputs:** New chunking strategy `proposition` available via config.
+- **Files:**
+  - `src/rag/chunking/proposition_chunker.py` — extract + quality-grade propositions
+  - `src/prompts/ingestion/extract_propositions.txt`
+  - `src/rag/chunking/__init__.py` — register `proposition` strategy
+  - `configs/retrieval.yaml` — add `proposition` to strategy enum comment
+  - `tests/unit/test_proposition_chunker.py`
+- **Acceptance Criteria:**
+  - `chunking.strategy=proposition` selects proposition chunker
+  - Each proposition is a standalone factual statement
+  - Low-quality propositions (LLM score below threshold) discarded
+  - Ingestion latency documented in README (significantly slower than recursive)
+
+---
+
+## Phase 13 — Query Intelligence (Priority 3)
+
+> **Motivation:** Improve retrieval quality at query time with advanced transformation and routing strategies — inspired by RAG_Techniques **HyDE**, **adaptive retrieval**, **query transformations**, **multi-faceted filtering**, and **dartboard retrieval**.
+>
+> **Reference techniques:**
+> - `HyDe_Hypothetical_Document_Embedding.py`
+> - `adaptive_retrieval.py`
+> - `query_transformations.py`
+> - `dartboard.ipynb`
+>
+> **Depends on:** Phase 11 (T-110 multi-query fusion), Phase 2 retrieval pipeline
+
+---
+
+### T-130 · HyDE — Hypothetical Document Embedding
+- **Status:** `[ ]`
+- **Goal:** At query time, generate a hypothetical answer document, embed it, and retrieve using that embedding — inspired by RAG_Techniques `HyDe_Hypothetical_Document_Embedding.py`. Helps vague or underspecified questions.
+- **Inputs:** T-021 (`DenseRetriever`), T-030 (LLM), T-110 (multi-query fusion pattern)
+- **Outputs:** Optional HyDE retrieval path selectable via config; results fused with standard retrieval via RRF.
+- **Files:**
+  - `src/rag/retrieval/hyde_retriever.py` — `generate_hypothetical_doc(query, llm) -> str; retrieve(query) -> list[SearchResult]`
+  - `src/prompts/retrieval/hyde_generate.txt`
+  - `src/domain/services/retrieval_service.py` — optional HyDE branch before/alongside hybrid
+  - `configs/retrieval.yaml` — add `retrieval.hyde.enabled: false`
+  - `tests/unit/test_hyde_retriever.py`
+- **Flow:**
+  ```
+  Query → LLM generates hypothetical passage → embed passage → dense search → RRF fuse with standard results
+  ```
+- **Acceptance Criteria:**
+  - Disabled by default (no extra LLM call per query)
+  - When enabled, HyDE results merged via RRF with hybrid results
+  - HyDE LLM failure falls back to standard retrieval only
+  - OTel span `retrieval.hyde` records hypothetical doc length
+
+---
+
+### T-131 · Adaptive Query Classification
+- **Status:** `[ ]`
+- **Goal:** Classify incoming queries into categories (Factual, Analytical, Opinion, Contextual) to drive retrieval strategy selection — inspired by RAG_Techniques `adaptive_retrieval.py`.
+- **Inputs:** T-030 (LLM with structured output), T-003 (`Query` entity)
+- **Outputs:** `Query.metadata["category"]` populated before retrieval.
+- **Files:**
+  - `src/rag/retrieval/adaptive/query_classifier.py` — Pydantic structured LLM classification
+  - `src/prompts/retrieval/query_classification.txt`
+  - `src/domain/entities/query.py` — add optional `metadata: dict` field (if not present)
+  - `configs/retrieval.yaml` — add `retrieval.adaptive.enabled: false`
+  - `tests/unit/test_query_classifier.py`
+- **Categories:**
+  ```python
+  class QueryCategory(StrEnum):
+      FACTUAL = "factual"
+      ANALYTICAL = "analytical"
+      OPINION = "opinion"
+      CONTEXTUAL = "contextual"
+  ```
+- **Acceptance Criteria:**
+  - Classification uses structured LLM output (Pydantic model, not free-text parsing)
+  - Disabled by default; no LLM call when `adaptive.enabled=false`
+  - Classification result attached to Query and visible in OTel span attributes
+  - Invalid/unparseable classification defaults to `FACTUAL`
+
+---
+
+### T-132 · Adaptive Retrieval Strategies
+- **Status:** `[ ]`
+- **Goal:** Apply category-specific retrieval parameters — inspired by RAG_Techniques `adaptive_retrieval.py` strategy pattern.
+- **Inputs:** T-131 (query classification), T-025 (retrieval service)
+- **Outputs:** Strategy objects that tune k, expansion count, compression, and HyDE per query category.
+- **Files:**
+  - `src/rag/retrieval/adaptive/strategies.py` — `BaseRetrievalStrategy` + per-category implementations
+  - `src/rag/retrieval/adaptive/__init__.py` — strategy registry
+  - `src/domain/services/retrieval_service.py` — select strategy based on `Query.metadata["category"]`
+  - `configs/retrieval.yaml` — per-category overrides under `retrieval.adaptive.strategies`
+  - `tests/unit/test_adaptive_strategies.py`
+- **Strategy defaults:**
+  | Category | top_k | n_variants | hyde | compression |
+  |----------|-------|------------|------|-------------|
+  | Factual | 30 | 1 | false | true |
+  | Analytical | 50 | 3 | true | true |
+  | Opinion | 20 | 2 | false | false |
+  | Contextual | 40 | 2 | false | true |
+- **Acceptance Criteria:**
+  - Each category maps to a strategy with distinct parameters
+  - Unknown category falls back to Factual strategy
+  - Strategies configurable via YAML without code changes
+  - `pytest tests/unit/test_adaptive_strategies.py` passes
+
+---
+
+### T-133 · Step-Back Query Transformation
+- **Status:** `[ ]`
+- **Goal:** Generate a broader "step-back" query alongside the original to retrieve background context — inspired by RAG_Techniques `query_transformations.ipynb` (step-back prompting).
+- **Inputs:** T-020 (`QueryExpander` — extend or parallel module), T-110 (multi-query fusion)
+- **Outputs:** Step-back variant added to `Query.expanded_texts` or separate `Query.metadata["step_back"]`.
+- **Files:**
+  - `src/rag/retrieval/step_back.py` — `generate_step_back(query, llm) -> str`
+  - `src/prompts/retrieval/step_back.txt`
+  - `src/rag/retrieval/query_expansion.py` — optionally invoke step-back when enabled
+  - `configs/retrieval.yaml` — add `query_expansion.step_back.enabled: false`
+  - `tests/unit/test_step_back.py`
+- **Acceptance Criteria:**
+  - Disabled by default
+  - When enabled, step-back query included in multi-query RRF fusion (T-110)
+  - Step-back failure does not block standard retrieval
+  - Analytical queries benefit (documented in strategy T-132 config)
+
+---
+
+### T-134 · Multi-Faceted Qdrant Filtering
+- **Status:** `[ ]`
+- **Goal:** Apply metadata filters, similarity thresholds, and document scope constraints at retrieval time — inspired by RAG_Techniques **multi-faceted filtering** (README; notebook missing from reference repo).
+- **Inputs:** T-013 (Qdrant), T-021 (`DenseRetriever`), T-003 (`Chunk.metadata`)
+- **Outputs:** Retrieval accepts optional filter parameters; Qdrant payload filters applied.
+- **Files:**
+  - `src/rag/retrieval/filters.py` — `RetrievalFilter` dataclass + Qdrant filter builder
+  - `src/infrastructure/vectordb/qdrant.py` — accept `query_filter` in `search_dense()`
+  - `src/domain/entities/query.py` — add optional `filters: RetrievalFilter | None`
+  - `src/api/routers/chat.py` — accept optional `document_ids`, `metadata_filters` in request body
+  - `tests/unit/test_retrieval_filters.py`
+- **Filter types:**
+  - `document_ids: list[str]` — scope to specific documents
+  - `metadata: dict[str, str]` — exact-match payload filters (e.g. `section`, `source`)
+  - `min_score: float` — discard results below similarity threshold
+- **Acceptance Criteria:**
+  - No filters → current behavior unchanged
+  - `document_ids` filter restricts results to specified documents only
+  - `min_score` filter applied post-search, before RRF fusion
+  - API request schema documented in OpenAPI
+
+---
+
+### T-135 · Diversity Retrieval (MMR / Dartboard-lite)
+- **Status:** `[ ]`
+- **Goal:** Reduce redundant chunks in final results by optimizing relevance + diversity — inspired by RAG_Techniques `dartboard.ipynb` (lightweight MMR implementation, not full RIG optimization).
+- **Inputs:** T-023 (reranker output), T-025 (retrieval service)
+- **Outputs:** Optional diversity re-ranking step after cross-encoder, before compression.
+- **Files:**
+  - `src/rag/ranking/diversity.py` — `mmr_select(chunks, embeddings, lambda_, top_k) -> list[Chunk]`
+  - `src/domain/services/retrieval_service.py` — optional diversity step after reranking
+  - `configs/retrieval.yaml` — add `retrieval.diversity.enabled: false`, `retrieval.diversity.lambda: 0.7`
+  - `tests/unit/test_diversity.py`
+- **Acceptance Criteria:**
+  - Disabled by default
+  - When enabled, final chunks maximize MMR score (relevance − similarity_to_selected)
+  - Works with reranker output (does not replace cross-encoder)
+  - `lambda=1.0` degrades to pure relevance ranking (no diversity penalty)
+
+---
+
+## Phase 14 — Quality Gates & Explainability (Priority 4)
+
+> **Motivation:** Add runtime quality gates so the system refuses to hallucinate, self-corrects weak retrieval, and explains its decisions — inspired by RAG_Techniques **Reliable RAG**, **Self-RAG**, **CRAG**, and **explainable retrieval**.
+>
+> **Reference techniques:**
+> - `reliable_rag.ipynb`
+> - `self_rag.py`
+> - `crag.py`
+> - `explainable_retrieval.py`
+> - `retrieval_with_feedback_loop.py`
+>
+> **Depends on:** Phase 11 (T-114 agent endpoint), Phase 13 (adaptive strategies optional)
+
+---
+
+### T-140 · Reliable RAG — Document Relevancy Grading
+- **Status:** `[ ]`
+- **Goal:** After reranking, grade each chunk's relevancy to the query using structured LLM output. Filter irrelevant chunks before compression/generation — inspired by RAG_Techniques `reliable_rag.ipynb`.
+- **Inputs:** T-023 (reranker output), T-030 (LLM), T-025 (retrieval service)
+- **Outputs:** Chunks below relevancy threshold discarded; empty context triggers "insufficient information" response.
+- **Files:**
+  - `src/rag/quality/reliable_rag.py` — `grade_relevance(query, chunks, llm) -> list[Chunk]`
+  - `src/prompts/quality/relevance_grading.txt`
+  - `src/domain/services/retrieval_service.py` — call grading after rerank, before compression
+  - `configs/retrieval.yaml` — add `quality.reliable_rag.enabled: false`, `quality.reliable_rag.min_score: 0.5`
+  - `tests/unit/test_reliable_rag.py`
+- **Structured output:**
+  ```python
+  class ChunkRelevance(BaseModel):
+      chunk_id: str
+      relevance_score: float  # 0.0–1.0
+      supporting: bool
+  ```
+- **Acceptance Criteria:**
+  - Disabled by default
+  - Chunks with `relevance_score < min_score` excluded from context
+  - All chunks filtered → generation returns "I don't have information about this"
+  - OTel span `retrieval.relevance_grading` records pass/fail counts
+
+---
+
+### T-141 · Self-RAG Decision Loop
+- **Status:** `[ ]`
+- **Goal:** Extend `AgentPipeline` with Self-RAG gates: decide whether to retrieve, check answer support, and score utility — inspired by RAG_Techniques `self_rag.py`.
+- **Inputs:** T-071 (`AgentPipeline`), T-140 (relevance grading), T-114 (agent API)
+- **Outputs:** Agent loop with explicit retrieve/generate/critique steps and structured decision output.
+- **Files:**
+  - `src/rag/quality/self_rag.py` — `RetrievalDecision`, `SupportCheck`, `UtilityScore` Pydantic models + LLM chains
+  - `src/prompts/quality/self_rag_decision.txt`, `self_rag_support.txt`, `self_rag_utility.txt`
+  - `src/rag/pipelines/agent_pipeline.py` — integrate Self-RAG gates into iteration loop
+  - `configs/retrieval.yaml` — add `quality.self_rag.enabled: false`
+  - `tests/unit/test_self_rag.py`
+- **Self-RAG flow:**
+  ```
+  Query → Need retrieval? (yes/no)
+        → Retrieve → Relevance grade (T-140)
+        → Generate draft → Supported by context? (yes/no)
+        → Utility score → Accept / Re-retrieve / Refuse
+  ```
+- **Acceptance Criteria:**
+  - Disabled by default; agent uses current behavior when off
+  - When enabled, agent refuses to answer if support check fails after max iterations
+  - `/chat/agent/full` response includes `self_rag_decisions` array
+  - Structured LLM output via Pydantic (no regex parsing)
+
+---
+
+### T-142 · Corrective RAG (CRAG) — Web Search Fallback
+- **Status:** `[ ]`
+- **Goal:** Score overall retrieval quality; when context is weak, fall back to web search and refine knowledge before generation — inspired by RAG_Techniques `crag.py`.
+- **Inputs:** T-140 (relevance grading), T-031 (`ChatPipeline`), T-030 (LLM)
+- **Outputs:** Optional CRAG pipeline branch with web search fallback and knowledge refinement.
+- **Files:**
+  - `src/rag/quality/crag.py` — `score_retrieval_quality()`, `refine_knowledge()`, thresholds
+  - `src/infrastructure/search/web_search.py` — DuckDuckGo or Tavily wrapper (domain ABC)
+  - `src/domain/repositories/web_search_repository.py` — ABC interface
+  - `src/prompts/quality/crag_knowledge_refinement.txt`
+  - `src/rag/pipelines/chat_pipeline.py` — optional CRAG branch
+  - `configs/retrieval.yaml` — add `quality.crag.enabled: false`, `quality.crag.lower_threshold: 0.3`, `quality.crag.upper_threshold: 0.7`
+  - `tests/unit/test_crag.py`
+- **Threshold behavior (from RAG_Techniques):**
+  - Score > upper_threshold → use retrieved context as-is
+  - Score between thresholds → combine retrieved + web results, refine with LLM
+  - Score < lower_threshold → discard retrieval, web search only
+- **Acceptance Criteria:**
+  - Disabled by default (no web search calls)
+  - Web search provider swappable via settings (`web_search.provider: duckduckgo|tavily|none`)
+  - Missing API key / unreachable search → fall back to "insufficient information"
+  - CRAG decisions logged and visible in OTel spans
+
+---
+
+### T-143 · Explainable Retrieval API
+- **Status:** `[ ]`
+- **Goal:** Return human-readable explanations for why each chunk was retrieved and how it relates to the query — inspired by RAG_Techniques `explainable_retrieval.py`.
+- **Inputs:** T-025 (retrieval result), T-030 (LLM), T-032 (API)
+- **Outputs:** Optional `explanations` field in chat response with per-chunk reasoning.
+- **Files:**
+  - `src/rag/quality/explainable_retrieval.py` — `explain_chunks(query, chunks, llm) -> list[ChunkExplanation]`
+  - `src/prompts/quality/explain_retrieval.txt`
+  - `src/domain/entities/answer.py` — add optional `explanations: list[ChunkExplanation]`
+  - `src/api/routers/chat.py` — `explain=true` query param on `/chat/full`
+  - `tests/unit/test_explainable_retrieval.py`
+- **Response schema addition:**
+  ```json
+  {
+    "answer": "...",
+    "sources": ["chunk_id_1"],
+    "explanations": [
+      { "chunk_id": "chunk_id_1", "reason": "Contains revenue figures for Q3 2023..." }
+    ]
+  }
+  ```
+- **Acceptance Criteria:**
+  - `explain=false` (default) → no extra LLM calls, response unchanged
+  - `explain=true` → one explanation per source chunk
+  - Explanation generation failure omits explanations (does not fail the request)
+
+---
+
+### T-144 · Source Highlighting in Answers
+- **Status:** `[ ]`
+- **Goal:** Identify and return the specific sentences within each chunk that support the generated answer — extends Reliable RAG (T-140) for user-facing transparency.
+- **Inputs:** T-140 (relevance grading), T-031 (generation), T-143 (explainable retrieval)
+- **Outputs:** `Answer.highlights` with chunk ID → supporting sentence spans.
+- **Files:**
+  - `src/rag/quality/source_highlighting.py` — `extract_highlights(answer, chunks, llm) -> dict[str, list[str]]`
+  - `src/prompts/quality/source_highlighting.txt`
+  - `src/domain/entities/answer.py` — add `highlights: dict[str, list[str]]`
+  - `tests/unit/test_source_highlighting.py`
+- **Acceptance Criteria:**
+  - Disabled by default; enabled via `quality.source_highlighting.enabled`
+  - Each highlight is a verbatim substring of the source chunk text
+  - `/chat/full` response includes highlights when enabled
+  - No highlights generated → field omitted (not empty dict)
+
+---
+
+### T-145 · Retrieval Feedback Loop
+- **Status:** `[ ]`
+- **Goal:** Collect user relevance feedback on retrieved chunks and persist scores in chunk metadata for future retrieval boosting — inspired by RAG_Techniques `retrieval_with_feedback_loop.py`.
+- **Inputs:** T-013 (Qdrant payload updates), T-117 (SQLite metadata), T-032 (API)
+- **Outputs:** Feedback API + metadata-boosted retrieval scoring.
+- **Files:**
+  - `src/rag/quality/feedback_loop.py` — `record_feedback(query_id, chunk_id, score)`
+  - `src/api/routers/feedback.py` — `POST /feedback` endpoint
+  - `src/infrastructure/vectordb/qdrant.py` — update chunk payload `feedback_score`
+  - `src/rag/retrieval/hybrid_retriever.py` — boost chunks with positive feedback in RRF scoring
+  - `tests/unit/test_feedback_loop.py`
+- **API contract:**
+  ```
+  POST /feedback
+    Body: { "query_id": "...", "chunk_id": "...", "relevant": true }
+  ```
+- **Acceptance Criteria:**
+  - Feedback persisted to Qdrant chunk payload (`feedback_score: float`)
+  - Chunks with positive feedback receive RRF rank boost (configurable multiplier)
+  - Feedback endpoint returns 204 on success
+  - No feedback → retrieval behavior unchanged
+
+---
+
+### T-150 · Evaluation-Driven Technique Benchmark
+- **Status:** `[ ]`
+- **Goal:** Benchmark script that compares RAG techniques side-by-side (baseline vs expansion vs HyDE vs CCH vs Self-RAG) — inspired by RAG_Techniques `choose_chunk_size.py` and `evaluation/` notebooks.
+- **Inputs:** T-043 (`RAGBenchmark`), T-040 (golden dataset), Phases 11–14 technique flags
+- **Outputs:** Comparison table with Recall@5, Faithfulness, Relevance, and latency per technique configuration.
+- **Files:**
+  - `scripts/benchmark_techniques.py` — CLI to run technique matrix
+  - `src/evals/e2e/technique_benchmark.py` — orchestrates config permutations
+  - `configs/evals.yaml` — add `technique_benchmark.configs` list
+  - `tests/benchmarks/test_technique_benchmark.py` — skip on placeholder data
+- **Usage:**
+  ```bash
+  uv run python scripts/benchmark_techniques.py \
+    --techniques baseline,multi_query,hyde,cch,reliable_rag \
+    --max-samples 50
+  ```
+- **Output:** `data/exports/technique_benchmark_{timestamp}.json` + Rich summary table
+- **Acceptance Criteria:**
+  - Runs baseline with zero new techniques enabled
+  - Each technique toggled independently via config override (no code changes between runs)
+  - Skips gracefully when golden dataset contains only placeholders
+  - `make benchmark-techniques` Makefile target added
+
+---
+
+### T-151 · Chunk Size Optimization Sweep
+- **Status:** `[ ]`
+- **Goal:** Automate chunk size tuning by sweeping `chunk_size` values and measuring faithfulness/relevancy/latency — inspired by RAG_Techniques `choose_chunk_size.py`.
+- **Inputs:** T-011 (chunkers), T-043 (benchmark), T-040 (golden dataset)
+- **Outputs:** Script recommending optimal chunk size for the current corpus.
+- **Files:**
+  - `scripts/benchmark_chunk_sizes.py`
+  - `src/evals/e2e/chunk_size_sweep.py`
+  - `configs/evals.yaml` — add `chunk_size_sweep.sizes: [256, 500, 768, 1024]`
+- **Acceptance Criteria:**
+  - Sweeps configured chunk sizes (requires re-ingest per size or pre-chunked cache)
+  - Reports Recall@5, Faithfulness, avg latency per size
+  - Prints recommended size based on weighted score
+  - `--dry-run` lists planned sweep without executing
+
+---
+
+### T-152 · Golden Dataset Population & CI Gate Hardening
+- **Status:** `[ ]`
+- **Goal:** Replace placeholder golden dataset rows with real QA pairs and enforce eval regression gates in CI — closes the gap identified vs RAG_Techniques eval operationalization.
+- **Inputs:** T-040 (`SyntheticDatasetBuilder`), T-044 (`/evals/run`), T-061 (CI pipeline)
+- **Outputs:** Populated `datasets/goldens/qa_dataset.json`; CI fails on metric regression with real data.
+- **Files:**
+  - `datasets/goldens/qa_dataset.json` — populated by `make evals`
+  - `scripts/run_evals.py` — ensure minimum N pairs generated
+  - `.github/workflows/ci.yml` — retrieval regression gate uses real thresholds
+  - `tests/benchmarks/test_retrieval_evals.py` — baseline comparison
+  - `Makefile` — `evals` target documents prerequisite (`make ingest` first)
+- **Acceptance Criteria:**
+  - `make evals` generates ≥ 20 QA pairs from ingested documents
+  - `POST /evals/run` returns 200 (not 204) after evals
+  - CI retrieval regression job runs when real golden data present
+  - README documents eval setup workflow
+
+---
+
 ## Dependency Graph
 
 ```
@@ -1066,6 +1817,25 @@ T-100 ──► T-104 ──► T-107
 T-101+T-102+T-103+T-104 ──► T-106 ──► T-107
 T-105 ──► T-108
 T-107 + T-108 ──► T-109
+T-110 ──► T-115 ──► T-116 ──► T-117
+T-112 ──► T-111 ──► T-113
+T-111 + T-071 ──► T-114
+T-110 + T-025 ──► T-130 ──► T-132
+T-131 ──► T-132
+T-110 ──► T-133
+T-013 ──► T-134
+T-023 ──► T-135
+T-120 ──► T-121 ──► T-122
+T-011 ──► T-123 ──► T-124
+T-015 ──► T-125
+T-011 ──► T-126
+T-140 ──► T-141 ──► T-142
+T-140 ──► T-144
+T-143 ──► T-144
+T-013 + T-117 ──► T-145
+T-043 + T-110..T-145 ──► T-150
+T-011 + T-043 ──► T-151
+T-040 + T-061 ──► T-152
 ```
 
 ## Quick Start Order for an Agent
@@ -1080,3 +1850,7 @@ T-107 + T-108 ──► T-109
 8. T-080 → T-081 → T-082 → T-083 → T-084 → T-085 _(Docker Compose: ~1 session)_
 9. T-090 → T-091 → T-092 → T-093 → T-094 → T-095 → T-096 → T-097 _(Kubernetes/EKS: ~2 sessions)_
 10. T-100 → T-101 + T-102 + T-103 + T-104 → T-105 → T-106 → T-107 → T-108 → T-109 _(Embedding Provider Expansion: ~2 sessions)_
+11. **Phase 11 — Priority 1 (Wire Existing Code):** T-112 → T-110 → T-111 → T-113 → T-114 → T-115 → T-116 → T-117 _(~2 sessions)_
+12. **Phase 12 — Priority 2 (Index-Time Enrichment):** T-120 → T-121 → T-122 → T-123 → T-124 → T-125 → T-126 _(~3 sessions)_
+13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
+14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → T-150 → T-151 → T-152 _(~3 sessions)_

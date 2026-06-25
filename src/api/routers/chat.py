@@ -5,16 +5,25 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from src.api.dependencies import get_chat_pipeline
+from src.api.dependencies import get_agent_pipeline, get_chat_pipeline
+from src.api.schemas.agent import AgentChatResponse
+from src.rag.pipelines.agent_pipeline import AgentPipeline
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
+_MAX_AGENT_ITERATIONS = 5
+
 
 class ChatRequest(BaseModel):
     question: str
+
+
+class AgentChatRequest(BaseModel):
+    question: str
+    max_iterations: int = Field(default=3, ge=1, le=_MAX_AGENT_ITERATIONS)
 
 
 class ChatFullResponse(BaseModel):
@@ -56,3 +65,30 @@ async def chat_full(
         latency_ms=answer.latency_ms,
         token_count=answer.token_count,
     )
+
+
+@router.post("/agent", response_class=StreamingResponse)
+async def chat_agent_stream(
+    body: AgentChatRequest,
+    pipeline: AgentPipeline = Depends(get_agent_pipeline),
+) -> StreamingResponse:
+    """Agentic RAG — multistep retrieval with streaming final answer."""
+    max_iter = min(body.max_iterations, _MAX_AGENT_ITERATIONS)
+
+    async def _generate() -> AsyncIterator[str]:
+        async for token in await pipeline.chat(body.question, max_iterations=max_iter):
+            yield f"data: {json.dumps({'token': token})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.post("/agent/full", response_model=AgentChatResponse)
+async def chat_agent_full(
+    body: AgentChatRequest,
+    pipeline: AgentPipeline = Depends(get_agent_pipeline),
+) -> AgentChatResponse:
+    """Agentic RAG — returns a complete answer with iteration metadata."""
+    max_iter = min(body.max_iterations, _MAX_AGENT_ITERATIONS)
+    result = await pipeline.chat_full(body.question, max_iterations=max_iter)
+    return AgentChatResponse.from_run(result)

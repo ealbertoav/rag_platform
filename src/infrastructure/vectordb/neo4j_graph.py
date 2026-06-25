@@ -49,13 +49,16 @@ class Neo4jGraphRepository:
     def from_settings(cls) -> Neo4jGraphRepository:
         from src.core.settings import settings
 
-        cfg = getattr(settings, "neo4j", None)
-        if cfg is None:
-            return cls()
+        cfg = settings.neo4j
+        raw_password = cfg.password
+        if hasattr(raw_password, "get_secret_value"):
+            password = raw_password.get_secret_value()
+        else:
+            password = str(raw_password)
         return cls(
-            uri=str(getattr(cfg, "uri", "bolt://localhost:7687")),
-            user=str(getattr(cfg, "user", "neo4j")),
-            password=str(getattr(cfg, "password", "neo4j")),
+            uri=cfg.uri,
+            user=cfg.user,
+            password=password,
         )
 
     # ── Public ─────────────────────────────────────────────────────────────────

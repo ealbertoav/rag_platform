@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -126,7 +126,31 @@ class RedisSettings(BaseModel):
 class RetrievalSettings(BaseModel):
     top_k_dense: int = 50
     top_k_final: int = 5
+    # Used only when hybrid_fusion=weighted_linear. RRF (default) ignores this value.
     hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0)
+    hybrid_fusion: Literal["rrf", "weighted_linear"] = "rrf"
+
+
+class Neo4jSettings(BaseModel):
+    enabled: bool = False
+    uri: str = "bolt://localhost:7687"
+    user: str = "neo4j"
+    password: SecretStr = SecretStr("")
+    database: str = "neo4j"
+    max_hops: int = Field(default=2, ge=1, le=5)
+    extract_entities_on_ingest: bool = True
+
+    @model_validator(mode="after")
+    def password_required_when_enabled(self) -> Neo4jSettings:
+        if self.enabled and not self.password.get_secret_value():
+            msg = "NEO4J__PASSWORD is required when NEO4J__ENABLED=true"
+            raise ValueError(msg)
+        return self
+
+
+class MetadataSettings(BaseModel):
+    db_path: str = "data/processed/metadata.db"
+    enabled: bool = True
 
 
 class QueryExpansionSettings(BaseModel):
@@ -189,6 +213,8 @@ class Settings(BaseSettings):
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    neo4j: Neo4jSettings = Field(default_factory=Neo4jSettings)
+    metadata: MetadataSettings = Field(default_factory=MetadataSettings)
     query_expansion: QueryExpansionSettings = Field(default_factory=QueryExpansionSettings)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)

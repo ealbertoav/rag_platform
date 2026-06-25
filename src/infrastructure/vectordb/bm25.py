@@ -46,11 +46,28 @@ class BM25Index:
 
         Existing chunks with the same "id" are replaced (deduplication).
         """
-        existing_ids = {c.id for c in self._chunks}
-        new = [c for c in chunks if c.id not in existing_ids]
-        self._chunks.extend(new)
+        incoming_ids = {c.id for c in chunks}
+        self._chunks = [c for c in self._chunks if c.id not in incoming_ids]
+        self._chunks.extend(chunks)
         self._rebuild()
-        logger.debug("BM25 index updated: +%d chunks, total %d", len(new), len(self._chunks))
+        logger.debug("BM25 index updated: +%d chunks, total %d", len(chunks), len(self._chunks))
+
+    def remove_by_ids(self, chunk_ids: list[str]) -> None:
+        """Remove chunks by ID and rebuild the index."""
+        if not chunk_ids:
+            return
+        remove = set(chunk_ids)
+        before = len(self._chunks)
+        self._chunks = [c for c in self._chunks if c.id not in remove]
+        self._rebuild()
+        logger.debug("BM25 index removed %d chunks", before - len(self._chunks))
+
+    def remove_by_document_id(self, document_id: str) -> list[str]:
+        """Remove all chunks belonging to *document_id*. Returns removed chunk IDs."""
+        removed = [c.id for c in self._chunks if c.document_id == document_id]
+        if removed:
+            self.remove_by_ids(removed)
+        return removed
 
     # ── Search ─────────────────────────────────────────────────────────────────
 

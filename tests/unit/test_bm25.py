@@ -273,3 +273,43 @@ class TestBM25IndexErrors:
         idx = BM25Index()
         idx.index(_CORPUS)
         assert idx.get_by_id("missing-id") is None
+
+    def test_get_by_id_hit_returns_chunk(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        found = idx.get_by_id("chunk-0001")
+        assert found is not None
+        assert found.id == "chunk-0001"
+
+    def test_remove_by_ids_empty_is_noop(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        idx.remove_by_ids([])
+        assert idx.size == len(_CORPUS)
+
+    def test_remove_by_ids_removes_chunks(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        idx.remove_by_ids(["chunk-0000", "chunk-0001"])
+        assert idx.size == len(_CORPUS) - 2
+        assert idx.get_by_id("chunk-0000") is None
+
+    def test_remove_by_document_id_returns_removed_ids(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        removed = idx.remove_by_document_id("doc-1")
+        assert len(removed) == len(_CORPUS)
+        assert idx.size == 0
+        assert idx.search("kubernetes", top_k=1) == []
+
+    def test_remove_by_document_id_unknown_returns_empty(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        assert idx.remove_by_document_id("missing-doc") == []
+
+    def test_rebuild_clears_index_when_all_chunks_removed(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        idx.remove_by_ids([c.id for c in _CORPUS])
+        assert idx.size == 0
+        assert idx.search("kubernetes", top_k=1) == []

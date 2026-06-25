@@ -12,6 +12,7 @@ from src.domain.entities.chunk import Chunk
 from src.rag.pipelines.agent_pipeline import (
     AgentAction,
     AgentPipeline,
+    AgentRunResult,
     parse_decision,
 )
 
@@ -136,8 +137,8 @@ class TestAgentPipelineChat:
     async def test_chat_full_returns_answer(self):
         p = _pipeline()
         result = await p.chat_full("question")
-        assert isinstance(result, Answer)
-        assert result.text == "final answer"
+        assert isinstance(result, AgentRunResult)
+        assert result.answer.text == "final answer"
 
     @pytest.mark.asyncio
     async def test_answer_decision_calls_generation(self):
@@ -178,7 +179,7 @@ class TestAgentPipelineChat:
         chat.generation.call_llm.side_effect = RuntimeError("LLM down")
         p = AgentPipeline(pipeline=chat)
         result = await p.chat_full("q")
-        assert isinstance(result, Answer)
+        assert isinstance(result, AgentRunResult)
 
     @pytest.mark.asyncio
     async def test_graph_lookup_uses_graph_retriever(self):

@@ -51,9 +51,33 @@ def ingestion_pipeline_mock() -> MagicMock:
 
 
 @pytest.fixture
-def app_client(chat_pipeline_mock, ingestion_pipeline_mock):
+def agent_pipeline_mock() -> MagicMock:
+    from src.domain.entities.answer import Answer
+    from src.rag.pipelines.agent_pipeline import AgentAction, AgentRunResult
+
+    m = MagicMock()
+    m.chat = AsyncMock(return_value=_token_stream("Agent", " answer"))
+    m.chat_full = AsyncMock(
+        return_value=AgentRunResult(
+            answer=Answer(
+                query_id="q-1",
+                text="Agent answer",
+                sources=["c0"],
+                latency_ms=55.0,
+                token_count=2,
+            ),
+            iterations=2,
+            actions=[AgentAction.ANSWER],
+        )
+    )
+    return m
+
+
+@pytest.fixture
+def app_client(chat_pipeline_mock, ingestion_pipeline_mock, agent_pipeline_mock):
     app = create_app()
     app.state.chat_pipeline = chat_pipeline_mock
+    app.state.agent_pipeline = agent_pipeline_mock
     app.state.ingestion_pipeline = ingestion_pipeline_mock
     app.state.models_loaded = True
     return app
@@ -230,6 +254,25 @@ class TestChatFull:
         async with _client(app_client) as c:
             data = (await c.post("/chat/full", json={"question": "q"})).json()
         assert "latency_ms" in data
+
+
+# ── /chat/agent ────────────────────────────────────────────────────────────────
+
+
+class TestChatAgent:
+    @pytest.mark.asyncio
+    async def test_agent_stream_returns_200(self, app_client):
+        async with _client(app_client) as c:
+            resp = await c.post("/chat/agent", json={"question": "q", "max_iterations": 2})
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_agent_full_returns_metadata(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/agent/full", json={"question": "q"})).json()
+        assert data["answer"] == "Agent answer"
+        assert data["iterations"] == 2
+        assert data["actions"] == ["ANSWER"]
 
 
 # ── /evals/run ─────────────────────────────────────────────────────────────────

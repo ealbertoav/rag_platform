@@ -22,10 +22,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting RAG platform (lifespan startup)")
 
     # Build pipeline objects — actual model loading is lazy (on first request).
+    from src.rag.pipelines.agent_pipeline import AgentPipeline
     from src.rag.pipelines.chat_pipeline import ChatPipeline
     from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
 
     _app.state.chat_pipeline = ChatPipeline.from_settings()
+    _app.state.agent_pipeline = AgentPipeline.from_settings()
     _app.state.ingestion_pipeline = IngestionPipeline.from_settings()
     _app.state.models_loaded = True
 

@@ -23,6 +23,10 @@ async def test_lifespan_startup_sets_pipeline_state():
             return_value=mock_chat,
         ),
         patch(
+            "src.rag.pipelines.agent_pipeline.AgentPipeline.from_settings",
+            return_value=MagicMock(),
+        ),
+        patch(
             "src.rag.pipelines.ingestion_pipeline.IngestionPipeline.from_settings",
             return_value=mock_ingest,
         ),
@@ -41,6 +45,7 @@ async def test_lifespan_shutdown_saves_indexes():
     with (
         patch("src.core.logging.configure_logging"),
         patch("src.rag.pipelines.chat_pipeline.ChatPipeline.from_settings"),
+        patch("src.rag.pipelines.agent_pipeline.AgentPipeline.from_settings"),
         patch(
             "src.rag.pipelines.ingestion_pipeline.IngestionPipeline.from_settings",
             return_value=mock_ingest,

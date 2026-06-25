@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from src.domain.entities.query import Query
 from src.domain.repositories.vector_store_repository import SearchResult
-from src.rag.ranking.score_fusion import rrf_fuse
+from src.rag.ranking.score_fusion import rrf_fuse, weighted_linear_fuse
 from src.rag.retrieval.bm25_retriever import BM25Retriever
 from src.rag.retrieval.dense_retriever import DenseRetriever
 
@@ -20,13 +20,14 @@ _MAX_CANDIDATES = 50
 
 
 class HybridRetriever:
-    """Fuses dense (HNSW) and sparse (BM25) retrieval via Reciprocal Rank Fusion.
+    """Fuses dense (HNSW) and sparse (BM25) retrieval.
+
+    The default mode is Reciprocal Rank Fusion (RRF), which is alpha-independent.
+    Set *fusion_mode* to "weighted_linear" to blend dense/sparse scores using
+    *alpha* (1.0 = dense only, 0.0 = BM25 only).
 
     Both searches run concurrently via "asyncio.gather" + "asyncio.to_thread"
     so that the Qdrant network call and the in-memory BM25 lookup overlap.
-
-    "alpha" is stored for callers that prefer weighted linear fusion
-    ("score_fusion.weighted_linear_fuse"); RRF itself is alpha-independent.
     """
 
     def __init__(
@@ -35,11 +36,13 @@ class HybridRetriever:
         bm25: BM25Retriever,
         alpha: float = 0.7,
         graph_retriever: GraphRetriever | None = None,
+        fusion_mode: str = "rrf",
     ) -> None:
         self._dense = dense
         self._bm25 = bm25
         self.alpha = alpha
         self._graph = graph_retriever
+        self._fusion_mode = fusion_mode
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -63,7 +66,10 @@ class HybridRetriever:
         bm25_results = gathered[1]
         graph_results = gathered[2] if self._graph is not None else []
 
-        fused = rrf_fuse(dense_results, bm25_results, graph_results, top_k=top_k)
+        if self._fusion_mode == "weighted_linear" and self._graph is None:
+            fused = weighted_linear_fuse(dense_results, bm25_results, alpha=self.alpha, top_k=top_k)
+        else:
+            fused = rrf_fuse(dense_results, bm25_results, graph_results, top_k=top_k)
         logger.debug(
             "Hybrid retrieval: %d dense + %d bm25 + %d graph → %d fused",
             len(dense_results),
