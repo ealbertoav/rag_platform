@@ -9,6 +9,7 @@ from opentelemetry import trace
 
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
+from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.contextual_compression import ContextualCompressor
 from src.rag.ranking.cross_encoder import CrossEncoder
 from src.rag.ranking.score_fusion import rrf_fuse
@@ -98,7 +99,7 @@ class RetrievalService:
         # 5. Final top-K cap
         chunks = chunks[: self._top_k_final]
 
-        context = "\n\n".join(c.text for c in chunks)
+        context = "\n\n".join(chunk_context_text(c) for c in chunks)
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(
             "Retrieval: %d chunks, %d context chars, %.1fms",

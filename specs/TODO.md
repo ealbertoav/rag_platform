@@ -1269,7 +1269,7 @@
 ---
 
 ### T-120 · Contextual Chunk Headers (CCH)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Prepend document title, section, and page metadata to each chunk before embedding — inspired by RAG_Techniques `contextual_chunk_headers.ipynb`. Low cost, often large recall gain.
 - **Inputs:** T-010 (loaders preserve metadata), T-011 (chunkers), T-012 (embedding)
 - **Outputs:** Chunks embedded with contextual header prefix; header excluded from LLM context optionally.

@@ -5,6 +5,9 @@ chunking:
   similarity_threshold: 0.4   # semantic chunker: distance > threshold → split
   parent_chunk_size: 1500     # parent_child chunker
   child_chunk_size: 400
+  contextual_headers:
+    enabled: false             # prepend doc/section/page to embedded text (T-120)
+    exclude_from_llm_context: true  # use raw_text (no header) in generation context
 
 retrieval:
   top_k_dense: 50

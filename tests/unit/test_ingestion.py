@@ -260,13 +260,23 @@ class TestIngestionPipelineFromSettings:
             patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
             patch("src.infrastructure.metadata.sqlite_store.SQLiteMetadataStore.from_settings"),
         ):
-            mock_settings.chunking = MagicMock(strategy="recursive", chunk_size=512, overlap=64)
+            mock_settings.chunking = MagicMock(
+                strategy="recursive",
+                chunk_size=512,
+                overlap=64,
+                contextual_headers=MagicMock(enabled=False),
+            )
             mock_settings.metadata = MagicMock(enabled=True)
             mock_settings.neo4j = MagicMock(enabled=False)
             pipeline = IngestionPipeline.from_settings()
 
         assert isinstance(pipeline, IngestionPipeline)
-        mock_chunker.assert_called_once_with("recursive", chunk_size=512, overlap=64)
+        mock_chunker.assert_called_once_with(
+            "recursive",
+            use_contextual_headers=False,
+            chunk_size=512,
+            overlap=64,
+        )
 
 
 # ── embed_both default ─────────────────────────────────────────────────────────

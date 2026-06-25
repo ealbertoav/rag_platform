@@ -6,6 +6,7 @@ from string import Template
 
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
+from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.token_reducer import count_tokens, truncate_to_tokens
 
 logger = logging.getLogger(__name__)
@@ -81,16 +82,19 @@ class ContextualCompressor:
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _load_template(self) -> Template:
-        if self._prompt_template is None:
-            self._prompt_template = Template(_PROMPT_PATH.read_text(encoding="utf-8"))
-        return self._prompt_template
+        template = self._prompt_template
+        if template is None:
+            template = Template(_PROMPT_PATH.read_text(encoding="utf-8"))
+            self._prompt_template = template
+        return template
 
     def _extract(self, query: str, chunk: Chunk) -> str:
         """Ask the LLM to extract relevant sentences; fall back to the full text."""
+        source_text = chunk_context_text(chunk)
         try:
-            prompt = self._load_template().substitute(query=query, passage=chunk.text)
+            prompt = self._load_template().substitute(query=query, passage=source_text)
             response = self._llm.generate(prompt=prompt, context="").strip()
-            return response if response else chunk.text
+            return response if response else source_text
         except Exception as exc:
             logger.warning("Compression failed for chunk %r, using original: %s", chunk.id, exc)
-            return chunk.text
+            return source_text
