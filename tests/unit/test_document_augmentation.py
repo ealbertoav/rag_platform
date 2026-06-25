@@ -223,3 +223,21 @@ class TestResolveSyntheticQuestions:
             resolved = resolve_synthetic_questions([(question, 0.7)], lambda _id: None)
         assert resolved == []
         assert "Source chunk source-1 not found" in caplog.text
+
+    def test_deduplicates_multiple_synthetics_for_same_source(self):
+        source = Chunk(id="source-1", document_id="doc", text="Body text.")
+        q1 = make_question_chunk(source, "Question one?")
+        q2 = make_question_chunk(source, "Question two?")
+        lookup = MagicMock(return_value=source)
+        resolved = resolve_synthetic_questions([(q1, 0.7), (q2, 0.95)], lookup)
+        assert len(resolved) == 1
+        assert resolved[0][0].id == "source-1"
+        assert resolved[0][1] == pytest.approx(0.95)
+
+    def test_merges_direct_source_hit_with_synthetic(self):
+        source = Chunk(id="source-1", document_id="doc", text="Body text.")
+        question = make_question_chunk(source, "Question?")
+        lookup = MagicMock(return_value=source)
+        resolved = resolve_synthetic_questions([(source, 0.6), (question, 0.9)], lookup)
+        assert len(resolved) == 1
+        assert resolved[0][1] == pytest.approx(0.9)

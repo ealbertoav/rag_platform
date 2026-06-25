@@ -25,7 +25,7 @@ _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "ingestion" / "generate_c
 
 
 def load_question_template(path: Path | None = None) -> Template:
-    """Load the synthetic-question generation prompt from disk."""
+    """Load the synthetic-question generation prompt from the disk."""
     template_path = path or _PROMPT_PATH
     return Template(template_path.read_text(encoding="utf-8").strip())
 
@@ -62,25 +62,42 @@ def resolve_synthetic_questions(
     results: list[SearchResult],
     lookup: Callable[[str], Chunk | None],
 ) -> list[SearchResult]:
-    """Map synthetic question hits back to their source chunks for fusion."""
-    resolved: list[SearchResult] = []
-    for chunk, score in results:
-        if not is_synthetic_question(chunk):
-            resolved.append((chunk, score))
+    """Map synthetic question hits back to their source chunks for fusion.
+
+    Multiple hits that resolve to the same source are collapsed to one entry
+    (the best score, the earliest rank) so they do not crowd the retrieval candidate pool.
+    """
+    best: dict[str, tuple[Chunk, float, int]] = {}
+
+    for rank, (chunk, score) in enumerate(results):
+        if is_synthetic_question(chunk):
+            source_id = chunk.metadata.get(SOURCE_CHUNK_ID_KEY)
+            if not isinstance(source_id, str):
+                logger.debug("Synthetic question %s missing source_chunk_id", chunk.id)
+                continue
+
+            source = lookup(source_id)
+            if source is None:
+                logger.debug(
+                    "Source chunk %s not found for synthetic question %s", source_id, chunk.id
+                )
+                continue
+            resolved = source
+        else:
+            resolved = chunk
+
+        existing = best.get(resolved.id)
+        if existing is None:
+            best[resolved.id] = (resolved, score, rank)
             continue
 
-        source_id = chunk.metadata.get(SOURCE_CHUNK_ID_KEY)
-        if not isinstance(source_id, str):
-            logger.debug("Synthetic question %s missing source_chunk_id", chunk.id)
-            continue
+        _prev_chunk, prev_score, prev_rank = existing
+        best[resolved.id] = (resolved, max(prev_score, score), min(prev_rank, rank))
 
-        source = lookup(source_id)
-        if source is None:
-            logger.debug("Source chunk %s not found for synthetic question %s", source_id, chunk.id)
-            continue
-
-        resolved.append((source, score))
-    return resolved
+    return [
+        (chunk, score)
+        for chunk, score, _rank in sorted(best.values(), key=lambda item: item[2])
+    ]
 
 
 class DocumentAugmentor:
@@ -153,7 +170,7 @@ def _load_question_json(text: str) -> list[str] | None:
 
 
 def _extract_json_array(text: str) -> str | None:
-    match = re.search(r"\[.*?\]", text, re.DOTALL)
+    match = re.search(r"\[.*?]", text, re.DOTALL)
     return match.group() if match else None
 
 
