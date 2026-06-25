@@ -79,6 +79,32 @@ class TestInterfaceConformance:
             instance = QdrantVectorStore.from_settings()
         assert isinstance(instance, QdrantVectorStore)
 
+    def test_from_settings_uses_provider_dense_dim(self):
+        from pydantic import SecretStr
+
+        settings = MagicMock()
+        settings.qdrant = MagicMock(
+            url="http://localhost:6333", collection="rag_documents", api_key=""
+        )
+        emb = MagicMock()
+        emb.provider = "openai"
+        emb.dense_dim = 1024
+        emb.openai = MagicMock(
+            api_key=SecretStr("sk-test"),
+            model="text-embedding-3-large",
+            dimensions=3072,
+        )
+        settings.embeddings = emb
+
+        with (
+            patch("src.core.settings.settings", settings),
+            patch("src.infrastructure.vectordb.qdrant.QdrantClient"),
+        ):
+            instance = QdrantVectorStore.from_settings()
+
+        assert instance.dense_dim == 3072
+        assert instance.dense_dim != emb.dense_dim
+
 
 # ── _ensure_collection ─────────────────────────────────────────────────────────
 

@@ -22,6 +22,7 @@ import json
 import logging
 import time
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlsplit
 
 from src.domain.repositories.embedding_repository import (
     DenseVector,
@@ -36,6 +37,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RECONNECT_COOLDOWN = 60.0  # seconds between Redis reconnect attempts
+
+
+def _redact_redis_url(url: str) -> str:
+    """Return host/port (and db path) for logging; never credentials."""
+    parsed = urlsplit(url)
+    if parsed.scheme == "unix":
+        return f"unix:{parsed.path}"
+    hostname = parsed.hostname
+    if not hostname:
+        return "<redacted>"
+    location = hostname
+    if parsed.port is not None:
+        location = f"{location}:{parsed.port}"
+    if parsed.path and parsed.path != "/":
+        location = f"{location}{parsed.path}"
+    return location
 
 
 class CachedEmbeddingProvider(EmbeddingRepository):
@@ -210,7 +227,10 @@ class CachedEmbeddingProvider(EmbeddingRepository):
             client.ping()
             self._redis = client
             self._next_retry_at = 0.0
-            logger.info("Embedding cache connected to Redis at %s", self._redis_url)
+            logger.info(
+                "Embedding cache connected to Redis at %s",
+                _redact_redis_url(self._redis_url),
+            )
             return client
         except (_ConnError, _RedisError, OSError) as exc:  # type: ignore[misc]
             self._next_retry_at = time.monotonic() + _RECONNECT_COOLDOWN

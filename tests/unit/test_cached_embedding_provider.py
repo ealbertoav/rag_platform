@@ -13,6 +13,7 @@ from redis.exceptions import ConnectionError as RedisConnError
 
 from src.infrastructure.embeddings.cached_embedding_provider import (
     CachedEmbeddingProvider,
+    _redact_redis_url,
 )
 
 _TEXTS = ["hello", "world"]
@@ -268,6 +269,23 @@ class TestDelegation:
         provider = _make_provider(inner)
         provider.embed_sparse(_TEXTS)
         inner.embed_sparse.assert_called_once_with(_TEXTS)
+
+
+# ── Redis URL redaction ────────────────────────────────────────────────────────
+
+
+class TestRedactRedisUrl:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("redis://localhost:6379", "localhost:6379"),
+            ("redis://:secret@redis.example.com:6379/0", "redis.example.com:6379/0"),
+            ("redis://user:secret@10.0.0.5:6380", "10.0.0.5:6380"),
+            ("unix:///tmp/redis.sock", "unix:/tmp/redis.sock"),
+        ],
+    )
+    def test_strips_credentials_from_url(self, url: str, expected: str) -> None:
+        assert _redact_redis_url(url) == expected
 
 
 # ── Lazy Redis client connection ───────────────────────────────────────────────
