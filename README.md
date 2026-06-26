@@ -1101,6 +1101,7 @@ RETRIEVAL__HYBRID_FUSION=rrf
 RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYPE__ENABLED=false
 RETRIEVAL__RSE__ENABLED=false
+RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 NEO4J__ENABLED=true
@@ -1190,24 +1191,26 @@ When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `h
 
 ##### Relevant Segment Extraction (T-123)
 
-RSE runs **after reranking** and **before contextual compression**. It merges adjacent retrieved chunks from the same document when their `metadata["chunk_index"]` values are consecutive, producing longer coherent segments for the LLM. Chunks from different documents are never merged. Merged segments are capped by `max_segment_tokens`.
+RSE is a **query-time** post-reranking step (not ingest-time). When enabled, adjacent retrieved chunks from the same document — those with consecutive `metadata.chunk_index` values — are merged into longer coherent segments before contextual compression. Parent-level chunks and child chunks are merged separately (siblings sharing the same `parent_id` only). Merged segments respect `max_segment_tokens` and never combine chunks from different documents. Overlapping sibling text from recursive/parent-child chunking is deduplicated at merge boundaries.
 
-RSE is most useful with `chunking.strategy: parent_child`, which tags every child chunk with a `chunk_index` and `parent_id`. It adds no extra LLM or API calls at query time.
+RSE adds no extra LLM or API calls at query time. It is especially useful when reranking returns several neighboring chunks from the same passage.
 
 ```yaml
 # configs/retrieval.yaml
 retrieval:
   rse:
-    enabled: false              # set true to merge adjacent chunks after rerank
+    enabled: false              # set true to merge adjacent chunks after reranking
     max_segment_tokens: 1500
 ```
+
+**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (all set `chunk_index`). Complements parent-child chunking, where small child chunks are retrieved but adjacent hits can be stitched back into readable segments.
+
+**Behavior:** merged segments keep the lowest-index chunk's ID as anchor; `metadata.merged_chunk_ids` lists all contributing chunk IDs (also expanded in `Answer.sources` via `chunk_source_ids`). Chunks without `chunk_index` pass through unchanged. Contextual headers (T-120): merged `raw_text` includes all source bodies. OTel span `retrieval.rse` records `merge_count`.
 
 ```bash
 RETRIEVAL__RSE__ENABLED=true
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 ```
-
-Merged segments record source chunk IDs in `metadata["rse_source_chunk_ids"]`. OTel span `retrieval.rse` records `merge_count` (chunks consolidated).
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
 
@@ -1281,6 +1284,8 @@ Configure the collector endpoint:
 ```bash
 LOGGING__OTEL_ENDPOINT=http://localhost:4317
 ```
+
+When RSE is enabled, span `retrieval.rse` appears between `retrieval.reranking` and `retrieval.compression`, with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
 
 ### Prometheus Metrics
 

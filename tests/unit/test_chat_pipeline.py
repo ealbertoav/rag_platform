@@ -7,12 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.core.constants import CHUNK_INDEX_KEY
+from src.core.constants import CHUNK_INDEX_KEY, MERGED_CHUNK_IDS_KEY
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.domain.services.generation_service import GenerationService
-from src.rag.enrichment.relevant_segment_extraction import RSE_SOURCE_CHUNK_IDS_KEY
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -182,7 +181,7 @@ class TestChatPipelineFull:
             text="merged segment",
             metadata={
                 CHUNK_INDEX_KEY: 0,
-                RSE_SOURCE_CHUNK_IDS_KEY: ["c0", "c1", "c2"],
+                MERGED_CHUNK_IDS_KEY: ["c0", "c1", "c2"],
             },
         )
         result = await _pipeline(chunks=[merged]).chat_full("q")

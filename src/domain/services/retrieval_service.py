@@ -97,11 +97,11 @@ class RetrievalService:
             span.set_attribute("chunk_count", len(chunks))
 
         # 4. Relevant segment extraction (optional)
-        with _tracer.start_as_current_span("retrieval.rse") as span:
-            before = len(chunks)
-            chunks = self._merge_segments(chunks)
-            span.set_attribute("merge_count", before - len(chunks))
-            span.set_attribute("chunk_count", len(chunks))
+        if self._rse_enabled:
+            with _tracer.start_as_current_span("retrieval.rse") as span:
+                chunks, merge_count = merge_adjacent(chunks, self._rse_max_segment_tokens)
+                span.set_attribute("merge_count", merge_count)
+                span.set_attribute("chunk_count", len(chunks))
 
         # 5. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
@@ -166,7 +166,3 @@ class RetrievalService:
             return chunks
         return self._compressor.compress(query_text, chunks)
 
-    def _merge_segments(self, chunks: list[Chunk]) -> list[Chunk]:
-        if not self._rse_enabled or not chunks:
-            return chunks
-        return merge_adjacent(chunks, max_segment_tokens=self._rse_max_segment_tokens)

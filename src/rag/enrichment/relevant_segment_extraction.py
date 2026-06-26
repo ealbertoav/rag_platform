@@ -2,116 +2,130 @@
 
 from __future__ import annotations
 
-from src.core.constants import CHUNK_INDEX_KEY, CHUNK_RAW_TEXT_KEY
+from collections import defaultdict
+
+from src.core.constants import (
+    CHUNK_INDEX_KEY,
+    CHUNK_PARENT_ID_KEY,
+    CHUNK_RAW_TEXT_KEY,
+    MERGED_CHUNK_IDS_KEY,
+    RSE_MERGED_KEY,
+)
 from src.domain.entities.chunk import Chunk
 from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.token_reducer import count_tokens, truncate_to_tokens
 
-RSE_MERGED_KEY = "rse_merged"
-RSE_SOURCE_CHUNK_IDS_KEY = "rse_source_chunk_ids"
-
-# Upper bound when searching for shared suffix/prefix between overlapping siblings.
 _MAX_OVERLAP_SEARCH = 512
 
-RankedChunk = tuple[int, Chunk]
-IndexedChunk = tuple[int, Chunk, int]
 
+def merge_adjacent(chunks: list[Chunk], max_segment_tokens: int) -> tuple[list[Chunk], int]:
+    """Merge adjacent retrieved chunks from the same document into longer segments.
 
-def merge_adjacent(chunks: list[Chunk], max_segment_tokens: int) -> list[Chunk]:
-    """Merge consecutive chunks from the same document into longer segments.
+    Chunks are eligible when they share a document, belong to the same merge
+    group (parent-level or same ``parent_id`` for children), and have
+    consecutive ``metadata["chunk_index"]`` values.  Merged segments never
+    exceed *max_segment_tokens* (approximate token count).
 
-    Chunks are grouped by "document_id" and merged when their
-    "metadata["chunk_index"]" values form a consecutive run among the
-    retrieved set.  Merged segments never exceed *max_segment_tokens*.
+    Returns ``(merged_chunks, merge_count)`` where *merge_count* is the number
+    of chunk boundaries eliminated (input count minus output count).
     """
     if not chunks:
-        return []
+        return [], 0
 
-    indexed: list[IndexedChunk] = []
-    standalone: list[RankedChunk] = []
+    original_rank = {chunk.id: index for index, chunk in enumerate(chunks)}
+    mergeable: list[Chunk] = []
+    passthrough: list[Chunk] = []
 
-    for order, chunk in enumerate(chunks):
-        raw_index = chunk.metadata.get(CHUNK_INDEX_KEY)
-        if raw_index is None:
-            standalone.append((order, chunk))
-            continue
-        try:
-            chunk_index = int(raw_index)
-        except (TypeError, ValueError):
-            standalone.append((order, chunk))
-            continue
-        indexed.append((order, chunk, chunk_index))
+    for chunk in chunks:
+        if CHUNK_INDEX_KEY in chunk.metadata:
+            mergeable.append(chunk)
+        else:
+            passthrough.append(chunk)
 
-    merged: list[RankedChunk] = []
-    by_document: dict[str, list[IndexedChunk]] = {}
-    for order, chunk, chunk_index in indexed:
-        by_document.setdefault(chunk.document_id, []).append((order, chunk, chunk_index))
+    by_group: dict[tuple[str, str | None], list[Chunk]] = defaultdict(list)
+    for chunk in mergeable:
+        by_group[_merge_group(chunk)].append(chunk)
 
-    for doc_chunks in by_document.values():
-        doc_chunks.sort(key=lambda entry: entry[2])
-        run: list[IndexedChunk] = []
-        prev_index: int | None = None
+    merged: list[Chunk] = []
 
-        for order, chunk, chunk_index in doc_chunks:
-            gap_break = prev_index is not None and chunk_index != prev_index + 1
-            token_break = bool(run) and not _can_extend_run(run, chunk, max_segment_tokens)
-            if run and (gap_break or token_break):
-                segment = _merge_run(run, max_segment_tokens)
-                merged.append((min(entry[0] for entry in run), segment))
-                run = []
-            run.append((order, chunk, chunk_index))
-            prev_index = chunk_index
+    for doc_chunks in by_group.values():
+        doc_chunks.sort(key=lambda c: int(c.metadata[CHUNK_INDEX_KEY]))
+        run: list[Chunk] = []
+
+        for chunk in doc_chunks:
+            if not run:
+                run = [chunk]
+                continue
+
+            prev_idx = int(run[-1].metadata[CHUNK_INDEX_KEY])
+            curr_idx = int(chunk.metadata[CHUNK_INDEX_KEY])
+            can_extend = curr_idx == prev_idx + 1 and _can_extend_run(
+                run, chunk, max_segment_tokens
+            )
+
+            if can_extend:
+                run.append(chunk)
+            else:
+                merged.append(_merge_run(run, max_segment_tokens) if len(run) > 1 else run[0])
+                run = [chunk]
 
         if run:
-            segment = _merge_run(run, max_segment_tokens)
-            merged.append((min(entry[0] for entry in run), segment))
+            merged.append(_merge_run(run, max_segment_tokens) if len(run) > 1 else run[0])
 
-    output = standalone + merged
-    output.sort(key=lambda ranked: ranked[0])
-    return [chunk for _, chunk in output]
+    merged.extend(passthrough)
+
+    def _sort_key(chunk: Chunk) -> int:
+        merged_ids = chunk.metadata.get(MERGED_CHUNK_IDS_KEY)
+        if isinstance(merged_ids, list) and merged_ids:
+            return min(original_rank.get(cid, len(chunks)) for cid in merged_ids)
+        return original_rank.get(chunk.id, len(chunks))
+
+    merged.sort(key=_sort_key)
+    merge_count = len(chunks) - len(merged)
+    return merged, merge_count
 
 
 def chunk_source_ids(chunk: Chunk) -> list[str]:
     """Return citation chunk IDs, expanding RSE merges to all source chunks."""
-    ids = chunk.metadata.get(RSE_SOURCE_CHUNK_IDS_KEY)
+    ids = chunk.metadata.get(MERGED_CHUNK_IDS_KEY)
     if isinstance(ids, list) and ids:
         return [str(chunk_id) for chunk_id in ids]
     return [chunk.id]
 
 
-def _can_extend_run(
-    run: list[IndexedChunk],
-    next_chunk: Chunk,
-    max_segment_tokens: int,
-) -> bool:
-    if not run:
-        return True
-    bodies = [_context_body(entry[1]) for entry in run] + [_context_body(next_chunk)]
-    combined_text = _join_overlapping(bodies)
-    return count_tokens(combined_text) <= max_segment_tokens
+def _merge_group(chunk: Chunk) -> tuple[str, str | None]:
+    """Group key for merge eligibility within a document.
+
+    Parent-level chunks (no ``parent_id``) merge only with other parents.
+    Child chunks merge only with siblings that share the same ``parent_id``.
+    """
+    parent_id = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
+    return chunk.document_id, parent_id if parent_id is not None else None
 
 
-def _merge_run(run: list[IndexedChunk], max_segment_tokens: int) -> Chunk:
-    if len(run) == 1:
-        return run[0][1]
+def _can_extend_run(run: list[Chunk], next_chunk: Chunk, max_segment_tokens: int) -> bool:
+    bodies = [_context_body(chunk) for chunk in run] + [_context_body(next_chunk)]
+    return count_tokens(_join_overlapping(bodies)) <= max_segment_tokens
 
-    source_chunks = [entry[1] for entry in run]
-    context_bodies = [_context_body(chunk) for chunk in source_chunks]
+
+def _merge_run(run: list[Chunk], max_segment_tokens: int) -> Chunk:
+    """Combine a consecutive run of chunks into a single segment."""
+    anchor = run[0]
+    context_bodies = [_context_body(chunk) for chunk in run]
     merged_context = _join_overlapping(context_bodies)
-    merged_embedded = _join_overlapping([chunk.text for chunk in source_chunks])
+    merged_embedded = _join_overlapping([chunk.text for chunk in run])
 
     if count_tokens(merged_context) > max_segment_tokens:
         merged_context = truncate_to_tokens(merged_context, max_segment_tokens)
         merged_embedded = merged_context
 
-    first = source_chunks[0]
     metadata = {
-        **first.metadata,
+        **anchor.metadata,
+        MERGED_CHUNK_IDS_KEY: [chunk.id for chunk in run],
         RSE_MERGED_KEY: True,
-        RSE_SOURCE_CHUNK_IDS_KEY: [chunk.id for chunk in source_chunks],
         CHUNK_RAW_TEXT_KEY: merged_context,
     }
-    return first.model_copy(update={"text": merged_embedded, "metadata": metadata})
+    return anchor.model_copy(update={"text": merged_embedded, "metadata": metadata})
 
 
 def _context_body(chunk: Chunk) -> str:
