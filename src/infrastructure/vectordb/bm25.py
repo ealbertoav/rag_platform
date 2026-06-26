@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import pickle
+import types
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +19,29 @@ from src.domain.entities.chunk import Chunk
 logger = logging.getLogger(__name__)
 
 _INDEX_FORMAT_VERSION = 1
+
+_fcntl: types.ModuleType | None = None
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows and other non-Unix platforms
+    pass
+else:
+    _fcntl = fcntl
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
+    """Serialize index migration across processes on Unix-like systems."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        if _fcntl is not None:
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        yield
+    finally:
+        if _fcntl is not None:
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+        handle.close()
 
 
 def _tokenize(text: str) -> list[str]:
@@ -102,11 +129,16 @@ class BM25Index:
             "version": _INDEX_FORMAT_VERSION,
             "chunks": [chunk.model_dump(mode="json") for chunk in self._chunks],
         }
+        tmp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
         try:
-            with self._path.open("w", encoding="utf-8") as fh:
+            with tmp_path.open("w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp_path.replace(self._path)
             logger.info("BM25 index saved to %s", self._path)
         except OSError as exc:
+            tmp_path.unlink(missing_ok=True)
             raise VectorStoreError(f"Cannot save BM25 index to {self._path}", cause=exc) from exc
 
     def load(self) -> None:
@@ -139,9 +171,7 @@ class BM25Index:
         if json_path.exists():
             instance.load()
         elif legacy_path.exists():
-            instance._load_legacy_pickle(legacy_path)
-            instance.save()
-            logger.info("Migrated BM25 index from pickle to JSON at %s", json_path)
+            instance._migrate_legacy_pickle(legacy_path)
         return instance
 
     # ── Properties ─────────────────────────────────────────────────────────────
@@ -163,6 +193,17 @@ class BM25Index:
         return None
 
     # ── Internals ──────────────────────────────────────────────────────────────
+
+    def _migrate_legacy_pickle(self, legacy_path: Path) -> None:
+        """Migrate a legacy pickle index to JSON under an exclusive file lock."""
+        lock_path = self._path.with_suffix(f"{self._path.suffix}.lock")
+        with _exclusive_file_lock(lock_path):
+            if self._path.exists():
+                self.load()
+                return
+            self._load_legacy_pickle(legacy_path)
+            self.save()
+            logger.info("Migrated BM25 index from pickle to JSON at %s", self._path)
 
     def _load_legacy_pickle(self, path: Path) -> None:
         """Load a legacy pickle index and rebuild the in-memory BM25 model."""

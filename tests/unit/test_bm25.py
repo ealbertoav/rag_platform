@@ -274,6 +274,36 @@ class TestBM25IndexErrors:
         assert json_path.exists()
         assert json_path.read_text(encoding="utf-8").startswith("{")
 
+    def test_concurrent_pickle_migration_is_safe(self, tmp_path: Path):
+        import json
+        import pickle
+        import threading
+
+        legacy = tmp_path / "bm25.pkl"
+        json_path = tmp_path / "bm25.json"
+        legacy.write_bytes(pickle.dumps({"chunks": _CORPUS}))
+
+        results: list[int] = []
+        errors: list[Exception] = []
+
+        def migrate() -> None:
+            try:
+                idx = BM25Index.load_or_create(json_path)
+                results.append(idx.size)
+            except Exception as exc:  # pragma: no cover - test assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=migrate) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors
+        assert all(size == len(_CORPUS) for size in results)
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert len(payload["chunks"]) == len(_CORPUS)
+
     def test_chunks_property_returns_snapshot(self):
         idx = BM25Index()
         idx.index(_CORPUS)
