@@ -63,6 +63,7 @@ class IngestionPipeline:
         metadata: MetadataRepository | None = None,
         graph_indexer: object | None = None,
         augmentor: object | None = None,
+        hype_indexer: object | None = None,
     ) -> None:
         self._service = service
         self._vector_store = vector_store
@@ -70,6 +71,7 @@ class IngestionPipeline:
         self._metadata = metadata
         self._graph_indexer = graph_indexer
         self._augmentor = augmentor
+        self._hype_indexer = hype_indexer
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -118,10 +120,13 @@ class IngestionPipeline:
         if self._augmentor is not None:
             augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
             indexed_chunks.extend(augmented)
+        if self._hype_indexer is not None:
+            hype_chunks = self._hype_indexer.index(chunks)  # type: ignore[attr-defined]
+            indexed_chunks.extend(hype_chunks)
 
         self._index_graph(chunks, document.id)
         self._vector_store.upsert(indexed_chunks)
-        self._bm25.add(indexed_chunks)
+        self._bm25.add(_bm25_indexable(indexed_chunks))
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
@@ -134,7 +139,7 @@ class IngestionPipeline:
             )
 
         logger.info(
-            "Ingested %s → %d chunks (%d augmented)",
+            "Ingested %s → %d chunks (%d indexed extras)",
             path.name,
             len(chunks),
             len(indexed_chunks) - len(chunks),
@@ -232,6 +237,7 @@ class IngestionPipeline:
         metadata = SQLiteMetadataStore.from_settings() if settings.metadata.enabled else None
         graph_indexer = _build_graph_indexer() if settings.neo4j.enabled else None
         augmentor = _build_augmentor(embedder, cfg.augmentation)
+        hype_indexer = _build_hype_indexer(embedder, settings.retrieval.hype)
 
         return cls(
             service=service,
@@ -240,6 +246,7 @@ class IngestionPipeline:
             metadata=metadata,
             graph_indexer=graph_indexer,
             augmentor=augmentor,
+            hype_indexer=hype_indexer,
         )
 
 
@@ -282,3 +289,29 @@ def _build_augmentor(embedder: object, cfg: object) -> object | None:
     except Exception as exc:
         logger.warning("Document augmentor unavailable: %s", exc)
         return None
+
+
+def _build_hype_indexer(embedder: object, cfg: object) -> object | None:
+    """Build HyPE indexer when hypothetical prompt embeddings are enabled."""
+    if not getattr(cfg, "enabled", False):
+        return None
+    try:
+        from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
+        from src.rag.enrichment.hype_indexer import HyPEIndexer
+
+        llm = LlamaCppProvider.from_settings()
+        return HyPEIndexer(
+            llm=llm,
+            embedder=embedder,  # type: ignore[arg-type]
+            n_questions=getattr(cfg, "n_questions", 3),
+        )
+    except Exception as exc:
+        logger.warning("HyPE indexer unavailable: %s", exc)
+        return None
+
+
+def _bm25_indexable(chunks: list[Chunk]) -> list[Chunk]:
+    """Exclude HyPE-only vectors from the lexical BM25 index."""
+    from src.rag.enrichment.hype_indexer import is_hype_question
+
+    return [chunk for chunk in chunks if not is_hype_question(chunk)]

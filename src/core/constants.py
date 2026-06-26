@@ -18,6 +18,7 @@ CHUNK_INDEX_KEY = "chunk_index"
 CHUNK_RAW_TEXT_KEY = "raw_text"
 CHUNK_TYPE_KEY = "type"
 CHUNK_TYPE_SYNTHETIC = "synthetic_question"
+CHUNK_TYPE_HYPE = "hype_question"
 SOURCE_CHUNK_ID_KEY = "source_chunk_id"
 
 # ── Supported document types ───────────────────────────────────────────────────

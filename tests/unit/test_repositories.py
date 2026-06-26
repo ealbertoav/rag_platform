@@ -57,7 +57,14 @@ class _VectorStore(VectorStoreRepository):
     def upsert(self, chunks: list[Chunk]) -> None:
         pass
 
-    def search_dense(self, query_vector: DenseVector, top_k: int) -> list[SearchResult]:
+    def search_dense(
+        self,
+        query_vector: DenseVector,
+        top_k: int,
+        *,
+        type_equals: str | None = None,
+        exclude_types: frozenset[str] | None = None,
+    ) -> list[SearchResult]:
         return []
 
     def search_sparse(self, query_sparse: SparseVector, top_k: int) -> list[SearchResult]:
@@ -189,7 +196,14 @@ class TestVectorStoreRepository:
             def upsert(self, chunks: list[Chunk]) -> None:
                 pass
 
-            def search_dense(self, qv: DenseVector, top_k: int) -> list[SearchResult]:
+            def search_dense(
+                self,
+                qv: DenseVector,
+                top_k: int,
+                *,
+                type_equals: str | None = None,
+                exclude_types: frozenset[str] | None = None,
+            ) -> list[SearchResult]:
                 return []
 
             def search_sparse(self, qs: SparseVector, top_k: int) -> list[SearchResult]:

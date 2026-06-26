@@ -5,6 +5,7 @@ from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
+    Condition,
     Distance,
     FieldCondition,
     Filter,
@@ -19,7 +20,7 @@ from qdrant_client.models import (
     SparseVector as QSparseVector,
 )
 
-from src.core.constants import RRF_K
+from src.core.constants import CHUNK_TYPE_KEY, RRF_K
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.embedding_repository import DenseVector, SparseVector
@@ -31,6 +32,36 @@ _DENSE = "dense"
 _SPARSE = "sparse"
 _EXPANSION = 3  # multiplier for hybrid search candidate pool
 _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
+
+
+def _build_type_filter(
+    *,
+    type_equals: str | None = None,
+    exclude_types: frozenset[str] | None = None,
+) -> Filter | None:
+    """Build a Qdrant payload filter for chunk ``type`` metadata."""
+    must: list[Condition] = []
+    must_not: list[Condition] = []
+
+    if type_equals is not None:
+        must.append(
+            FieldCondition(
+                key=CHUNK_TYPE_KEY,
+                match=MatchValue(value=type_equals),
+            )
+        )
+    if exclude_types:
+        must_not.extend(
+            FieldCondition(key=CHUNK_TYPE_KEY, match=MatchValue(value=chunk_type))
+            for chunk_type in exclude_types
+        )
+
+    if not must and not must_not:
+        return None
+    return Filter(
+        must=must if must else None,
+        must_not=must_not if must_not else None,
+    )
 
 
 # ── RRF fusion (module-level so it can be tested independently) ────────────────
@@ -124,8 +155,16 @@ class QdrantVectorStore(VectorStoreRepository):
             except Exception as exc:
                 raise VectorStoreError("Qdrant upsert failed", cause=exc) from exc
 
-    def search_dense(self, query_vector: DenseVector, top_k: int) -> list[SearchResult]:
+    def search_dense(
+        self,
+        query_vector: DenseVector,
+        top_k: int,
+        *,
+        type_equals: str | None = None,
+        exclude_types: frozenset[str] | None = None,
+    ) -> list[SearchResult]:
         self._ensure_collection()
+        query_filter = _build_type_filter(type_equals=type_equals, exclude_types=exclude_types)
         try:
             response = self._client.query_points(
                 collection_name=self.collection,
@@ -133,6 +172,7 @@ class QdrantVectorStore(VectorStoreRepository):
                 using=_DENSE,
                 limit=top_k,
                 with_payload=True,
+                query_filter=query_filter,
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant dense search failed", cause=exc) from exc
@@ -378,6 +418,9 @@ class QdrantVectorStore(VectorStoreRepository):
         payload = chunk.model_dump(exclude={"embedding", "sparse_vector"})
         if self.embedding_model_name:
             payload["embedding_model_name"] = self.embedding_model_name
+        chunk_type = chunk.metadata.get(CHUNK_TYPE_KEY)
+        if chunk_type:
+            payload[CHUNK_TYPE_KEY] = chunk_type
         return PointStruct(
             id=chunk.id,
             vector={

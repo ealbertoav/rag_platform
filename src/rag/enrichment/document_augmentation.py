@@ -9,6 +9,7 @@ from string import Template
 
 from src.core.constants import (
     CHUNK_RAW_TEXT_KEY,
+    CHUNK_TYPE_HYPE,
     CHUNK_TYPE_KEY,
     CHUNK_TYPE_SYNTHETIC,
     SOURCE_CHUNK_ID_KEY,
@@ -32,6 +33,12 @@ def load_question_template(path: Path | None = None) -> Template:
 
 def is_synthetic_question(chunk: Chunk) -> bool:
     return chunk.metadata.get(CHUNK_TYPE_KEY) == CHUNK_TYPE_SYNTHETIC
+
+
+def is_indexed_question(chunk: Chunk) -> bool:
+    """True for synthetic-augmentation or HyPE question index points."""
+    chunk_type = chunk.metadata.get(CHUNK_TYPE_KEY)
+    return chunk_type in (CHUNK_TYPE_SYNTHETIC, CHUNK_TYPE_HYPE)
 
 
 def make_question_chunk(source: Chunk, question: str) -> Chunk:
@@ -70,7 +77,7 @@ def resolve_synthetic_questions(
     best: dict[str, tuple[Chunk, float, int]] = {}
 
     for rank, (chunk, score) in enumerate(results):
-        if is_synthetic_question(chunk):
+        if is_indexed_question(chunk):
             source_id = chunk.metadata.get(SOURCE_CHUNK_ID_KEY)
             if not isinstance(source_id, str):
                 logger.debug("Synthetic question %s missing source_chunk_id", chunk.id)
