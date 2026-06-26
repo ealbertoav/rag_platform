@@ -95,8 +95,7 @@ def resolve_synthetic_questions(
         best[resolved.id] = (resolved, max(prev_score, score), min(prev_rank, rank))
 
     return [
-        (chunk, score)
-        for chunk, score, _rank in sorted(best.values(), key=lambda item: item[2])
+        (chunk, score) for chunk, score, _rank in sorted(best.values(), key=lambda item: item[2])
     ]
 
 

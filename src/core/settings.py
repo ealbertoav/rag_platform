@@ -170,9 +170,7 @@ class APISettings(BaseModel):
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
     api_key: SecretStr = SecretStr("")
     max_upload_bytes: int = Field(default=10_485_760, gt=0)  # 10 MiB
-    ingest_allowed_roots: list[str] = Field(
-        default_factory=lambda: [str(ROOT / "data" / "raw")]
-    )
+    ingest_allowed_roots: list[str] = Field(default_factory=lambda: [str(ROOT / "data" / "raw")])
 
 
 class LoggingSettings(BaseModel):

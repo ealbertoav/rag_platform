@@ -19,9 +19,8 @@ from src.core.settings import settings
 
 class TestValidateIngestPath:
     def test_allows_path_under_configured_root(
-            self, monkeypatch:pytest.MonkeyPatch,
-            tmp_path: Path)\
-            :
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
         root = tmp_path / "data" / "raw"
         root.mkdir(parents=True)
         doc = root / "doc.md"
