@@ -35,6 +35,17 @@ class TestValidateIngestPath:
             validate_ingest_path(Path("/etc/passwd"))
         assert exc.value.status_code == 403
 
+    def test_relative_path_resolved_from_project_root(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        root = tmp_path / "data" / "raw"
+        root.mkdir(parents=True)
+        doc = root / "doc.md"
+        doc.write_text("hello")
+        monkeypatch.setattr("src.api.security.ROOT", tmp_path)
+        monkeypatch.setattr(settings.api, "ingest_allowed_roots", ["data/raw"])
+        assert validate_ingest_path(Path("data/raw/doc.md")) == doc.resolve()
+
 
 class TestValidateUploadFilename:
     def test_accepts_supported_extension(self):

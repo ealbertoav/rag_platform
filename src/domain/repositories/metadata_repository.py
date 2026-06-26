@@ -19,7 +19,7 @@ class DocumentRecord:
 
 @dataclass(frozen=True)
 class IngestionRunRecord:
-    """Audit row for a single ingest attempt."""
+    """Audit row for a single ingested attempt."""
 
     id: str
     document_id: str
@@ -48,12 +48,18 @@ class MetadataRepository(ABC):
         content_hash: str,
         chunk_ids: list[str],
         *,
+        chunk_count: int | None = None,
         duration_ms: float = 0.0,
         skipped: bool = False,
         error: str | None = None,
     ) -> DocumentRecord:
-        """Create or update a document record and its chunk ID list."""
+        """Create or update a document record and its chunk ID list.
+
+        *chunk_count* defaults to "len(chunk_ids)" when omitted. Pass the
+        source-chunk count separately when *chunk_ids* also includes synthetic
+        question IDs.
+        """
 
     @abstractmethod
     def list_documents(self) -> list[DocumentRecord]:
-        """Return all ingested documents ordered by most recently updated."""
+        """Return all ingested documents ordered by the most recently updated."""

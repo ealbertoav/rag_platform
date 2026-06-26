@@ -40,7 +40,8 @@ def resolve_allowed_ingest_roots() -> list[Path]:
 
 def validate_ingest_path(source: Path) -> Path:
     """Ensure a *source* resolves under a configured ingested root."""
-    resolved = source.expanduser().resolve()
+    resolved = source.expanduser()
+    resolved = (ROOT / resolved).resolve() if not resolved.is_absolute() else resolved.resolve()
     allowed_roots = resolve_allowed_ingest_roots()
     if not allowed_roots:
         raise HTTPException(

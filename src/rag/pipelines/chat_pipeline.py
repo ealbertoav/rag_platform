@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from src.domain.entities.answer import Answer
 from src.domain.entities.query import Query
 from src.domain.services.generation_service import GenerationService
 from src.observability.metrics import record_generation, record_request
 from src.rag.pipelines.retrieval_pipeline import RetrievalPipeline
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25 import BM25Index
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +107,11 @@ class ChatPipeline:
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls) -> ChatPipeline:
+    def from_settings(cls, bm25_index: BM25Index | None = None) -> ChatPipeline:
         """Build the full pipeline from settings (lazy model loading)."""
         from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
 
         llm = LlamaCppProvider.from_settings()
-        retrieval = RetrievalPipeline.from_settings(llm=llm)
+        retrieval = RetrievalPipeline.from_settings(llm=llm, bm25_index=bm25_index)
         generation = GenerationService.from_settings(llm=llm)
         return cls(retrieval=retrieval, generation=generation)

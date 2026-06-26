@@ -128,6 +128,7 @@ class IngestionPipeline:
                 source,
                 doc_hash,
                 [c.id for c in indexed_chunks],
+                chunk_count=len(chunks),
                 duration_ms=elapsed_ms,
             )
 
@@ -180,6 +181,10 @@ class IngestionPipeline:
         """Persist the BM25 index to disk after batch ingestion."""
         self._bm25.save()
 
+    @property
+    def bm25(self) -> BM25Index:
+        return self._bm25
+
     def list_documents(self) -> list[DocumentRecord]:
         """Return ingested document records when metadata store is enabled."""
         if self._metadata is None:
@@ -207,7 +212,7 @@ class IngestionPipeline:
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls) -> IngestionPipeline:
+    def from_settings(cls, bm25: BM25Index | None = None) -> IngestionPipeline:
         """Build the pipeline from application settings (real dependencies)."""
         from src.core.settings import settings
         from src.infrastructure.embeddings import get_embedding_provider
@@ -224,7 +229,7 @@ class IngestionPipeline:
         )
         embedder = get_embedding_provider()
         vector_store = QdrantVectorStore.from_settings()
-        bm25 = BM25Index.load_or_create()
+        bm25_index = bm25 or BM25Index.load_or_create()
         service = IngestionService(chunker=chunker, embedder=embedder)
 
         metadata = SQLiteMetadataStore.from_settings() if settings.metadata.enabled else None
@@ -234,7 +239,7 @@ class IngestionPipeline:
         return cls(
             service=service,
             vector_store=vector_store,
-            bm25=bm25,
+            bm25=bm25_index,
             metadata=metadata,
             graph_indexer=graph_indexer,
             augmentor=augmentor,

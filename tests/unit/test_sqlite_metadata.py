@@ -44,6 +44,17 @@ class TestSQLiteMetadataStore:
         )
         assert record.chunk_count == 1
 
+    def test_chunk_count_override_for_synthetic_ids(self, tmp_path: Path):
+        db = SQLiteMetadataStore(db_path=tmp_path / "meta.db")
+        record = db.upsert_document(
+            "/tmp/doc.md",
+            "abc123",
+            ["source-1", "synthetic-q1", "synthetic-q2"],
+            chunk_count=1,
+        )
+        assert record.chunk_count == 1
+        assert db.get_chunk_ids(record.id) == ["source-1", "synthetic-q1", "synthetic-q2"]
+
     def test_update_replaces_chunk_ids(self, tmp_path: Path):
         db = SQLiteMetadataStore(db_path=tmp_path / "meta.db")
         first = db.upsert_document("/tmp/doc.md", "hash-v1", ["c1", "c2"])

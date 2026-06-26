@@ -101,6 +101,7 @@ class SQLiteMetadataStore(MetadataRepository):
         content_hash: str,
         chunk_ids: list[str],
         *,
+        chunk_count: int | None = None,
         duration_ms: float = 0.0,
         skipped: bool = False,
         error: str | None = None,
@@ -108,6 +109,7 @@ class SQLiteMetadataStore(MetadataRepository):
         now = _now()
         now_iso = now.isoformat()
         status = "skipped" if skipped else ("error" if error else "success")
+        reported_chunk_count = chunk_count if chunk_count is not None else len(chunk_ids)
 
         with self._connect() as conn:
             existing = conn.execute(
@@ -121,7 +123,7 @@ class SQLiteMetadataStore(MetadataRepository):
                     "INSERT INTO documents "
                     "(id, source_path, content_hash, chunk_count, ingested_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (doc_id, source_path, content_hash, len(chunk_ids), now_iso, now_iso),
+                    (doc_id, source_path, content_hash, reported_chunk_count, now_iso, now_iso),
                 )
                 ingested_at = now
             else:
@@ -130,7 +132,7 @@ class SQLiteMetadataStore(MetadataRepository):
                 conn.execute(
                     "UPDATE documents SET content_hash = ?, chunk_count = ?, updated_at = ? "
                     "WHERE id = ?",
-                    (content_hash, len(chunk_ids), now_iso, doc_id),
+                    (content_hash, reported_chunk_count, now_iso, doc_id),
                 )
                 conn.execute("DELETE FROM document_chunks WHERE document_id = ?", (doc_id,))
 
@@ -150,8 +152,8 @@ class SQLiteMetadataStore(MetadataRepository):
                     run_id,
                     doc_id,
                     status,
-                    0 if skipped else len(chunk_ids),
-                    len(chunk_ids) if skipped else 0,
+                    0 if skipped else reported_chunk_count,
+                    reported_chunk_count if skipped else 0,
                     duration_ms,
                     error,
                     now_iso,
@@ -162,7 +164,7 @@ class SQLiteMetadataStore(MetadataRepository):
             id=doc_id,
             source_path=source_path,
             content_hash=content_hash,
-            chunk_count=len(chunk_ids),
+            chunk_count=reported_chunk_count,
             ingested_at=ingested_at,
             updated_at=now,
         )

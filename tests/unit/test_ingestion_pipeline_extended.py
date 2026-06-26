@@ -67,8 +67,9 @@ class TestIngestionMetadataAndReingest:
         chunks = [embedded_chunk(0), embedded_chunk(1)]
         pipeline, _, _, _ = mock_ingestion_pipeline(prepared_chunks=chunks, metadata=metadata)
         pipeline.ingest_file(path)
-        args, _kwargs = metadata.upsert_document.call_args
+        args, kwargs = metadata.upsert_document.call_args
         assert args[2] == [c.id for c in chunks]
+        assert kwargs["chunk_count"] == len(chunks)
 
     def test_list_documents_without_metadata_returns_empty(self):
         pipeline, *_ = mock_ingestion_pipeline(metadata=None)

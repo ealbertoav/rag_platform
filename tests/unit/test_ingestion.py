@@ -152,7 +152,10 @@ class TestIngestionPipelineFile:
         question = embedded_chunk(1)
         augmentor = MagicMock()
         augmentor.augment.return_value = [question]
-        pipeline, _, vector_store, _ = mock_ingestion_pipeline([source], augmentor=augmentor)
+        metadata = MagicMock()
+        pipeline, _, vector_store, _ = mock_ingestion_pipeline(
+            [source], augmentor=augmentor, metadata=metadata
+        )
         result = pipeline.ingest_file(path)
         augmentor.augment.assert_called_once_with([source])
         indexed = vector_store.upsert.call_args.args[0]
@@ -160,6 +163,9 @@ class TestIngestionPipelineFile:
         assert indexed[0].id == source.id
         assert indexed[1].id == question.id
         assert result.chunk_count == 1  # source chunks only in result
+        metadata.upsert_document.assert_called_once()
+        _, kwargs = metadata.upsert_document.call_args
+        assert kwargs["chunk_count"] == 1
 
     def test_no_upsert_when_no_chunks(self, tmp_path: Path):
         path = tmp_path / "doc.md"
