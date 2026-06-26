@@ -215,6 +215,8 @@ REDIS__URL=redis://localhost:6379
 RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
 RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
+RETRIEVAL__HYPE__ENABLED=false            # HyPE question-question matching (T-122)
+RETRIEVAL__HYPE__N_QUESTIONS=3
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
@@ -245,7 +247,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -290,13 +292,16 @@ flowchart LR
     CCH -->|enabled| HDR["Prepend doc/section/page<br/>to embedded text"]
     CCH -->|disabled| EM["Embed Both<br/>dense + sparse"]
     HDR --> EM
-    EM --> AUG{"Synthetic<br/>Questions?<br/>(optional)"}
-    AUG -->|enabled| SQ["LLM → N questions/chunk<br/>embed + index separately"]
+    EM --> AUG{"Synthetic<br/>Questions?<br/>(T-121)"}
+    EM --> HYPE{"HyPE<br/>Questions?<br/>(T-122)"}
+    AUG -->|enabled| SQ["LLM → N questions/chunk<br/>embed · Qdrant + BM25"]
+    HYPE -->|enabled| HY["LLM → N questions/chunk<br/>embed · Qdrant only"]
     AUG -->|disabled| IDX
     EM --> IDX
     SQ --> IDX
+    HY --> IDX
     IDX["Upsert indexes"] --> QD[("Qdrant<br/>HNSW + Sparse")]
-    IDX --> BM[("BM25<br/>In-Memory")]
+    IDX --> BM[("BM25<br/>In-Memory<br/>excludes HyPE")]
     IDX --> META[("SQLite<br/>metadata.db")]
     EM -->|neo4j.enabled| GR["Entity Extractor<br/>→ Neo4j"]
     QD & BM & META --> DONE["✅ Indexed"]
@@ -304,7 +309,13 @@ flowchart LR
 
 #### Optional Chunk Enrichment
 
-Two optional ingestion techniques live under `chunking` in `configs/retrieval.yaml`. Both are **off by default** — enabling either leaves behavior unchanged when the flag stays `false`.
+Three optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
+
+| Technique | Config path | Indexed in | Retrieved via |
+|---|---|---|---|
+| Contextual headers (T-120) | `chunking.contextual_headers` | Same chunk text (header prepended before embed) | Standard dense/BM25 |
+| Document augmentation (T-121) | `chunking.augmentation` | Qdrant + BM25 (`type=synthetic_question`) | Standard dense/BM25 → resolve to source |
+| HyPE (T-122) | `retrieval.hype` | Qdrant only (`type=hype_question`) | Dedicated question→question dense search → 4th RRF source |
 
 ##### Contextual Chunk Headers (T-120)
 
@@ -341,11 +352,34 @@ chunking:
 
 **Trade-offs:** augmentation adds one LLM call per chunk at ingest (failures on individual chunks are logged and skipped). Re-ingest after toggling these flags — existing indexes are not updated retroactively.
 
+##### HyPE — Hypothetical Prompt Embeddings (T-122)
+
+HyPE precomputes hypothetical questions per chunk at **ingest** time and embeds them as separate Qdrant points (`metadata.type = hype_question`). At **query** time, the user question is embedded and matched against those HyPE vectors (question→question similarity), then hits are resolved to source chunks and fused as a **fourth RRF source** alongside dense, BM25, and graph retrieval.
+
+HyPE vectors are stored in Qdrant only — they are excluded from BM25 and from the standard dense search path (so they do not compete with passage embeddings).
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  hype:
+    enabled: false       # set true to index + retrieve via HyPE
+    n_questions: 3
+```
+
+**When to use:** FAQ-style corpora and question-like queries where matching the user's phrasing to pre-generated questions improves recall. Can be combined with document augmentation (T-121), but both add LLM calls per chunk at ingest — enable deliberately.
+
+**Trade-offs:** one LLM call per chunk at ingest (same generator as T-121; failures are logged and skipped). Re-ingest after enabling — existing indexes are not updated retroactively. `rebuild_embeddings.py` re-embeds passage chunks from BM25; re-run ingestion to rebuild HyPE question vectors.
+
 ```bash
-# Enable both via environment
+# HyPE only
+RETRIEVAL__HYPE__ENABLED=true
+RETRIEVAL__HYPE__N_QUESTIONS=3
+
+# Or combine with other enrichment flags
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=true
 CHUNKING__AUGMENTATION__ENABLED=true
 CHUNKING__AUGMENTATION__N_QUESTIONS=3
+RETRIEVAL__HYPE__ENABLED=true
 ```
 
 ### Start the API Server
@@ -1021,7 +1055,8 @@ rag_implementation/
 │   │   └── ingestion/          # chunk_header_template · generate_chunk_questions
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
-│   │   ├── enrichment/         # Document augmentation (synthetic questions)
+│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE indexer (T-122)
+│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
@@ -1061,6 +1096,7 @@ pre-commit install
 LLM__TEMPERATURE=0.0
 RETRIEVAL__HYBRID_FUSION=rrf
 RETRIEVAL__TOP_K_FINAL=5
+RETRIEVAL__HYPE__ENABLED=false
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 NEO4J__ENABLED=true
@@ -1122,12 +1158,14 @@ flowchart TD
     Q["🔎 User Question"] --> QE["Query Expander<br/>LLM generates 3 variants"]
     QE --> EMB["BGE-M3 Encoder<br/>1024-dim dense + sparse"]
 
-    EMB --> DS["Dense Search<br/>Qdrant HNSW cosine"]
+    EMB --> DS["Dense Search<br/>Qdrant HNSW cosine<br/>(excludes hype_question)"]
     EMB --> BS["BM25 Search<br/>In-memory lexical"]
+    EMB --> HS["HyPE Search<br/>question→question dense<br/>(optional · T-122)"]
     QE --> GS["Graph Search<br/>Neo4j entity traversal<br/>(optional)"]
 
     DS -->|Top 50 candidates| RRF["RRF Fusion<br/>score = Σ 1/(k+rank)"]
     BS -->|Top 50 candidates| RRF
+    HS -->|resolved source chunks| RRF
     GS -->|entity-matched chunks| RRF
 
     RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
@@ -1139,9 +1177,11 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank and compression.
+**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
 
-When **document augmentation** is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
+When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
+
+When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `hype_question` vectors, resolves hits to source chunks, and merges them into RRF alongside dense, BM25, and graph results. Standard dense search excludes HyPE points so passage and question embeddings do not compete in the same index query.
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
 

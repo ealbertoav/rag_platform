@@ -91,6 +91,10 @@ class TestYamlDefaults:
         assert settings.chunking.augmentation.enabled is False
         assert settings.chunking.augmentation.n_questions == 3
 
+    def test_hype_defaults_from_yaml(self):
+        assert settings.retrieval.hype.enabled is False
+        assert settings.retrieval.hype.n_questions == 3
+
 
 class TestEnvVarOverride:
     def test_llm_provider_override(self, monkeypatch: pytest.MonkeyPatch):

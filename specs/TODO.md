@@ -1313,7 +1313,7 @@
 ---
 
 ### T-122 · HyPE — Hypothetical Prompt Embeddings
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Precompute hypothetical questions per chunk at index time and embed them for question-question matching at query time — inspired by RAG_Techniques `HyPE_Hypothetical_Prompt_Embeddings.py`. Strong for FAQ-style corpora.
 - **Inputs:** T-121 (question generation — reuse or extend), T-012 (embedding), T-021 (dense retrieval)
 - **Outputs:** HyPE index alongside standard chunk index; retrieval mode selectable via config.

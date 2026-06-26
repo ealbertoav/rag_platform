@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import logging
 
+from src.core.constants import CHUNK_TYPE_HYPE
 from src.domain.entities.query import Query
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.vector_store_repository import SearchResult, VectorStoreRepository
 
 logger = logging.getLogger(__name__)
+
+_HYPE_EXCLUDE = frozenset({CHUNK_TYPE_HYPE})
 
 
 class DenseRetriever:
@@ -33,7 +36,11 @@ class DenseRetriever:
         avoiding a redundant embedding call.
         """
         embedding = query.embedding or self._embedder.embed_query([query.text])[0]
-        results = self._vector_store.search_dense(embedding, top_k=top_k)
+        results = self._vector_store.search_dense(
+            embedding,
+            top_k=top_k,
+            exclude_types=_HYPE_EXCLUDE,
+        )
         logger.debug("Dense retrieval: %d results for %r", len(results), query.text[:60])
         return results
 

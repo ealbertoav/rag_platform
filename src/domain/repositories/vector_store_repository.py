@@ -21,8 +21,19 @@ class VectorStoreRepository(ABC):
         """
 
     @abstractmethod
-    def search_dense(self, query_vector: DenseVector, top_k: int) -> list[SearchResult]:
-        """Approximate nearest-neighbor search on the dense index."""
+    def search_dense(
+        self,
+        query_vector: DenseVector,
+        top_k: int,
+        *,
+        type_equals: str | None = None,
+        exclude_types: frozenset[str] | None = None,
+    ) -> list[SearchResult]:
+        """Approximate nearest-neighbor search on the dense index.
+
+        Optional payload filters restrict results by chunk metadata ``type``:
+        *type_equals* keeps only matching types; *exclude_types* drops them.
+        """
 
     @abstractmethod
     def search_sparse(self, query_sparse: SparseVector, top_k: int) -> list[SearchResult]:

@@ -216,6 +216,25 @@ class TestSearchDense:
         _, kwargs = mock_client.query_points.call_args
         assert kwargs["limit"] == 7
 
+    def test_type_equals_filter(self, store: QdrantVectorStore, mock_client: MagicMock):
+        from src.core.constants import CHUNK_TYPE_HYPE
+
+        mock_client.query_points.return_value = _query_response([])
+        store.search_dense([0.1] * 4, top_k=5, type_equals=CHUNK_TYPE_HYPE)
+        _, kwargs = mock_client.query_points.call_args
+        query_filter = kwargs["query_filter"]
+        assert query_filter.must[0].key == "type"
+        assert query_filter.must[0].match.value == CHUNK_TYPE_HYPE
+
+    def test_exclude_types_filter(self, store: QdrantVectorStore, mock_client: MagicMock):
+        from src.core.constants import CHUNK_TYPE_HYPE
+
+        mock_client.query_points.return_value = _query_response([])
+        store.search_dense([0.1] * 4, top_k=5, exclude_types=frozenset({CHUNK_TYPE_HYPE}))
+        _, kwargs = mock_client.query_points.call_args
+        query_filter = kwargs["query_filter"]
+        assert query_filter.must_not[0].match.value == CHUNK_TYPE_HYPE
+
 
 # ── search_sparse ──────────────────────────────────────────────────────────────
 

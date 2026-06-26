@@ -13,6 +13,7 @@ from src.rag.retrieval.dense_retriever import DenseRetriever
 
 if TYPE_CHECKING:
     from src.rag.retrieval.graph_retriever import GraphRetriever
+    from src.rag.retrieval.hype_retriever import HyPERetriever
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,14 @@ class HybridRetriever:
         bm25: BM25Retriever,
         alpha: float = 0.7,
         graph_retriever: GraphRetriever | None = None,
+        hype_retriever: HyPERetriever | None = None,
         fusion_mode: str = "rrf",
     ) -> None:
         self._dense = dense
         self._bm25 = bm25
         self.alpha = alpha
         self._graph = graph_retriever
+        self._hype = hype_retriever
         self._fusion_mode = fusion_mode
 
     # ── Public ─────────────────────────────────────────────────────────────────
@@ -61,6 +64,8 @@ class HybridRetriever:
         ]
         if self._graph is not None:
             tasks.append(asyncio.to_thread(self._graph.search, query.text, expansion))
+        if self._hype is not None:
+            tasks.append(asyncio.to_thread(self._hype.retrieve, query, expansion))
 
         gathered = await asyncio.gather(*tasks)
         dense_results = resolve_synthetic_questions(
@@ -71,24 +76,34 @@ class HybridRetriever:
             gathered[1],
             lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
         )
-        graph_results = (
-            resolve_synthetic_questions(
-                gathered[2],
+        graph_idx = 2
+        graph_results: list[SearchResult] = []
+        if self._graph is not None:
+            graph_results = resolve_synthetic_questions(
+                gathered[graph_idx],
                 lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
             )
-            if self._graph is not None
-            else []
-        )
+            graph_idx += 1
+        hype_results: list[SearchResult] = []
+        if self._hype is not None:
+            hype_results = gathered[graph_idx]
 
-        if self._fusion_mode == "weighted_linear" and self._graph is None:
+        if self._fusion_mode == "weighted_linear" and self._graph is None and self._hype is None:
             fused = weighted_linear_fuse(dense_results, bm25_results, alpha=self.alpha, top_k=top_k)
         else:
-            fused = rrf_fuse(dense_results, bm25_results, graph_results, top_k=top_k)
+            fused = rrf_fuse(
+                dense_results,
+                bm25_results,
+                graph_results,
+                hype_results,
+                top_k=top_k,
+            )
         logger.debug(
-            "Hybrid retrieval: %d dense + %d bm25 + %d graph → %d fused",
+            "Hybrid retrieval: %d dense + %d bm25 + %d graph + %d hype → %d fused",
             len(dense_results),
             len(bm25_results),
             len(graph_results),
+            len(hype_results),
             len(fused),
         )
         return fused
@@ -100,3 +115,7 @@ class HybridRetriever:
     @property
     def graph(self) -> GraphRetriever | None:
         return self._graph
+
+    @property
+    def hype(self) -> HyPERetriever | None:
+        return self._hype
