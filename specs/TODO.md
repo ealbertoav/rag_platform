@@ -1336,7 +1336,7 @@
 ---
 
 ### T-123 · Relevant Segment Extraction (RSE)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** After retrieval, merge adjacent relevant chunks into longer coherent segments — inspired by RAG_Techniques `relevant_segment_extraction.ipynb`. Complements `ParentChildChunker`.
 - **Inputs:** T-025 (retrieval pipeline), T-011 (`parent_child_chunker.py`)
 - **Outputs:** Post-retrieval step that expands retrieved child chunks into merged parent segments.

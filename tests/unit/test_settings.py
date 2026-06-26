@@ -95,6 +95,10 @@ class TestYamlDefaults:
         assert settings.retrieval.hype.enabled is False
         assert settings.retrieval.hype.n_questions == 3
 
+    def test_rse_defaults_from_yaml(self):
+        assert settings.retrieval.rse.enabled is False
+        assert settings.retrieval.rse.max_segment_tokens == 1500
+
 
 class TestEnvVarOverride:
     def test_llm_provider_override(self, monkeypatch: pytest.MonkeyPatch):
