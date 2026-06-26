@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from src.core.constants import CHUNK_INDEX_KEY, MERGED_CHUNK_IDS_KEY, RSE_MERGED_KEY
+from src.core.constants import (
+    CHUNK_INDEX_KEY,
+    CHUNK_PARENT_ID_KEY,
+    MERGED_CHUNK_IDS_KEY,
+    RSE_MERGED_KEY,
+)
 from src.domain.entities.chunk import Chunk
 from src.rag.compression.token_reducer import count_tokens
 
@@ -27,14 +32,25 @@ def _merge_run(run: list[Chunk]) -> Chunk:
     )
 
 
+def _merge_group(chunk: Chunk) -> tuple[str, str | None]:
+    """Group key for merge eligibility within a document.
+
+    Parent-level chunks (no ``parent_id``) merge only with other parents.
+    Child chunks merge only with siblings that share the same ``parent_id``.
+    """
+    parent_id = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
+    return chunk.document_id, parent_id if parent_id is not None else None
+
+
 def merge_adjacent(chunks: list[Chunk], max_segment_tokens: int) -> tuple[list[Chunk], int]:
     """Merge adjacent retrieved chunks from the same document into longer segments.
 
-    Chunks are eligible when they share a "document_id" and have consecutive
-    "metadata[" chunk_index"]" values.  Merged segments never exceed
-    *max_segment_tokens* (approximate token count).
+    Chunks are eligible when they share a document, belong to the same merge
+    group (parent-level or same ``parent_id`` for children), and have
+    consecutive ``metadata["chunk_index"]`` values.  Merged segments never
+    exceed *max_segment_tokens* (approximate token count).
 
-    Returns "(merged_chunks, merge_count)" where *merge_count* is the number
+    Returns ``(merged_chunks, merge_count)`` where *merge_count* is the number
     of chunk boundaries eliminated (input count minus output count).
     """
     if not chunks:
@@ -50,13 +66,13 @@ def merge_adjacent(chunks: list[Chunk], max_segment_tokens: int) -> tuple[list[C
         else:
             passthrough.append(chunk)
 
-    by_doc: dict[str, list[Chunk]] = defaultdict(list)
+    by_group: dict[tuple[str, str | None], list[Chunk]] = defaultdict(list)
     for chunk in mergeable:
-        by_doc[chunk.document_id].append(chunk)
+        by_group[_merge_group(chunk)].append(chunk)
 
     merged: list[Chunk] = []
 
-    for doc_chunks in by_doc.values():
+    for doc_chunks in by_group.values():
         doc_chunks.sort(key=lambda c: int(c.metadata[CHUNK_INDEX_KEY]))
         run: list[Chunk] = []
 

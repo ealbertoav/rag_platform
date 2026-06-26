@@ -11,11 +11,11 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.contextual_compression import ContextualCompressor
+from src.rag.enrichment.relevant_segment_extraction import merge_adjacent
 from src.rag.ranking.cross_encoder import CrossEncoder
 from src.rag.ranking.score_fusion import rrf_fuse
 from src.rag.retrieval.dense_retriever import DenseRetriever
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
-from src.rag.enrichment.relevant_segment_extraction import merge_adjacent
 from src.rag.retrieval.query_expansion import QueryExpander
 
 logger = logging.getLogger(__name__)

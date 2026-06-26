@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from src.core.constants import CHUNK_INDEX_KEY, MERGED_CHUNK_IDS_KEY, RSE_MERGED_KEY
+from src.core.constants import (
+    CHUNK_INDEX_KEY,
+    CHUNK_PARENT_ID_KEY,
+    MERGED_CHUNK_IDS_KEY,
+    RSE_MERGED_KEY,
+)
 from src.domain.entities.chunk import Chunk
 from src.rag.compression.token_reducer import count_tokens
 from src.rag.enrichment.relevant_segment_extraction import merge_adjacent
@@ -14,10 +19,13 @@ def _chunk(
     document_id: str = "doc-1",
     text: str = "segment text",
     chunk_index: int | None = 0,
+    parent_id: str | None = None,
 ) -> Chunk:
     metadata: dict = {}
     if chunk_index is not None:
         metadata[CHUNK_INDEX_KEY] = chunk_index
+    if parent_id is not None:
+        metadata[CHUNK_PARENT_ID_KEY] = parent_id
     return Chunk(id=chunk_id, document_id=document_id, text=text, metadata=metadata)
 
 
@@ -131,3 +139,43 @@ class TestMergeAdjacentMerging:
         # Merged segment sorts first (c5 seen at rank 0); anchor id is lowest chunk_index.
         assert merged[0].metadata[MERGED_CHUNK_IDS_KEY] == ["c4", "c5"]
         assert merged[1].id == "c0"
+
+
+class TestMergeAdjacentParentChild:
+    def test_parent_and_child_with_consecutive_index_not_merged(self):
+        chunks = [
+            _chunk("parent-0", text="full parent passage.", chunk_index=0),
+            _chunk("child-1", text="child slice.", chunk_index=1, parent_id="parent-0"),
+        ]
+        merged, merge_count = merge_adjacent(chunks, max_segment_tokens=500)
+        assert len(merged) == 2
+        assert merge_count == 0
+
+    def test_sibling_children_with_consecutive_index_merge(self):
+        chunks = [
+            _chunk("child-0", text="first child.", chunk_index=0, parent_id="parent-0"),
+            _chunk("child-1", text="second child.", chunk_index=1, parent_id="parent-0"),
+        ]
+        merged, merge_count = merge_adjacent(chunks, max_segment_tokens=500)
+        assert len(merged) == 1
+        assert merge_count == 1
+        assert merged[0].metadata[MERGED_CHUNK_IDS_KEY] == ["child-0", "child-1"]
+
+    def test_children_of_different_parents_not_merged(self):
+        chunks = [
+            _chunk("child-a", text="last of parent A.", chunk_index=2, parent_id="parent-a"),
+            _chunk("child-b", text="first of parent B.", chunk_index=3, parent_id="parent-b"),
+        ]
+        merged, merge_count = merge_adjacent(chunks, max_segment_tokens=500)
+        assert len(merged) == 2
+        assert merge_count == 0
+
+    def test_parent_level_chunks_still_merge(self):
+        chunks = [
+            _chunk("parent-0", text="section one.", chunk_index=0),
+            _chunk("parent-1", text="section two.", chunk_index=1),
+        ]
+        merged, merge_count = merge_adjacent(chunks, max_segment_tokens=500)
+        assert len(merged) == 1
+        assert merge_count == 1
+        assert merged[0].metadata[MERGED_CHUNK_IDS_KEY] == ["parent-0", "parent-1"]
