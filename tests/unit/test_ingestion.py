@@ -12,6 +12,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.services.ingestion_service import IngestionService
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult, content_hash
+from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -22,15 +23,6 @@ def _doc(content: str = "hello world " * 20, source: str = "test.md") -> Documen
 
 def _chunk(i: int = 0) -> Chunk:
     return Chunk(document_id="doc-1", text=f"chunk {i}")
-
-
-def _embedded_chunk(i: int = 0) -> Chunk:
-    return Chunk(
-        document_id="doc-1",
-        text=f"chunk {i}",
-        embedding=[float(i)] * 4,
-        sparse_vector={i + 1: 0.9},
-    )
 
 
 # ── content hash (tested through IngestionResult) ─────────────────────────────
@@ -56,7 +48,7 @@ class TestContentHashBehaviour:
     def test_hash_on_ingest_result(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("some content")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         result = pipeline.ingest_file(path)
         assert result.content_hash == content_hash(str(path.resolve()), "some content")
 
@@ -117,65 +109,68 @@ class TestIngestionService:
 # ── IngestionPipeline ──────────────────────────────────────────────────────────
 
 
-def _pipeline(
-    prepared_chunks: list[Chunk] | None = None,
-    metadata: MagicMock | None = None,
-) -> tuple[IngestionPipeline, MagicMock, MagicMock, MagicMock]:
-    service = MagicMock()
-    service.prepare.return_value = (
-        prepared_chunks if prepared_chunks is not None else [_embedded_chunk()]
-    )
-    vector_store = MagicMock()
-    bm25 = MagicMock()
-    pipeline = IngestionPipeline(
-        service=service,
-        vector_store=vector_store,
-        bm25=bm25,
-        metadata=metadata,
-    )
-    return pipeline, service, vector_store, bm25
-
-
 class TestIngestionPipelineFile:
     def test_returns_ingestion_result(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("# Hello\n\nSome content here.")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         result = pipeline.ingest_file(path)
         assert isinstance(result, IngestionResult)
 
     def test_chunk_count_in_result(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("# Hello\n\nSome content here.")
-        pipeline, *_ = _pipeline([_embedded_chunk(0), _embedded_chunk(1)])
+        pipeline, *_ = mock_ingestion_pipeline([embedded_chunk(0), embedded_chunk(1)])
         result = pipeline.ingest_file(path)
         assert result.chunk_count == 2
 
     def test_content_hash_set(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("some content")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         result = pipeline.ingest_file(path)
         assert len(result.content_hash) == 16
 
     def test_vector_store_upsert_called(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")
-        pipeline, _, vector_store, _ = _pipeline()
+        pipeline, _, vector_store, _ = mock_ingestion_pipeline()
         pipeline.ingest_file(path)
         vector_store.upsert.assert_called_once()
 
     def test_bm25_add_called(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")
-        pipeline, _, _, bm25 = _pipeline()
+        pipeline, _, _, bm25 = mock_ingestion_pipeline()
         pipeline.ingest_file(path)
         bm25.add.assert_called_once()
+
+    def test_augmentor_indexes_source_and_question_chunks(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("content")
+        source = embedded_chunk(0)
+        question = embedded_chunk(1)
+        augmentor = MagicMock()
+        augmentor.augment.return_value = [question]
+        metadata = MagicMock()
+        pipeline, _, vector_store, _ = mock_ingestion_pipeline(
+            [source], augmentor=augmentor, metadata=metadata
+        )
+        result = pipeline.ingest_file(path)
+        augmentor.augment.assert_called_once_with([source])
+        indexed = vector_store.upsert.call_args.args[0]
+        assert len(indexed) == 2
+        assert indexed[0].id == source.id
+        assert indexed[1].id == question.id
+        assert result.chunk_count == 1  # source chunks only in result
+        metadata.upsert_document.assert_called_once()
+        _, kwargs = metadata.upsert_document.call_args
+        assert kwargs["chunk_count"] == 1
 
     def test_no_upsert_when_no_chunks(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")
-        pipeline, _, vector_store, bm25 = _pipeline(prepared_chunks=[])
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(prepared_chunks=[])
         result = pipeline.ingest_file(path)
         vector_store.upsert.assert_not_called()
         bm25.add.assert_not_called()
@@ -183,14 +178,14 @@ class TestIngestionPipelineFile:
 
     def test_load_error_raises_ingestion_error(self, tmp_path: Path):
         path = tmp_path / "ghost.pdf"
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         with pytest.raises(IngestionError):
             pipeline.ingest_file(path)
 
     def test_unsupported_extension_raises(self, tmp_path: Path):
         path = tmp_path / "file.xyz"
         path.write_text("content")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         with pytest.raises(IngestionError):
             pipeline.ingest_file(path)
 
@@ -199,20 +194,20 @@ class TestIngestionPipelineDirectory:
     def test_returns_results_for_each_file(self, tmp_path: Path):
         for i in range(3):
             (tmp_path / f"doc{i}.md").write_text(f"# Doc {i}\n\nContent {i}.")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         results = pipeline.ingest_directory(tmp_path)
         assert len(results) == 3
 
     def test_empty_directory_returns_empty(self, tmp_path: Path):
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         assert pipeline.ingest_directory(tmp_path) == []
 
     def test_failed_file_recorded_not_raised(self, tmp_path: Path):
         (tmp_path / "good.md").write_text("# Good\n\nContent.")
         (tmp_path / "bad.xyz").write_text("unsupported")
-        pipeline, _, _, _ = _pipeline()
+        pipeline, _, _, _ = mock_ingestion_pipeline()
         # Inject a failure for the good file by making service raise
-        pipeline._service.prepare.side_effect = [RuntimeError("boom"), [_embedded_chunk()]]
+        pipeline._service.prepare.side_effect = [RuntimeError("boom"), [embedded_chunk()]]
         results = pipeline.ingest_directory(tmp_path)
         errors = [r for r in results if r.error is not None]
         assert len(errors) >= 1
@@ -220,12 +215,12 @@ class TestIngestionPipelineDirectory:
     def test_ignores_unsupported_extensions(self, tmp_path: Path):
         (tmp_path / "readme.md").write_text("# Hello")
         (tmp_path / "image.png").write_bytes(b"\x89PNG")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         results = pipeline.ingest_directory(tmp_path)
         assert len(results) == 1
 
     def test_save_indexes_calls_bm25_save(self):
-        pipeline, _, _, bm25 = _pipeline()
+        pipeline, _, _, bm25 = mock_ingestion_pipeline()
         pipeline.save_indexes()
         bm25.save.assert_called_once()
 
@@ -239,19 +234,38 @@ class TestIngestionPipelineDirectory:
             chunk_count=2,
         )
         metadata.get_chunk_ids.return_value = ["c1", "c2"]
-        pipeline, service, vector_store, bm25 = _pipeline(metadata=metadata)
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
         result = pipeline.ingest_file(path)
         assert result.skipped is True
         service.prepare.assert_not_called()
         vector_store.upsert.assert_not_called()
         bm25.add.assert_not_called()
         metadata.upsert_document.assert_called_once()
+        _, kwargs = metadata.upsert_document.call_args
+        assert kwargs["chunk_count"] == 2
+
+    def test_skip_preserves_source_chunk_count_with_augmented_ids(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("stable content")
+        metadata = MagicMock()
+        metadata.get_by_source.return_value = MagicMock(
+            id="doc-1",
+            content_hash=content_hash(str(path.resolve()), "stable content"),
+            chunk_count=1,
+        )
+        metadata.get_chunk_ids.return_value = ["c1", "synthetic-q1", "synthetic-q2"]
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        result = pipeline.ingest_file(path)
+        assert result.skipped is True
+        assert result.chunk_count == 1
+        service.prepare.assert_not_called()
+        vector_store.upsert.assert_not_called()
+        _, kwargs = metadata.upsert_document.call_args
+        assert kwargs["chunk_count"] == 1
 
 
 class TestIngestionPipelineFromSettings:
     def test_from_settings_builds_pipeline(self):
-        from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
-
         with (
             patch("src.core.settings.settings") as mock_settings,
             patch("src.rag.chunking.get_chunker") as mock_chunker,
@@ -265,6 +279,7 @@ class TestIngestionPipelineFromSettings:
                 chunk_size=512,
                 overlap=64,
                 contextual_headers=MagicMock(enabled=False),
+                augmentation=MagicMock(enabled=False),
             )
             mock_settings.metadata = MagicMock(enabled=True)
             mock_settings.neo4j = MagicMock(enabled=False)

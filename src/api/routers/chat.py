@@ -9,10 +9,15 @@ from pydantic import BaseModel, Field
 
 from src.api.dependencies import get_agent_pipeline, get_chat_pipeline
 from src.api.schemas.agent import AgentChatResponse
+from src.api.security import require_api_key
 from src.rag.pipelines.agent_pipeline import AgentPipeline
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(
+    prefix="/chat",
+    tags=["chat"],
+    dependencies=[Depends(require_api_key)],
+)
 
 _MAX_AGENT_ITERATIONS = 5
 

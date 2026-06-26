@@ -16,6 +16,9 @@ CHUNK_PARENT_ID_KEY = "parent_id"
 CHUNK_HASH_KEY = "content_hash"
 CHUNK_INDEX_KEY = "chunk_index"
 CHUNK_RAW_TEXT_KEY = "raw_text"
+CHUNK_TYPE_KEY = "type"
+CHUNK_TYPE_SYNTHETIC = "synthetic_question"
+SOURCE_CHUNK_ID_KEY = "source_chunk_id"
 
 # ── Supported document types ───────────────────────────────────────────────────
 SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
@@ -35,7 +38,8 @@ RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 CHUNKS_DIR = DATA_DIR / "chunks"
 EXPORTS_DIR = DATA_DIR / "exports"
-BM25_INDEX_PATH = PROCESSED_DIR / "bm25_index.pkl"
+BM25_INDEX_PATH = PROCESSED_DIR / "bm25_index.json"
+BM25_LEGACY_PICKLE_PATH = PROCESSED_DIR / "bm25_index.pkl"
 METADATA_DB_PATH = PROCESSED_DIR / "metadata.db"
 
 MODELS_DIR = ROOT / "models"

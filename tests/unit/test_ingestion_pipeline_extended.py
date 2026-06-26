@@ -7,50 +7,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.domain.entities.chunk import Chunk
 from src.domain.repositories.metadata_repository import DocumentRecord
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
-
-
-def _embedded_chunk(i: int = 0) -> Chunk:
-    return Chunk(
-        document_id="doc-1",
-        text=f"chunk {i}",
-        embedding=[float(i)] * 4,
-        sparse_vector={i + 1: 0.9},
-    )
-
-
-def _pipeline(
-    prepared_chunks: list[Chunk] | None = None,
-    metadata: MagicMock | None = None,
-    graph_indexer: MagicMock | None = None,
-) -> tuple[IngestionPipeline, MagicMock, MagicMock, MagicMock]:
-    service = MagicMock()
-    service.prepare.return_value = (
-        prepared_chunks if prepared_chunks is not None else [_embedded_chunk()]
-    )
-    vector_store = MagicMock()
-    bm25 = MagicMock()
-    pipeline = IngestionPipeline(
-        service=service,
-        vector_store=vector_store,
-        bm25=bm25,
-        metadata=metadata,
-        graph_indexer=graph_indexer,
-    )
-    return pipeline, service, vector_store, bm25
+from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
 
 
 class TestDiscoverViaIngestDirectory:
     def test_unsupported_files_only_returns_empty(self, tmp_path: Path):
         (tmp_path / "data.bin").write_bytes(b"\x00")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         assert pipeline.ingest_directory(tmp_path) == []
 
     def test_supported_file_is_discovered(self, tmp_path: Path):
         (tmp_path / "doc.md").write_text("# Hi")
-        pipeline, *_ = _pipeline()
+        pipeline, *_ = mock_ingestion_pipeline()
         results = pipeline.ingest_directory(tmp_path)
         assert len(results) == 1
 
@@ -66,7 +36,7 @@ class TestIngestionMetadataAndReingest:
             chunk_count=1,
         )
         metadata.get_chunk_ids.return_value = ["old-chunk-1"]
-        pipeline, service, vector_store, bm25 = _pipeline(metadata=metadata)
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
         path.write_text("version two")
         result = pipeline.ingest_file(path)
         assert result.skipped is False
@@ -80,7 +50,9 @@ class TestIngestionMetadataAndReingest:
         path.write_text("content")
         metadata = MagicMock()
         metadata.get_by_source.return_value = None
-        pipeline, _, vector_store, bm25 = _pipeline(prepared_chunks=[], metadata=metadata)
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(
+            prepared_chunks=[], metadata=metadata
+        )
         result = pipeline.ingest_file(path)
         assert result.chunk_count == 0
         vector_store.upsert.assert_not_called()
@@ -92,14 +64,15 @@ class TestIngestionMetadataAndReingest:
         path.write_text("content")
         metadata = MagicMock()
         metadata.get_by_source.return_value = None
-        chunks = [_embedded_chunk(0), _embedded_chunk(1)]
-        pipeline, _, _, _ = _pipeline(prepared_chunks=chunks, metadata=metadata)
+        chunks = [embedded_chunk(0), embedded_chunk(1)]
+        pipeline, _, _, _ = mock_ingestion_pipeline(prepared_chunks=chunks, metadata=metadata)
         pipeline.ingest_file(path)
-        args, _kwargs = metadata.upsert_document.call_args
+        args, kwargs = metadata.upsert_document.call_args
         assert args[2] == [c.id for c in chunks]
+        assert kwargs["chunk_count"] == len(chunks)
 
     def test_list_documents_without_metadata_returns_empty(self):
-        pipeline, *_ = _pipeline(metadata=None)
+        pipeline, *_ = mock_ingestion_pipeline(metadata=None)
         assert pipeline.list_documents() == []
 
     def test_list_documents_delegates_to_metadata(self):
@@ -113,7 +86,7 @@ class TestIngestionMetadataAndReingest:
             updated_at=datetime.now(UTC),
         )
         metadata.list_documents.return_value = [record]
-        pipeline, *_ = _pipeline(metadata=metadata)
+        pipeline, *_ = mock_ingestion_pipeline(metadata=metadata)
         assert pipeline.list_documents() == [record]
 
 
@@ -122,12 +95,12 @@ class TestGraphIndexing:
         path = tmp_path / "doc.md"
         path.write_text("content")
         graph = MagicMock()
-        pipeline, _, _, _ = _pipeline(graph_indexer=graph)
+        pipeline, _, _, _ = mock_ingestion_pipeline(graph_indexer=graph)
         pipeline.ingest_file(path)
         graph.index_chunks.assert_called_once()
 
     def test_remove_document_chunks_without_metadata_is_noop(self):
-        pipeline, _, vector_store, bm25 = _pipeline(metadata=None)
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(metadata=None)
         pipeline._remove_document_chunks("doc-id")  # noqa: SLF001
         vector_store.delete.assert_not_called()
         bm25.remove_by_ids.assert_not_called()
@@ -137,7 +110,7 @@ class TestGraphIndexing:
         path.write_text("content")
         graph = MagicMock()
         graph.index_chunks.side_effect = RuntimeError("neo4j down")
-        pipeline, _, vector_store, bm25 = _pipeline(graph_indexer=graph)
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(graph_indexer=graph)
         result = pipeline.ingest_file(path)
         assert result.chunk_count == 1
         vector_store.upsert.assert_called_once()

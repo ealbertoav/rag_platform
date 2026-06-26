@@ -8,6 +8,9 @@ chunking:
   contextual_headers:
     enabled: false             # prepend doc/section/page to embedded text (T-120)
     exclude_from_llm_context: true  # use raw_text (no header) in generation context
+  augmentation:
+    enabled: false               # generate synthetic questions per chunk at ingest (T-121)
+    n_questions: 3
 
 retrieval:
   top_k_dense: 50

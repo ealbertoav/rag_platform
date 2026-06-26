@@ -255,11 +255,54 @@ class TestBM25IndexErrors:
         ):
             idx.save()
 
-    def test_load_corrupt_pickle_raises(self, tmp_path: Path):
-        path = tmp_path / "bm25.pkl"
-        path.write_bytes(b"not-a-pickle")
+    def test_load_corrupt_json_raises(self, tmp_path: Path):
+        path = tmp_path / "bm25.json"
+        path.write_text("not-json", encoding="utf-8")
         with pytest.raises(VectorStoreError, match="Cannot load"):
             BM25Index(index_path=path).load()
+
+    def test_migrates_legacy_pickle_to_json(self, tmp_path: Path):
+        import pickle
+
+        legacy = tmp_path / "bm25.pkl"
+        json_path = tmp_path / "bm25.json"
+        payload = {"chunks": _CORPUS}
+        legacy.write_bytes(pickle.dumps(payload))
+
+        idx = BM25Index.load_or_create(json_path)
+        assert idx.size == len(_CORPUS)
+        assert json_path.exists()
+        assert json_path.read_text(encoding="utf-8").startswith("{")
+
+    def test_concurrent_pickle_migration_is_safe(self, tmp_path: Path):
+        import json
+        import pickle
+        import threading
+
+        legacy = tmp_path / "bm25.pkl"
+        json_path = tmp_path / "bm25.json"
+        legacy.write_bytes(pickle.dumps({"chunks": _CORPUS}))
+
+        results: list[int] = []
+        errors: list[Exception] = []
+
+        def migrate() -> None:
+            try:
+                idx = BM25Index.load_or_create(json_path)
+                results.append(idx.size)
+            except Exception as exc:  # pragma: no cover - test assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=migrate) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors
+        assert all(size == len(_CORPUS) for size in results)
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert len(payload["chunks"]) == len(_CORPUS)
 
     def test_chunks_property_returns_snapshot(self):
         idx = BM25Index()

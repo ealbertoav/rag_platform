@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 
@@ -9,6 +10,9 @@ from src.domain.entities.query import Query
 from src.domain.repositories.llm_repository import LLMRepository
 from src.domain.services.retrieval_service import RetrievalResult, RetrievalService
 from src.observability.metrics import record_retrieval
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25 import BM25Index
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
@@ -67,12 +71,16 @@ class RetrievalPipeline:
     def from_settings(
         cls,
         llm: LLMRepository | None = None,
+        bm25_index: BM25Index | None = None,
     ) -> RetrievalPipeline:
         """Build the full retrieval pipeline from settings.
 
         *llm* can be injected by the caller (e.g. "ChatPipeline.from_settings"
         reuses the same model instance).  When omitted, "LlamaCppProvider"
         is created from settings so the pipeline is fully self-contained.
+
+        *bm25_index* can be shared with "IngestionPipeline" so API ingest
+        updates are visible to retrieval without reloading from disk.
         """
         from src.infrastructure.embeddings import get_embedding_provider
         from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
@@ -91,7 +99,7 @@ class RetrievalPipeline:
         cfg = settings.retrieval
         embedder = get_embedding_provider()
         vector_store = QdrantVectorStore.from_settings()
-        bm25_index = BM25Index.load_or_create()
+        bm25_index = bm25_index or BM25Index.load_or_create()
         bm25 = BM25Retriever(bm25_index)
 
         dense = DenseRetriever(embedder=embedder, vector_store=vector_store)

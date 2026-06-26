@@ -8,12 +8,16 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from pathlib import Path
 from string import Template
+from typing import TYPE_CHECKING
 
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 from src.rag.ranking.score_fusion import rrf_fuse
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25 import BM25Index
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +126,15 @@ class AgentPipeline:
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls, max_iterations: int = _DEFAULT_MAX_ITERATIONS) -> AgentPipeline:
-        return cls(pipeline=ChatPipeline.from_settings(), max_iterations=max_iterations)
+    def from_settings(
+        cls,
+        max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+        bm25_index: BM25Index | None = None,
+    ) -> AgentPipeline:
+        return cls(
+            pipeline=ChatPipeline.from_settings(bm25_index=bm25_index),
+            max_iterations=max_iterations,
+        )
 
     # ── Internals ──────────────────────────────────────────────────────────────
 

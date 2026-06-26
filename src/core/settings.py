@@ -168,6 +168,9 @@ class APISettings(BaseModel):
     port: int = Field(default=8000, ge=1, le=65535)
     reload: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    api_key: SecretStr = SecretStr("")
+    max_upload_bytes: int = Field(default=10_485_760, gt=0)  # 10 MiB
+    ingest_allowed_roots: list[str] = Field(default_factory=lambda: [str(ROOT / "data" / "raw")])
 
 
 class LoggingSettings(BaseModel):
@@ -182,6 +185,11 @@ class ContextualHeadersSettings(BaseModel):
     exclude_from_llm_context: bool = True
 
 
+class AugmentationSettings(BaseModel):
+    enabled: bool = False
+    n_questions: int = Field(default=3, gt=0)
+
+
 class ChunkingSettings(BaseModel):
     strategy: Literal["recursive", "semantic", "parent_child"] = "recursive"
     chunk_size: int = Field(default=500, gt=0)
@@ -192,6 +200,7 @@ class ChunkingSettings(BaseModel):
     parent_chunk_size: int = Field(default=1500, gt=0)
     child_chunk_size: int = Field(default=400, gt=0)
     contextual_headers: ContextualHeadersSettings = Field(default_factory=ContextualHeadersSettings)
+    augmentation: AugmentationSettings = Field(default_factory=AugmentationSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────

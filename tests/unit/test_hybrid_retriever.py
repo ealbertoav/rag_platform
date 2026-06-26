@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.core.constants import CHUNK_TYPE_KEY, CHUNK_TYPE_SYNTHETIC, SOURCE_CHUNK_ID_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
@@ -95,6 +96,28 @@ class TestHybridRetrieverAsync:
     async def test_empty_results_returns_empty(self):
         hr = _retriever(dense_results=[], bm25_results=[])
         assert await hr.retrieve(_query(), top_k=5) == []
+
+    @pytest.mark.asyncio
+    async def test_resolves_synthetic_question_to_source(self):
+        source = _chunk(0)
+        question = Chunk(
+            id="q0",
+            document_id="doc",
+            text="What is chunk 0?",
+            metadata={
+                CHUNK_TYPE_KEY: CHUNK_TYPE_SYNTHETIC,
+                SOURCE_CHUNK_ID_KEY: source.id,
+            },
+        )
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = []
+        bm25_mock.get_by_id.return_value = source
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(question, 0.95)]
+        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, alpha=0.7)
+        results = await hr.retrieve(_query(), top_k=3)
+        assert len(results) == 1
+        assert results[0][0].id == source.id
 
 
 # ── retrieve_sync ─────────────────────────────────────────────────────────────

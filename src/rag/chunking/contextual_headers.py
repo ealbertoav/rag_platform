@@ -17,7 +17,7 @@ class _Chunker(Protocol):
 
 
 def load_header_template(path: Path | None = None) -> Template:
-    """Load the contextual header line template from disk."""
+    """Load the contextual header line template from the disk."""
     template_path = path or _TEMPLATE_PATH
     return Template(template_path.read_text(encoding="utf-8").strip())
 
@@ -70,8 +70,20 @@ def prepend_headers(
     return f"{header}\n{chunk.text}"
 
 
-def chunk_context_text(chunk: Chunk) -> str:
-    """Return text for LLM context, preferring raw text without CCH prefix."""
+def chunk_context_text(
+    chunk: Chunk,
+    *,
+    exclude_from_llm_context: bool | None = None,
+) -> str:
+    """Return text for LLM context, optionally stripping the CCH prefix."""
+    if exclude_from_llm_context is None:
+        from src.core.settings import settings
+
+        exclude_from_llm_context = settings.chunking.contextual_headers.exclude_from_llm_context
+
+    if not exclude_from_llm_context:
+        return chunk.text
+
     raw = chunk.metadata.get(CHUNK_RAW_TEXT_KEY)
     return raw if isinstance(raw, str) else chunk.text
 

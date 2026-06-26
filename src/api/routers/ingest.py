@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from src.api.dependencies import get_ingestion_pipeline
+from src.api.security import (
+    read_upload_bounded,
+    require_api_key,
+    validate_ingest_path,
+    validate_upload_filename,
+)
 from src.core.exceptions import IngestionError
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
 
-router = APIRouter(prefix="/ingest", tags=["ingest"])
+router = APIRouter(
+    prefix="/ingest",
+    tags=["ingest"],
+    dependencies=[Depends(require_api_key)],
+)
 
 
 class IngestPathRequest(BaseModel):
@@ -28,8 +39,8 @@ async def ingest_path(
     body: IngestPathRequest,
     pipeline: IngestionPipeline = Depends(get_ingestion_pipeline),
 ) -> IngestResponse:
-    """Ingest a local file or directory by path."""
-    source = Path(body.source)
+    """Ingest a file or directory under configured allowed roots."""
+    source = validate_ingest_path(Path(body.source))
     if not source.exists():
         raise HTTPException(status_code=404, detail=f"Path not found: {body.source}")
     try:
@@ -60,20 +71,24 @@ async def ingest_upload(
     pipeline: IngestionPipeline = Depends(get_ingestion_pipeline),
 ) -> IngestResponse:
     """Ingest an uploaded file (saved to a temp path, then ingested)."""
-    import tempfile
-
-    suffix = Path(file.filename or "upload").suffix
+    safe_name = validate_upload_filename(file.filename)
+    suffix = Path(safe_name).suffix
+    tmp_path: Path | None = None
     try:
+        payload = await read_upload_bounded(file)
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(await file.read())
-            tmp_path = Path(tmp.name)
-        result = pipeline.ingest_file(tmp_path)
-        tmp_path.unlink(missing_ok=True)
+            tmp.write(payload)
+            upload_path = Path(tmp.name)
+        tmp_path = upload_path
+        result = pipeline.ingest_file(upload_path)
         return IngestResponse(
             status="ok",
-            source=file.filename or tmp_path.name,
+            source=safe_name,
             chunk_count=result.chunk_count,
             content_hash=result.content_hash,
         )
     except IngestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)

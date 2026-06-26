@@ -87,6 +87,10 @@ class TestYamlDefaults:
         assert settings.chunking.contextual_headers.enabled is False
         assert settings.chunking.contextual_headers.exclude_from_llm_context is True
 
+    def test_augmentation_defaults_from_yaml(self):
+        assert settings.chunking.augmentation.enabled is False
+        assert settings.chunking.augmentation.n_questions == 3
+
 
 class TestEnvVarOverride:
     def test_llm_provider_override(self, monkeypatch: pytest.MonkeyPatch):

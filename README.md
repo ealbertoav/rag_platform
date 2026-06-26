@@ -14,6 +14,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 - [Configuration](#configuration)
 - [Usage](#usage)
   - [Ingest Documents](#ingest-documents)
+    - [Optional Chunk Enrichment](#optional-chunk-enrichment)
   - [Start the API Server](#start-the-api-server)
   - [Chat](#chat)
   - [Run Evaluations](#run-evaluations)
@@ -215,6 +216,12 @@ RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
 RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
 
+# Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
+CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
+CHUNKING__CONTEXTUAL_HEADERS__EXCLUDE_FROM_LLM_CONTEXT=true
+CHUNKING__AUGMENTATION__ENABLED=false
+CHUNKING__AUGMENTATION__N_QUESTIONS=3
+
 # Neo4j Graph RAG (disabled by default)
 NEO4J__ENABLED=false
 NEO4J__URI=bolt://localhost:7687
@@ -225,6 +232,11 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 # SQLite metadata store (ingestion history + content-hash dedup)
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
+
+# API security (optional — local dev leaves API key empty)
+API__API_KEY=                          # when set, require X-API-Key on /ingest, /chat, /evals
+API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
+# API__INGEST_ALLOWED_ROOTS='["data/raw"]'  # JSON list; /ingest/path restricted to these dirs
 ```
 
 | File | Purpose |
@@ -233,7 +245,7 @@ METADATA__DB_PATH=data/processed/metadata.db
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, hybrid fusion (`rrf` / `weighted_linear`), `top_k_final`, reranker |
+| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -259,6 +271,11 @@ uv run python scripts/ingest.py --list
 
 Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes old chunks and upserts new ones. Deduplication uses a content hash stored in the SQLite metadata store (`data/processed/metadata.db` by default).
 
+**Security notes:**
+- `POST /ingest/path` only reads files under `api.ingest_allowed_roots` (default: `data/raw`). It cannot ingest arbitrary server paths such as `/etc/passwd`.
+- `POST /ingest/upload` reads uploads in bounded chunks (`api.max_upload_bytes`, default 10 MiB) and accepts only supported extensions.
+- Set `API__API_KEY` to require an `X-API-Key` header on `/ingest`, `/chat`, and `/evals/run`. `/health` and `/metrics` stay public.
+
 #### Ingestion Flow
 
 ```mermaid
@@ -269,12 +286,66 @@ flowchart LR
     CH -->|recursive| RC["Recursive<br/>Splitter"]
     CH -->|semantic| SC["Semantic<br/>Splitter"]
     CH -->|parent_child| PC["Parent-Child<br/>Splitter"]
-    RC & SC & PC --> EM["BGE-M3<br/>Embed Both<br/>dense + sparse"]
-    EM --> QD[("Qdrant<br/>HNSW + Sparse")]
-    EM --> BM[("BM25<br/>In-Memory")]
-    EM --> META[("SQLite<br/>metadata.db")]
+    RC & SC & PC --> CCH{"Contextual<br/>Headers?<br/>(optional)"}
+    CCH -->|enabled| HDR["Prepend doc/section/page<br/>to embedded text"]
+    CCH -->|disabled| EM["Embed Both<br/>dense + sparse"]
+    HDR --> EM
+    EM --> AUG{"Synthetic<br/>Questions?<br/>(optional)"}
+    AUG -->|enabled| SQ["LLM → N questions/chunk<br/>embed + index separately"]
+    AUG -->|disabled| IDX
+    EM --> IDX
+    SQ --> IDX
+    IDX["Upsert indexes"] --> QD[("Qdrant<br/>HNSW + Sparse")]
+    IDX --> BM[("BM25<br/>In-Memory")]
+    IDX --> META[("SQLite<br/>metadata.db")]
     EM -->|neo4j.enabled| GR["Entity Extractor<br/>→ Neo4j"]
     QD & BM & META --> DONE["✅ Indexed"]
+```
+
+#### Optional Chunk Enrichment
+
+Two optional ingestion techniques live under `chunking` in `configs/retrieval.yaml`. Both are **off by default** — enabling either leaves behavior unchanged when the flag stays `false`.
+
+##### Contextual Chunk Headers (T-120)
+
+Prepends document title, section, and page metadata to each chunk **before embedding**, improving recall without changing the text shown to the generator (by default).
+
+```yaml
+# configs/retrieval.yaml
+chunking:
+  contextual_headers:
+    enabled: false                    # set true to prepend headers at ingest
+    exclude_from_llm_context: true      # true → generation uses raw chunk body
+```
+
+Example embedded text:
+
+```
+[Document: Annual Report 2023 | Section: Revenue | Page: 42]
+Revenue grew 12% year over year.
+```
+
+Headers are derived from loader metadata (`filename`, `section`, `page`). The original body is preserved in `Chunk.metadata["raw_text"]` for retrieval context and compression.
+
+##### Document Augmentation — Synthetic Questions (T-121)
+
+At ingest time, the LLM generates up to **N questions per chunk**. Each question is embedded and indexed in Qdrant + BM25 as a separate point (`metadata.type = synthetic_question`, `metadata.source_chunk_id` links back to the source chunk). At retrieval, question hits are resolved to their source chunks before RRF fusion.
+
+```yaml
+# configs/retrieval.yaml
+chunking:
+  augmentation:
+    enabled: false       # set true to generate questions during ingest
+    n_questions: 3
+```
+
+**Trade-offs:** augmentation adds one LLM call per chunk at ingest (failures on individual chunks are logged and skipped). Re-ingest after toggling these flags — existing indexes are not updated retroactively.
+
+```bash
+# Enable both via environment
+CHUNKING__CONTEXTUAL_HEADERS__ENABLED=true
+CHUNKING__AUGMENTATION__ENABLED=true
+CHUNKING__AUGMENTATION__N_QUESTIONS=3
 ```
 
 ### Start the API Server
@@ -947,7 +1018,10 @@ rag_implementation/
 │   │   └── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
+│   │   └── ingestion/          # chunk_header_template · generate_chunk_questions
 │   ├── rag/                    # Chunkers, retrievers, pipelines
+│   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
+│   │   ├── enrichment/         # Document augmentation (synthetic questions)
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
@@ -987,6 +1061,8 @@ pre-commit install
 LLM__TEMPERATURE=0.0
 RETRIEVAL__HYBRID_FUSION=rrf
 RETRIEVAL__TOP_K_FINAL=5
+CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
+CHUNKING__AUGMENTATION__ENABLED=false
 NEO4J__ENABLED=true
 EMBEDDINGS__DEVICE=cpu
 ```
@@ -1064,6 +1140,8 @@ flowchart TD
 ```
 
 **Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank and compression.
+
+When **document augmentation** is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
 

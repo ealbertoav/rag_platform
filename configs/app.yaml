@@ -8,3 +8,7 @@ api:
   port: 8000
   reload: true
   cors_origins: ["*"]
+  api_key: ""                    # set + send X-API-Key header to protect /ingest, /chat, /evals
+  max_upload_bytes: 10485760     # 10 MiB upload cap for POST /ingest/upload
+  ingest_allowed_roots:
+    - data/raw                   # POST /ingest/path may only read under these directories

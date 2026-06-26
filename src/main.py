@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,25 @@ from src.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
+AsgiApp = Callable[..., Awaitable[Any]]
+
+
+def _cors_middleware(
+    asgi_app: AsgiApp,
+    /,
+    allow_origins: Sequence[str],
+    allow_credentials: bool,
+    allow_methods: Sequence[str],
+    allow_headers: Sequence[str],
+) -> AsgiApp:
+    return CORSMiddleware(
+        asgi_app,
+        allow_origins=allow_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=allow_methods,
+        allow_headers=allow_headers,
+    )
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
@@ -22,13 +42,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting RAG platform (lifespan startup)")
 
     # Build pipeline objects — actual model loading is lazy (on first request).
+    from src.infrastructure.vectordb.bm25 import BM25Index
     from src.rag.pipelines.agent_pipeline import AgentPipeline
     from src.rag.pipelines.chat_pipeline import ChatPipeline
     from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
 
-    _app.state.chat_pipeline = ChatPipeline.from_settings()
-    _app.state.agent_pipeline = AgentPipeline.from_settings()
-    _app.state.ingestion_pipeline = IngestionPipeline.from_settings()
+    bm25 = BM25Index.load_or_create()
+    _app.state.bm25_index = bm25
+    _app.state.chat_pipeline = ChatPipeline.from_settings(bm25_index=bm25)
+    _app.state.agent_pipeline = AgentPipeline.from_settings(bm25_index=bm25)
+    _app.state.ingestion_pipeline = IngestionPipeline.from_settings(bm25=bm25)
     _app.state.models_loaded = True
 
     logger.info("Pipelines initialised — ready to serve")
@@ -49,8 +72,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    _app.add_middleware(  # type: ignore[arg-type]
-        CORSMiddleware,
+    _app.add_middleware(
+        _cors_middleware,
         allow_origins=settings.api.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],

@@ -108,3 +108,22 @@ class TestChunkContextText:
     def test_falls_back_to_chunk_text(self):
         chunk = Chunk(document_id="d1", text="No header applied.")
         assert chunk_context_text(chunk) == "No header applied."
+
+    def test_exclude_false_returns_prefixed_text(self):
+        chunk = Chunk(
+            document_id="d1",
+            text="[Document: x]\nActual content.",
+            metadata={CHUNK_RAW_TEXT_KEY: "Actual content."},
+        )
+        assert (
+            chunk_context_text(chunk, exclude_from_llm_context=False)
+            == "[Document: x]\nActual content."
+        )
+
+    def test_exclude_true_strips_header(self):
+        chunk = Chunk(
+            document_id="d1",
+            text="[Document: x]\nActual content.",
+            metadata={CHUNK_RAW_TEXT_KEY: "Actual content."},
+        )
+        assert chunk_context_text(chunk, exclude_from_llm_context=True) == "Actual content."
