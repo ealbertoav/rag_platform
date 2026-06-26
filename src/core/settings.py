@@ -128,6 +128,11 @@ class HyPESettings(BaseModel):
     n_questions: int = Field(default=3, gt=0)
 
 
+class RSESettings(BaseModel):
+    enabled: bool = False
+    max_segment_tokens: int = Field(default=1500, gt=0)
+
+
 class RetrievalSettings(BaseModel):
     top_k_dense: int = 50
     top_k_final: int = 5
@@ -135,6 +140,7 @@ class RetrievalSettings(BaseModel):
     hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0)
     hybrid_fusion: Literal["rrf", "weighted_linear"] = "rrf"
     hype: HyPESettings = Field(default_factory=HyPESettings)
+    rse: RSESettings = Field(default_factory=RSESettings)
 
 
 class Neo4jSettings(BaseModel):

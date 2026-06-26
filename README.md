@@ -60,7 +60,8 @@ flowchart LR
         DS --> RF["RRF Fusion<br/>Top 50"]
         BS --> RF
         RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
-        RR --> CC["Contextual Compression<br/>≤ 1500 tokens"]
+        RR --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
+        RSE --> CC["Contextual Compression<br/>≤ 1500 tokens"]
     end
 
     subgraph GENERATE["💬 Generation Pipeline"]
@@ -217,6 +218,8 @@ RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
 RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
 RETRIEVAL__HYPE__ENABLED=false            # HyPE question-question matching (T-122)
 RETRIEVAL__HYPE__N_QUESTIONS=3
+RETRIEVAL__RSE__ENABLED=false             # merge adjacent retrieved chunks (T-123)
+RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
@@ -247,7 +250,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, RSE, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -1055,7 +1058,7 @@ rag_implementation/
 │   │   └── ingestion/          # chunk_header_template · generate_chunk_questions
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
-│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE indexer (T-122)
+│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE indexer (T-122) · RSE (T-123)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
@@ -1097,6 +1100,7 @@ LLM__TEMPERATURE=0.0
 RETRIEVAL__HYBRID_FUSION=rrf
 RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYPE__ENABLED=false
+RETRIEVAL__RSE__ENABLED=false
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 NEO4J__ENABLED=true
@@ -1169,7 +1173,8 @@ flowchart TD
     GS -->|entity-matched chunks| RRF
 
     RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
-    RR --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
+    RR --> RSE["RSE · Merge Adjacent<br/>consecutive chunk_index<br/>(optional · T-123)"]
+    RSE --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
     CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
     GEN --> ANS["💬 Streamed Answer<br/>+ source chunk IDs"]
 
@@ -1177,11 +1182,32 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
 When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `hype_question` vectors, resolves hits to source chunks, and merges them into RRF alongside dense, BM25, and graph results. Standard dense search excludes HyPE points so passage and question embeddings do not compete in the same index query.
+
+##### Relevant Segment Extraction (T-123)
+
+RSE runs **after reranking** and **before contextual compression**. It merges adjacent retrieved chunks from the same document when their `metadata["chunk_index"]` values are consecutive, producing longer coherent segments for the LLM. Chunks from different documents are never merged. Merged segments are capped by `max_segment_tokens`.
+
+RSE is most useful with `chunking.strategy: parent_child`, which tags every child chunk with a `chunk_index` and `parent_id`. It adds no extra LLM or API calls at query time.
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  rse:
+    enabled: false              # set true to merge adjacent chunks after rerank
+    max_segment_tokens: 1500
+```
+
+```bash
+RETRIEVAL__RSE__ENABLED=true
+RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
+```
+
+Merged segments record source chunk IDs in `metadata["rse_source_chunk_ids"]`. OTel span `retrieval.rse` records `merge_count` (chunks consolidated).
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
 
@@ -1244,7 +1270,8 @@ gantt
     retrieval.embedding    :180, 380
     retrieval.hybrid       :380, 780
     retrieval.reranking    :780, 1080
-    retrieval.compression  :1080, 1280
+    retrieval.rse          :1080, 1130
+    retrieval.compression  :1130, 1280
 
     section generation
     generation.llm         :1280, 2300

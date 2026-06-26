@@ -150,5 +150,7 @@ class RetrievalPipeline:
             top_k_retrieval=cfg.top_k_dense,
             top_k_rerank=settings.reranker.top_k,
             top_k_final=cfg.top_k_final,
+            rse_enabled=cfg.rse.enabled,
+            rse_max_segment_tokens=cfg.rse.max_segment_tokens,
         )
         return cls(service=service)
