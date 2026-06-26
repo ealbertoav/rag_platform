@@ -60,7 +60,8 @@ flowchart LR
         DS --> RF["RRF Fusion<br/>Top 50"]
         BS --> RF
         RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
-        RR --> CC["Contextual Compression<br/>≤ 1500 tokens"]
+        RR --> RSE["RSE<br/>Merge adjacent segments<br/>(optional · T-123)"]
+        RSE --> CC["Contextual Compression<br/>≤ 1500 tokens"]
     end
 
     subgraph GENERATE["💬 Generation Pipeline"]
@@ -217,6 +218,8 @@ RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
 RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
 RETRIEVAL__HYPE__ENABLED=false            # HyPE question-question matching (T-122)
 RETRIEVAL__HYPE__N_QUESTIONS=3
+RETRIEVAL__RSE__ENABLED=false             # merge adjacent retrieved chunks (T-123)
+RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
@@ -247,7 +250,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, RSE, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -1055,7 +1058,7 @@ rag_implementation/
 │   │   └── ingestion/          # chunk_header_template · generate_chunk_questions
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
-│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE indexer (T-122)
+│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · RSE (T-123)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
@@ -1097,6 +1100,8 @@ LLM__TEMPERATURE=0.0
 RETRIEVAL__HYBRID_FUSION=rrf
 RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYPE__ENABLED=false
+RETRIEVAL__RSE__ENABLED=false
+RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 NEO4J__ENABLED=true
@@ -1169,7 +1174,8 @@ flowchart TD
     GS -->|entity-matched chunks| RRF
 
     RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
-    RR --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
+    RR --> RSE["RSE<br/>Merge adjacent chunks<br/>(optional · T-123)"]
+    RSE --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
     CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
     GEN --> ANS["💬 Streamed Answer<br/>+ source chunk IDs"]
 
@@ -1182,6 +1188,27 @@ flowchart TD
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
 When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `hype_question` vectors, resolves hits to source chunks, and merges them into RRF alongside dense, BM25, and graph results. Standard dense search excludes HyPE points so passage and question embeddings do not compete in the same index query.
+
+##### Relevant Segment Extraction — RSE (T-123)
+
+RSE is a **query-time** post-reranking step (not ingest-time). When enabled, adjacent retrieved chunks from the same document — those with consecutive `metadata.chunk_index` values — are merged into longer coherent segments before contextual compression. Merged segments respect `max_segment_tokens` and never combine chunks from different documents.
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  rse:
+    enabled: false              # set true to merge adjacent chunks after reranking
+    max_segment_tokens: 1500
+```
+
+**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (all set `chunk_index`). Especially useful when reranking returns several neighboring chunks from the same passage — RSE reduces fragmentation sent to the LLM. Complements parent-child chunking, where small child chunks are retrieved but adjacent hits can be stitched back into readable segments.
+
+**Behavior:** merged segments keep the lowest-index chunk's ID for source tracking; `metadata.merged_chunk_ids` lists all contributing chunk IDs. Chunks without `chunk_index` pass through unchanged. Failures are not possible — the step is deterministic with no LLM calls.
+
+```bash
+RETRIEVAL__RSE__ENABLED=true
+RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
+```
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
 
@@ -1244,16 +1271,19 @@ gantt
     retrieval.embedding    :180, 380
     retrieval.hybrid       :380, 780
     retrieval.reranking    :780, 1080
-    retrieval.compression  :1080, 1280
+    retrieval.rse          :1080, 1180
+    retrieval.compression  :1180, 1380
 
     section generation
-    generation.llm         :1280, 2300
+    generation.llm         :1380, 2400
 ```
 
 Configure the collector endpoint:
 ```bash
 LOGGING__OTEL_ENDPOINT=http://localhost:4317
 ```
+
+When RSE is enabled, span `retrieval.rse` appears between `retrieval.reranking` and `retrieval.compression`, with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
 
 ### Prometheus Metrics
 

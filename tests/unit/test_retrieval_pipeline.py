@@ -198,6 +198,64 @@ class TestRetrievalServiceCompression:
         assert result.context != ""
 
 
+class TestRetrievalServiceRSE:
+    @pytest.mark.asyncio
+    async def test_rse_disabled_by_default(self):
+        from src.core.constants import MERGED_CHUNK_IDS_KEY
+
+        chunks = [
+            Chunk(
+                id="c0",
+                document_id="doc",
+                text="part one",
+                metadata={"chunk_index": 0},
+            ),
+            Chunk(
+                id="c1",
+                document_id="doc",
+                text="part two",
+                metadata={"chunk_index": 1},
+            ),
+        ]
+        svc = RetrievalService(
+            dense_retriever=_dense_mock(),
+            hybrid_retriever=_hybrid_mock(chunks),
+            top_k_retrieval=10,
+        )
+        result = await svc.retrieve(_query())
+        assert len(result.chunks) == 2
+        assert MERGED_CHUNK_IDS_KEY not in result.chunks[0].metadata
+
+    @pytest.mark.asyncio
+    async def test_rse_enabled_merges_adjacent_chunks(self):
+        from src.core.constants import MERGED_CHUNK_IDS_KEY
+
+        chunks = [
+            Chunk(
+                id="c0",
+                document_id="doc",
+                text="part one",
+                metadata={"chunk_index": 0},
+            ),
+            Chunk(
+                id="c1",
+                document_id="doc",
+                text="part two",
+                metadata={"chunk_index": 1},
+            ),
+        ]
+        svc = RetrievalService(
+            dense_retriever=_dense_mock(),
+            hybrid_retriever=_hybrid_mock(chunks),
+            top_k_retrieval=10,
+            rse_enabled=True,
+            rse_max_segment_tokens=500,
+        )
+        result = await svc.retrieve(_query())
+        assert len(result.chunks) == 1
+        assert result.chunks[0].metadata[MERGED_CHUNK_IDS_KEY] == ["c0", "c1"]
+
+
 # ── RetrievalPipeline ──────────────────────────────────────────────────────────
 
 

@@ -11,6 +11,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.contextual_compression import ContextualCompressor
+from src.rag.enrichment.relevant_segment_extraction import merge_adjacent
 from src.rag.ranking.cross_encoder import CrossEncoder
 from src.rag.ranking.score_fusion import rrf_fuse
 from src.rag.retrieval.dense_retriever import DenseRetriever
@@ -50,6 +51,8 @@ class RetrievalService:
         top_k_retrieval: int = 50,
         top_k_rerank: int = 10,
         top_k_final: int = 5,
+        rse_enabled: bool = False,
+        rse_max_segment_tokens: int = 1500,
     ) -> None:
         self._dense = dense_retriever
         self._hybrid = hybrid_retriever
@@ -59,6 +62,8 @@ class RetrievalService:
         self._top_k_retrieval = top_k_retrieval
         self._top_k_rerank = top_k_rerank
         self._top_k_final = top_k_final
+        self._rse_enabled = rse_enabled
+        self._rse_max_segment_tokens = rse_max_segment_tokens
 
     @property
     def hybrid(self) -> HybridRetriever:
@@ -90,6 +95,13 @@ class RetrievalService:
         with _tracer.start_as_current_span("retrieval.reranking") as span:
             chunks = self._rerank(query.text, chunks)
             span.set_attribute("chunk_count", len(chunks))
+
+        # 3.5 Relevant segment extraction (optional)
+        if self._rse_enabled:
+            with _tracer.start_as_current_span("retrieval.rse") as span:
+                chunks, merge_count = merge_adjacent(chunks, self._rse_max_segment_tokens)
+                span.set_attribute("merge_count", merge_count)
+                span.set_attribute("chunk_count", len(chunks))
 
         # 4. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
