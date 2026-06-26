@@ -6,14 +6,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.core.constants import CHUNK_INDEX_KEY
+from src.core.constants import CHUNK_INDEX_KEY, CHUNK_RAW_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.domain.services.retrieval_service import RetrievalService
+from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.token_reducer import count_tokens
 from src.rag.enrichment.relevant_segment_extraction import (
     RSE_MERGED_KEY,
     RSE_SOURCE_CHUNK_IDS_KEY,
+    chunk_source_ids,
     merge_adjacent,
 )
 
@@ -24,11 +26,12 @@ def _chunk(
     document_id: str = "doc1",
     text: str = "sample text",
     chunk_index: int | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> Chunk:
-    metadata: dict[str, object] = {}
+    chunk_metadata: dict[str, object] = dict(metadata or {})
     if chunk_index is not None:
-        metadata[CHUNK_INDEX_KEY] = chunk_index
-    return Chunk(id=chunk_id, document_id=document_id, text=text, metadata=metadata)
+        chunk_metadata[CHUNK_INDEX_KEY] = chunk_index
+    return Chunk(id=chunk_id, document_id=document_id, text=text, metadata=chunk_metadata)
 
 
 class TestMergeAdjacent:
@@ -116,6 +119,53 @@ class TestMergeAdjacent:
         result = merge_adjacent(chunks, max_segment_tokens=100)
         assert len(result) == 1
         assert result[0].metadata[RSE_SOURCE_CHUNK_IDS_KEY] == ["c0", "c1", "c2"]
+
+    def test_deduplicates_overlap_between_siblings(self):
+        chunks = [
+            _chunk("c0", text="The quick brown fox jumps over the lazy", chunk_index=0),
+            _chunk("c1", text="jumps over the lazy dog near the river", chunk_index=1),
+        ]
+        result = merge_adjacent(chunks, max_segment_tokens=100)
+        merged = result[0].text
+        assert merged.count("jumps over the lazy") == 1
+        assert "dog near the river" in merged
+
+    def test_merged_raw_text_includes_all_bodies_with_cch(self):
+        chunks = [
+            _chunk(
+                "c0",
+                text="[Document: Report | Section: — | Page: —]\npart one",
+                chunk_index=0,
+                metadata={CHUNK_RAW_TEXT_KEY: "part one"},
+            ),
+            _chunk(
+                "c1",
+                text="[Document: Report | Section: — | Page: —]\npart two",
+                chunk_index=1,
+                metadata={CHUNK_RAW_TEXT_KEY: "part two"},
+            ),
+        ]
+        result = merge_adjacent(chunks, max_segment_tokens=100)
+        assert len(result) == 1
+        assert chunk_context_text(result[0]) == "part one\n\npart two"
+        assert result[0].metadata[CHUNK_RAW_TEXT_KEY] == "part one\n\npart two"
+
+
+class TestChunkSourceIds:
+    def test_single_chunk_returns_own_id(self):
+        chunk = _chunk("c0")
+        assert chunk_source_ids(chunk) == ["c0"]
+
+    def test_merged_chunk_returns_all_source_ids(self):
+        chunk = _chunk(
+            "c0",
+            chunk_index=0,
+            metadata={
+                RSE_MERGED_KEY: True,
+                RSE_SOURCE_CHUNK_IDS_KEY: ["c0", "c1", "c2"],
+            },
+        )
+        assert chunk_source_ids(chunk) == ["c0", "c1", "c2"]
 
 
 class TestRetrievalServiceRSE:

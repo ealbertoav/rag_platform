@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
+from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 from src.rag.ranking.score_fusion import rrf_fuse
 
@@ -107,7 +108,7 @@ class AgentPipeline:
         t0 = time.monotonic()
         run = await self._agentic_retrieve(question, max_iterations=max_iter)
         context = "\n\n".join(c.text for c in run.chunks)
-        sources = [c.id for c in run.chunks]
+        sources = [chunk_id for c in run.chunks for chunk_id in chunk_source_ids(c)]
         answer = self._pipeline.generation.generate(question, context, sources)
         elapsed = (time.monotonic() - t0) * 1000
         final_answer = answer.model_copy(
