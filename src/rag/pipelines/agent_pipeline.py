@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
+from src.rag.chunking.contextual_headers import chunk_context_text
+from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 from src.rag.ranking.score_fusion import rrf_fuse
 
@@ -91,7 +93,7 @@ class AgentPipeline:
         """Run the agentic loop and stream the final answer."""
         max_iter = max_iterations if max_iterations is not None else self._max_iterations
         result = await self._agentic_retrieve(question, max_iterations=max_iter)
-        context = "\n\n".join(c.text for c in result.chunks)
+        context = self._build_context(result.chunks)
         return self._pipeline.generation.stream(question, context)
 
     async def chat_full(
@@ -106,8 +108,8 @@ class AgentPipeline:
         max_iter = max_iterations if max_iterations is not None else self._max_iterations
         t0 = time.monotonic()
         run = await self._agentic_retrieve(question, max_iterations=max_iter)
-        context = "\n\n".join(c.text for c in run.chunks)
-        sources = [c.id for c in run.chunks]
+        context = self._build_context(run.chunks)
+        sources = [chunk_id for c in run.chunks for chunk_id in chunk_source_ids(c)]
         answer = self._pipeline.generation.generate(question, context, sources)
         elapsed = (time.monotonic() - t0) * 1000
         final_answer = answer.model_copy(
@@ -206,9 +208,14 @@ class AgentPipeline:
             actions=actions,
         )
 
+    @staticmethod
+    def _build_context(chunks: list[Chunk]) -> str:
+        """Join chunk passages for LLM prompts (respects CCH raw_text and RSE merges)."""
+        return "\n\n".join(chunk_context_text(c) for c in chunks)
+
     def _decide(self, question: str, chunks: list[Chunk]) -> AgentDecision:
         """Ask the LLM whether to answer or refine retrieval."""
-        context = "\n\n".join(c.text for c in chunks[:5])  # cap to 5 chunks
+        context = self._build_context(chunks[:5])  # cap to 5 chunks
         template = self._get_decision_template()
         prompt = template.substitute(question=question, context=context)
         try:

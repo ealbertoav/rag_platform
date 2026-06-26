@@ -57,6 +57,8 @@ class TestYamlDefaults:
         assert settings.retrieval.top_k_final == 5
         assert settings.retrieval.hybrid_alpha == pytest.approx(0.7)
         assert settings.retrieval.hybrid_fusion == "rrf"
+        assert settings.retrieval.rse.enabled is False
+        assert settings.retrieval.rse.max_segment_tokens == 1500
 
     def test_neo4j_defaults_from_yaml(self):
         assert settings.neo4j.enabled is False

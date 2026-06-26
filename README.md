@@ -60,7 +60,7 @@ flowchart LR
         DS --> RF["RRF Fusion<br/>Top 50"]
         BS --> RF
         RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
-        RR --> RSE["RSE<br/>Merge adjacent segments<br/>(optional · T-123)"]
+        RR --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
         RSE --> CC["Contextual Compression<br/>≤ 1500 tokens"]
     end
 
@@ -1058,7 +1058,7 @@ rag_implementation/
 │   │   └── ingestion/          # chunk_header_template · generate_chunk_questions
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
-│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · RSE (T-123)
+│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE indexer (T-122) · RSE (T-123)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
@@ -1174,7 +1174,7 @@ flowchart TD
     GS -->|entity-matched chunks| RRF
 
     RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
-    RR --> RSE["RSE<br/>Merge adjacent chunks<br/>(optional · T-123)"]
+    RR --> RSE["RSE · Merge Adjacent<br/>consecutive chunk_index<br/>(optional · T-123)"]
     RSE --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
     CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
     GEN --> ANS["💬 Streamed Answer<br/>+ source chunk IDs"]
@@ -1183,15 +1183,17 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
 When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `hype_question` vectors, resolves hits to source chunks, and merges them into RRF alongside dense, BM25, and graph results. Standard dense search excludes HyPE points so passage and question embeddings do not compete in the same index query.
 
-##### Relevant Segment Extraction — RSE (T-123)
+##### Relevant Segment Extraction (T-123)
 
-RSE is a **query-time** post-reranking step (not ingest-time). When enabled, adjacent retrieved chunks from the same document — those with consecutive `metadata.chunk_index` values — are merged into longer coherent segments before contextual compression. Merged segments respect `max_segment_tokens` and never combine chunks from different documents.
+RSE is a **query-time** post-reranking step (not ingest-time). When enabled, adjacent retrieved chunks from the same document — those with consecutive `metadata.chunk_index` values — are merged into longer coherent segments before contextual compression. Parent-level chunks and child chunks are merged separately (siblings sharing the same `parent_id` only). Merged segments respect `max_segment_tokens` and never combine chunks from different documents. Overlapping sibling text from recursive/parent-child chunking is deduplicated at merge boundaries.
+
+RSE adds no extra LLM or API calls at query time. It is especially useful when reranking returns several neighboring chunks from the same passage.
 
 ```yaml
 # configs/retrieval.yaml
@@ -1201,9 +1203,9 @@ retrieval:
     max_segment_tokens: 1500
 ```
 
-**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (all set `chunk_index`). Especially useful when reranking returns several neighboring chunks from the same passage — RSE reduces fragmentation sent to the LLM. Complements parent-child chunking, where small child chunks are retrieved but adjacent hits can be stitched back into readable segments.
+**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (all set `chunk_index`). Complements parent-child chunking, where small child chunks are retrieved but adjacent hits can be stitched back into readable segments.
 
-**Behavior:** merged segments keep the lowest-index chunk's ID for source tracking; `metadata.merged_chunk_ids` lists all contributing chunk IDs. Chunks without `chunk_index` pass through unchanged. Failures are not possible — the step is deterministic with no LLM calls.
+**Behavior:** merged segments keep the lowest-index chunk's ID as anchor; `metadata.merged_chunk_ids` lists all contributing chunk IDs (also expanded in `Answer.sources` via `chunk_source_ids`). Chunks without `chunk_index` pass through unchanged. Contextual headers (T-120): merged `raw_text` includes all source bodies. OTel span `retrieval.rse` records `merge_count`.
 
 ```bash
 RETRIEVAL__RSE__ENABLED=true
@@ -1271,11 +1273,11 @@ gantt
     retrieval.embedding    :180, 380
     retrieval.hybrid       :380, 780
     retrieval.reranking    :780, 1080
-    retrieval.rse          :1080, 1180
-    retrieval.compression  :1180, 1380
+    retrieval.rse          :1080, 1130
+    retrieval.compression  :1130, 1280
 
     section generation
-    generation.llm         :1380, 2400
+    generation.llm         :1280, 2300
 ```
 
 Configure the collector endpoint:
