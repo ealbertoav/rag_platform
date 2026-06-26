@@ -93,6 +93,7 @@ class IngestionPipeline:
                     source,
                     doc_hash,
                     self._metadata.get_chunk_ids(existing.id),
+                    chunk_count=existing.chunk_count,
                     duration_ms=elapsed_ms,
                     skipped=True,
                 )
@@ -180,10 +181,6 @@ class IngestionPipeline:
     def save_indexes(self) -> None:
         """Persist the BM25 index to disk after batch ingestion."""
         self._bm25.save()
-
-    @property
-    def bm25(self) -> BM25Index:
-        return self._bm25
 
     def list_documents(self) -> list[DocumentRecord]:
         """Return ingested document records when metadata store is enabled."""

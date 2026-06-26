@@ -241,6 +241,27 @@ class TestIngestionPipelineDirectory:
         vector_store.upsert.assert_not_called()
         bm25.add.assert_not_called()
         metadata.upsert_document.assert_called_once()
+        _, kwargs = metadata.upsert_document.call_args
+        assert kwargs["chunk_count"] == 2
+
+    def test_skip_preserves_source_chunk_count_with_augmented_ids(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("stable content")
+        metadata = MagicMock()
+        metadata.get_by_source.return_value = MagicMock(
+            id="doc-1",
+            content_hash=content_hash(str(path.resolve()), "stable content"),
+            chunk_count=1,
+        )
+        metadata.get_chunk_ids.return_value = ["c1", "synthetic-q1", "synthetic-q2"]
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        result = pipeline.ingest_file(path)
+        assert result.skipped is True
+        assert result.chunk_count == 1
+        service.prepare.assert_not_called()
+        vector_store.upsert.assert_not_called()
+        _, kwargs = metadata.upsert_document.call_args
+        assert kwargs["chunk_count"] == 1
 
 
 class TestIngestionPipelineFromSettings:
