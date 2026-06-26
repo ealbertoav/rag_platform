@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.constants import CHUNK_RAW_TEXT_KEY
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.rag.pipelines.agent_pipeline import (
@@ -146,6 +147,38 @@ class TestAgentPipelineChat:
         p = AgentPipeline(pipeline=chat)
         await p.chat_full("q")
         chat.generation.generate.assert_called_once()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_chat_full_uses_chunk_context_text_not_embedded_headers(self):
+        header_chunk = Chunk(
+            id="c0",
+            document_id="doc",
+            text="[Document: report.pdf | Section: Revenue | Page: 3]\nRevenue grew 12%.",
+            metadata={CHUNK_RAW_TEXT_KEY: "Revenue grew 12%."},
+        )
+        chat = _chat_mock(retrieval_chunks=[header_chunk])
+        p = AgentPipeline(pipeline=chat)
+        await p.chat_full("What was revenue growth?")
+
+        _, context, _ = chat.generation.generate.call_args[0]  # type: ignore[attr-defined]
+        assert "Revenue grew 12%." in context
+        assert "[Document:" not in context
+
+    @pytest.mark.asyncio
+    async def test_decide_prompt_uses_chunk_context_text(self):
+        header_chunk = Chunk(
+            id="c0",
+            document_id="doc",
+            text="[Document: report.pdf]\nBody for decision.",
+            metadata={CHUNK_RAW_TEXT_KEY: "Body for decision."},
+        )
+        chat = _chat_mock(retrieval_chunks=[header_chunk])
+        p = AgentPipeline(pipeline=chat)
+        await p.chat_full("q")
+
+        prompt = chat.generation.call_llm.call_args[0][0]  # type: ignore[attr-defined]
+        assert "Body for decision." in prompt
+        assert "[Document:" not in prompt
 
     @pytest.mark.asyncio
     async def test_retrieve_more_triggers_second_retrieval(self):

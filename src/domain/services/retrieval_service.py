@@ -165,4 +165,3 @@ class RetrievalService:
         if self._compressor is None or not chunks:
             return chunks
         return self._compressor.compress(query_text, chunks)
-
