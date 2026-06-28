@@ -58,10 +58,10 @@ _COST_PER_1K: dict[str, float] = {
     "bge_m3": 0.0,
     "nomic": 0.0,
     "qwen_embedding": 0.0,
-    "openai": 0.13,    # text-embedding-3-large
-    "voyage": 0.12,    # voyage-large-2
-    "cohere": 0.10,    # embed-english-v3.0
-    "gemini": 0.025,   # text-embedding-004
+    "openai": 0.13,  # text-embedding-3-large
+    "voyage": 0.12,  # voyage-large-2
+    "cohere": 0.10,  # embed-english-v3.0
+    "gemini": 0.025,  # text-embedding-004
 }
 
 
@@ -92,9 +92,7 @@ def _compute_ndcg_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int
 
     relevant_set = set(relevant_ids)
     dcg = sum(
-        1.0 / math.log2(i + 2)
-        for i, rid in enumerate(retrieved_ids[:k])
-        if rid in relevant_set
+        1.0 / math.log2(i + 2) for i, rid in enumerate(retrieved_ids[:k]) if rid in relevant_set
     )
     idcg = sum(1.0 / math.log2(i + 2) for i in range(min(k, len(relevant_ids))))
     return dcg / idcg if idcg > 0 else 0.0
@@ -167,9 +165,13 @@ async def _run_provider(
         retriever, vector_store = _index_chunks_for_provider(provider, chunks, settings)
     except Exception as exc:
         return ProviderResult(
-            name=provider, recall_at_5=0.0, ndcg_at_5=0.0,
-            latency_ms=0.0, cost_per_1k=_COST_PER_1K.get(provider, 0.0),
-            n_queries=0, error=str(exc),
+            name=provider,
+            recall_at_5=0.0,
+            ndcg_at_5=0.0,
+            latency_ms=0.0,
+            cost_per_1k=_COST_PER_1K.get(provider, 0.0),
+            n_queries=0,
+            error=str(exc),
         )
 
     from src.core.exceptions import RetrievalError
@@ -285,9 +287,7 @@ async def run(args: argparse.Namespace) -> int:
     results: list[ProviderResult] = []
     for provider in args.providers:
         print(f"  Running: {provider}")
-        result = await _run_provider(
-            provider, qa_pairs, chunks, settings, k=args.top_k
-        )
+        result = await _run_provider(provider, qa_pairs, chunks, settings, k=args.top_k)
         results.append(result)
         if result.error:
             print(f"    → skipped: {result.error}", file=sys.stderr)

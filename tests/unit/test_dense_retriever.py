@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.core.constants import CHUNK_TYPE_HYPE
+from src.core.constants import CHUNK_TYPE_HYPE, CHUNK_TYPE_SUMMARY
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.retrieval.dense_retriever import DenseRetriever
@@ -64,7 +64,7 @@ class TestRetrieve:
         vector_store.search_dense.assert_called_once_with(
             custom_vec,
             top_k=3,
-            exclude_types=frozenset({CHUNK_TYPE_HYPE}),
+            exclude_types=frozenset({CHUNK_TYPE_HYPE, CHUNK_TYPE_SUMMARY}),
         )
 
     def test_top_k_forwarded(self):

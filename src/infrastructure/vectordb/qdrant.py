@@ -9,6 +9,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PointIdsList,
     PointStruct,
@@ -34,14 +35,14 @@ _EXPANSION = 3  # multiplier for hybrid search candidate pool
 _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
 
 
-def _build_type_filter(
+def _build_search_filter(
     *,
     type_equals: str | None = None,
     exclude_types: frozenset[str] | None = None,
+    document_ids: frozenset[str] | None = None,
 ) -> Filter | None:
-    """Build a Qdrant payload filter for chunk ``type`` metadata."""
+    """Build a Qdrant payload filter for chunk metadata."""
     must: list[Condition] = []
-    must_not: list[Condition] = []
 
     if type_equals is not None:
         must.append(
@@ -50,6 +51,15 @@ def _build_type_filter(
                 match=MatchValue(value=type_equals),
             )
         )
+    if document_ids:
+        must.append(
+            FieldCondition(
+                key="document_id",
+                match=MatchAny(any=sorted(document_ids)),
+            )
+        )
+
+    must_not: list[Condition] = []
     if exclude_types:
         must_not.extend(
             FieldCondition(key=CHUNK_TYPE_KEY, match=MatchValue(value=chunk_type))
@@ -162,9 +172,14 @@ class QdrantVectorStore(VectorStoreRepository):
         *,
         type_equals: str | None = None,
         exclude_types: frozenset[str] | None = None,
+        document_ids: frozenset[str] | None = None,
     ) -> list[SearchResult]:
         self._ensure_collection()
-        query_filter = _build_type_filter(type_equals=type_equals, exclude_types=exclude_types)
+        query_filter = _build_search_filter(
+            type_equals=type_equals,
+            exclude_types=exclude_types,
+            document_ids=document_ids,
+        )
         try:
             response = self._client.query_points(
                 collection_name=self.collection,

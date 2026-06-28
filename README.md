@@ -229,6 +229,8 @@ CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__CONTEXTUAL_HEADERS__EXCLUDE_FROM_LLM_CONTEXT=true
 CHUNKING__AUGMENTATION__ENABLED=false
 CHUNKING__AUGMENTATION__N_QUESTIONS=3
+CHUNKING__HIERARCHICAL__ENABLED=false      # document summary + detail two-tier index (T-125)
+CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 # Neo4j Graph RAG (disabled by default)
 NEO4J__ENABLED=false
@@ -253,7 +255,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, RSE, parent context, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, RSE, parent context, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -302,14 +304,17 @@ flowchart LR
     HDR --> EM
     EM --> AUG{"Synthetic<br/>Questions?<br/>(T-121)"}
     EM --> HYPE{"HyPE<br/>Questions?<br/>(T-122)"}
+    EM --> HIER{"Hierarchical<br/>Summaries?<br/>(T-125)"}
     AUG -->|enabled| SQ["LLM → N questions/chunk<br/>embed · Qdrant + BM25"]
     HYPE -->|enabled| HY["LLM → N questions/chunk<br/>embed · Qdrant only"]
+    HIER -->|enabled| HS["LLM → doc summary<br/>tag details · Qdrant only"]
     AUG -->|disabled| IDX
     EM --> IDX
     SQ --> IDX
     HY --> IDX
+    HS --> IDX
     IDX["Upsert indexes"] --> QD[("Qdrant<br/>HNSW + Sparse")]
-    IDX --> BM[("BM25<br/>In-Memory<br/>excludes HyPE")]
+    IDX --> BM[("BM25<br/>In-Memory<br/>excludes HyPE + summaries")]
     IDX --> META[("SQLite<br/>metadata.db")]
     EM -->|neo4j.enabled| GR["Entity Extractor<br/>→ Neo4j"]
     QD & BM & META --> DONE["✅ Indexed"]
@@ -317,13 +322,14 @@ flowchart LR
 
 #### Optional Chunk Enrichment
 
-Three optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
+Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
 | Contextual headers (T-120) | `chunking.contextual_headers` | Same chunk text (header prepended before embed) | Standard dense/BM25 |
 | Document augmentation (T-121) | `chunking.augmentation` | Qdrant + BM25 (`type=synthetic_question`) | Standard dense/BM25 → resolve to source |
-| HyPE (T-122) | `retrieval.hype` | Qdrant only (`type=hype_question`) | Dedicated question→question dense search → 4th RRF source |
+| HyPE (T-122) | `retrieval.hype` | Qdrant only (`type=hype_question`) | Dedicated question→question dense search → RRF source |
+| Hierarchical summaries (T-125) | `chunking.hierarchical` | Qdrant only (`type=summary` + `type=detail`) | Two-stage summary→detail dense search → RRF source |
 
 ##### Contextual Chunk Headers (T-120)
 
@@ -388,6 +394,31 @@ CHUNKING__CONTEXTUAL_HEADERS__ENABLED=true
 CHUNKING__AUGMENTATION__ENABLED=true
 CHUNKING__AUGMENTATION__N_QUESTIONS=3
 RETRIEVAL__HYPE__ENABLED=true
+```
+
+##### Hierarchical Index Summaries (T-125)
+
+Hierarchical indexing builds a **two-tier index** at ingest time: one document-level summary vector plus detail chunk vectors tagged by document. At query time, the retriever first matches summaries to select the most relevant documents, then searches detail chunks scoped to those documents. Only **detail** chunks reach the LLM — summary text is used for routing, not generation.
+
+At ingest, detail chunks receive `metadata.type = detail`. The LLM generates a concise document summary from the full source text; that summary is embedded and stored as `metadata.type = summary` with the same `document_id`. Summary vectors are stored in Qdrant only (excluded from BM25 and standard dense search, like HyPE).
+
+At retrieval, `HierarchicalRetriever` runs a two-stage dense search: top `summary_top_k` documents from summary vectors, then detail search filtered to those document IDs. Results are fused into RRF alongside dense, BM25, HyPE, and graph retrieval.
+
+```yaml
+# configs/retrieval.yaml
+chunking:
+  hierarchical:
+    enabled: false       # set true to index document summaries + detail tags
+    summary_top_k: 3     # documents selected in stage 1 before detail search
+```
+
+**When to use:** large multi-document corpora where coarse document-level matching improves recall before drilling into passages — especially when individual chunks lack enough context to rank well on their own.
+
+**Trade-offs:** one LLM call per document at ingest (failures are logged; detail chunks are still tagged and indexed). Re-ingest after enabling — existing indexes are not updated retroactively. `rebuild_embeddings.py` re-embeds passage chunks from BM25; re-run ingestion to rebuild summary vectors and detail type tags.
+
+```bash
+CHUNKING__HIERARCHICAL__ENABLED=true
+CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 ```
 
 ### Start the API Server
@@ -1060,11 +1091,11 @@ rag_implementation/
 │   │   └── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
-│   │   └── ingestion/          # chunk_header_template · generate_chunk_questions
+│   │   └── ingestion/          # chunk_header_template · generate_chunk_questions · generate_document_summary
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
-│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · RSE (T-123) · parent context (T-124)
-│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype retrievers
+│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
+│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hierarchical retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
@@ -1111,6 +1142,7 @@ RETRIEVAL__PARENT_CONTEXT__ENABLED=false
 CHUNKING__STRATEGY=recursive
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
+CHUNKING__HIERARCHICAL__ENABLED=false
 NEO4J__ENABLED=true
 EMBEDDINGS__DEVICE=cpu
 ```
@@ -1170,14 +1202,16 @@ flowchart TD
     Q["🔎 User Question"] --> QE["Query Expander<br/>LLM generates 3 variants"]
     QE --> EMB["BGE-M3 Encoder<br/>1024-dim dense + sparse"]
 
-    EMB --> DS["Dense Search<br/>Qdrant HNSW cosine<br/>(excludes hype_question)"]
+    EMB --> DS["Dense Search<br/>Qdrant HNSW cosine<br/>(excludes hype_question + summary)"]
     EMB --> BS["BM25 Search<br/>In-memory lexical"]
     EMB --> HS["HyPE Search<br/>question→question dense<br/>(optional · T-122)"]
+    EMB --> HRS["Hierarchical Search<br/>summary → detail<br/>(optional · T-125)"]
     QE --> GS["Graph Search<br/>Neo4j entity traversal<br/>(optional)"]
 
     DS -->|Top 50 candidates| RRF["RRF Fusion<br/>score = Σ 1/(k+rank)"]
     BS -->|Top 50 candidates| RRF
     HS -->|resolved source chunks| RRF
+    HRS -->|detail chunks only| RRF
     GS -->|entity-matched chunks| RRF
 
     RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
@@ -1191,11 +1225,13 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, hierarchical, or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
 When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `hype_question` vectors, resolves hits to source chunks, and merges them into RRF alongside dense, BM25, and graph results. Standard dense search excludes HyPE points so passage and question embeddings do not compete in the same index query.
+
+When **hierarchical summaries** (T-125) are enabled, detail chunks are tagged at ingest (`type=detail`) and document summaries are indexed separately (`type=summary`). `HierarchicalRetriever` matches summaries first to select documents, then retrieves detail chunks within those documents. Summary vectors are excluded from BM25 and standard dense search; only detail chunks are returned to downstream reranking and generation.
 
 ##### Relevant Segment Extraction (T-123)
 

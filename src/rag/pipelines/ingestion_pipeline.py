@@ -64,6 +64,7 @@ class IngestionPipeline:
         graph_indexer: object | None = None,
         augmentor: object | None = None,
         hype_indexer: object | None = None,
+        hierarchical_indexer: object | None = None,
     ) -> None:
         self._service = service
         self._vector_store = vector_store
@@ -72,6 +73,7 @@ class IngestionPipeline:
         self._graph_indexer = graph_indexer
         self._augmentor = augmentor
         self._hype_indexer = hype_indexer
+        self._hierarchical_indexer = hierarchical_indexer
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -117,6 +119,10 @@ class IngestionPipeline:
             return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
 
         indexed_chunks = list(chunks)
+        if self._hierarchical_indexer is not None:
+            chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)  # type: ignore[attr-defined]
+            indexed_chunks = list(chunks)
+            indexed_chunks.extend(summary_chunks)
         if self._augmentor is not None:
             augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
             indexed_chunks.extend(augmented)
@@ -238,6 +244,7 @@ class IngestionPipeline:
         graph_indexer = _build_graph_indexer() if settings.neo4j.enabled else None
         augmentor = _build_augmentor(embedder, cfg.augmentation)
         hype_indexer = _build_hype_indexer(embedder, settings.retrieval.hype)
+        hierarchical_indexer = _build_hierarchical_indexer(embedder, cfg.hierarchical)
 
         return cls(
             service=service,
@@ -247,6 +254,7 @@ class IngestionPipeline:
             graph_indexer=graph_indexer,
             augmentor=augmentor,
             hype_indexer=hype_indexer,
+            hierarchical_indexer=hierarchical_indexer,
         )
 
 
@@ -310,8 +318,26 @@ def _build_hype_indexer(embedder: object, cfg: object) -> object | None:
         return None
 
 
+def _build_hierarchical_indexer(embedder: object, cfg: object) -> object | None:
+    """Build hierarchical summary indexer when two-tier indexing is enabled."""
+    if not getattr(cfg, "enabled", False):
+        return None
+    try:
+        from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
+        from src.rag.enrichment.hierarchical_indexer import HierarchicalIndexer
+
+        llm = LlamaCppProvider.from_settings()
+        return HierarchicalIndexer(llm=llm, embedder=embedder)  # type: ignore[arg-type]
+    except Exception as exc:
+        logger.warning("Hierarchical indexer unavailable: %s", exc)
+        return None
+
+
 def _bm25_indexable(chunks: list[Chunk]) -> list[Chunk]:
-    """Exclude HyPE-only vectors from the lexical BM25 index."""
+    """Exclude vector-only index points from the lexical BM25 index."""
+    from src.rag.enrichment.hierarchical_indexer import is_summary_chunk
     from src.rag.enrichment.hype_indexer import is_hype_question
 
-    return [chunk for chunk in chunks if not is_hype_question(chunk)]
+    return [
+        chunk for chunk in chunks if not is_hype_question(chunk) and not is_summary_chunk(chunk)
+    ]

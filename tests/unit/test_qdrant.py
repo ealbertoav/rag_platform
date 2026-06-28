@@ -235,6 +235,18 @@ class TestSearchDense:
         query_filter = kwargs["query_filter"]
         assert query_filter.must_not[0].match.value == CHUNK_TYPE_HYPE
 
+    def test_document_ids_filter(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.query_points.return_value = _query_response([])
+        store.search_dense(
+            [0.1] * 4,
+            top_k=5,
+            document_ids=frozenset({"doc-a", "doc-b"}),
+        )
+        _, kwargs = mock_client.query_points.call_args
+        query_filter = kwargs["query_filter"]
+        assert query_filter.must[0].key == "document_id"
+        assert set(query_filter.must[0].match.any) == {"doc-a", "doc-b"}
+
 
 # ── search_sparse ──────────────────────────────────────────────────────────────
 

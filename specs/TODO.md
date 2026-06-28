@@ -1377,7 +1377,7 @@
 ---
 
 ### T-125 · Hierarchical Index Summaries
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Build two-tier index: document-level summary nodes + detail chunks — inspired by RAG_Techniques `hierarchical_indices.py` and `raptor.py` (lightweight variant).
 - **Inputs:** T-015 (ingestion), T-030 (LLM for summary generation), T-013 (Qdrant)
 - **Outputs:** Summary vectors indexed alongside detail chunks; retrieval can match summaries first then drill down.

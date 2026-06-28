@@ -421,3 +421,140 @@ class TestBuildGraphRetriever:
             RetrievalPipeline.from_settings()
             _, kwargs = mock_hybrid.call_args
             assert kwargs["graph_retriever"] is not None
+
+
+class TestBuildHyPERetriever:
+    def test_returns_none_when_hype_disabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_hype_retriever
+
+        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+            mock_settings.retrieval = MagicMock(hype=MagicMock(enabled=False))
+            assert _build_hype_retriever(MagicMock(), MagicMock(), MagicMock()) is None
+
+    def test_returns_retriever_when_enabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_hype_retriever
+
+        embedder = MagicMock()
+        vector_store = MagicMock()
+        bm25 = MagicMock()
+        hype_mock = MagicMock()
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.hype_retriever.HyPERetriever",
+                return_value=hype_mock,
+            ) as mock_cls,
+        ):
+            mock_settings.retrieval = MagicMock(hype=MagicMock(enabled=True))
+            result = _build_hype_retriever(embedder, vector_store, bm25)
+
+        assert result is hype_mock
+        mock_cls.assert_called_once_with(
+            embedder=embedder,
+            vector_store=vector_store,
+            chunk_lookup=bm25,
+        )
+
+    def test_returns_none_on_failure(self, caplog):
+        import logging
+
+        from src.rag.pipelines.retrieval_pipeline import _build_hype_retriever
+
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.hype_retriever.HyPERetriever",
+                side_effect=RuntimeError("hype down"),
+            ),
+            caplog.at_level(logging.WARNING, logger="src.rag.pipelines.retrieval_pipeline"),
+        ):
+            mock_settings.retrieval = MagicMock(hype=MagicMock(enabled=True))
+            assert _build_hype_retriever(MagicMock(), MagicMock(), MagicMock()) is None
+        assert "HyPE retriever unavailable" in caplog.text
+
+
+class TestBuildHierarchicalRetriever:
+    def test_returns_none_when_hierarchical_disabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_hierarchical_retriever
+
+        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+            mock_settings.chunking = MagicMock(hierarchical=MagicMock(enabled=False))
+            assert _build_hierarchical_retriever(MagicMock(), MagicMock()) is None
+
+    def test_returns_retriever_when_enabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_hierarchical_retriever
+
+        embedder = MagicMock()
+        vector_store = MagicMock()
+        hierarchical_mock = MagicMock()
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.hierarchical_retriever.HierarchicalRetriever",
+                return_value=hierarchical_mock,
+            ) as mock_cls,
+        ):
+            mock_settings.chunking = MagicMock(
+                hierarchical=MagicMock(enabled=True, summary_top_k=4),
+            )
+            result = _build_hierarchical_retriever(embedder, vector_store)
+
+        assert result is hierarchical_mock
+        mock_cls.assert_called_once_with(
+            embedder=embedder,
+            vector_store=vector_store,
+            summary_top_k=4,
+        )
+
+    def test_returns_none_on_failure(self, caplog):
+        import logging
+
+        from src.rag.pipelines.retrieval_pipeline import _build_hierarchical_retriever
+
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.hierarchical_retriever.HierarchicalRetriever",
+                side_effect=RuntimeError("hierarchical down"),
+            ),
+            caplog.at_level(logging.WARNING, logger="src.rag.pipelines.retrieval_pipeline"),
+        ):
+            mock_settings.chunking = MagicMock(hierarchical=MagicMock(enabled=True))
+            assert _build_hierarchical_retriever(MagicMock(), MagicMock()) is None
+        assert "Hierarchical retriever unavailable" in caplog.text
+
+    def test_from_settings_wires_hierarchical_when_enabled(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+            ) as mock_llm,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
+            patch("src.rag.retrieval.dense_retriever.DenseRetriever"),
+            patch("src.rag.retrieval.hybrid_retriever.HybridRetriever") as mock_hybrid,
+            patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
+            patch(
+                "src.rag.pipelines.retrieval_pipeline._build_hierarchical_retriever",
+                return_value=MagicMock(),
+            ),
+        ):
+            mock_settings.retrieval = MagicMock(
+                hybrid_alpha=0.7,
+                top_k_dense=10,
+                top_k_final=5,
+                hybrid_fusion="rrf",
+                rse=MagicMock(enabled=False, max_segment_tokens=1500),
+                parent_context=MagicMock(enabled=False),
+            )
+            mock_settings.chunking = MagicMock(strategy="recursive")
+            mock_settings.neo4j = MagicMock(enabled=False)
+            mock_settings.reranker = MagicMock(top_k=5)
+            mock_settings.query_expansion = MagicMock(enabled=False)
+            mock_settings.compression = MagicMock(enabled=False)
+            mock_llm.return_value = MagicMock()
+            RetrievalPipeline.from_settings()
+            _, kwargs = mock_hybrid.call_args
+            assert kwargs["hierarchical_retriever"] is not None

@@ -28,11 +28,13 @@ class VectorStoreRepository(ABC):
         *,
         type_equals: str | None = None,
         exclude_types: frozenset[str] | None = None,
+        document_ids: frozenset[str] | None = None,
     ) -> list[SearchResult]:
         """Approximate nearest-neighbor search on the dense index.
 
-        Optional payload filters restrict results by chunk metadata ``type``:
+        Optional payload filters restrict results by chunk metadata "type":
         *type_equals* keeps only matching types; *exclude_types* drops them.
+        *document_ids* scopes results to the given document IDs.
         """
 
     @abstractmethod

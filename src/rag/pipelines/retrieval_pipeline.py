@@ -55,6 +55,26 @@ def _build_hype_retriever(
         return None
 
 
+def _build_hierarchical_retriever(
+    embedder: object,
+    vector_store: object,
+) -> object | None:
+    """Return a HierarchicalRetriever when hierarchical indexing is enabled, else None."""
+    if not settings.chunking.hierarchical.enabled:
+        return None
+    try:
+        from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
+
+        return HierarchicalRetriever(
+            embedder=embedder,  # type: ignore[arg-type]
+            vector_store=vector_store,  # type: ignore[arg-type]
+            summary_top_k=settings.chunking.hierarchical.summary_top_k,
+        )
+    except Exception as exc:
+        logger.warning("Hierarchical retriever unavailable (continuing without it): %s", exc)
+        return None
+
+
 class RetrievalPipeline:
     """Thin wrapper around "RetrievalService" that adds OTel span context.
 
@@ -126,12 +146,14 @@ class RetrievalPipeline:
         dense = DenseRetriever(embedder=embedder, vector_store=vector_store)
         graph = _build_graph_retriever(llm, bm25)
         hype = _build_hype_retriever(embedder, vector_store, bm25)
+        hierarchical = _build_hierarchical_retriever(embedder, vector_store)
         hybrid = HybridRetriever(
             dense=dense,
             bm25=bm25,
             alpha=cfg.hybrid_alpha,
             graph_retriever=graph,  # type: ignore[arg-type]
             hype_retriever=hype,  # type: ignore[arg-type]
+            hierarchical_retriever=hierarchical,  # type: ignore[arg-type]
             fusion_mode=cfg.hybrid_fusion,
         )
 
