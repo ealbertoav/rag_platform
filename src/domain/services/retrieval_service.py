@@ -9,8 +9,13 @@ from opentelemetry import trace
 
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
-from src.rag.chunking.contextual_headers import chunk_context_text
+from src.rag.chunking.contextual_headers import join_chunk_context
 from src.rag.compression.contextual_compression import ContextualCompressor
+from src.rag.enrichment.parent_context_resolver import (
+    ChunkLookup,
+    drop_redundant_parent_hits,
+    enrich_with_parent_context,
+)
 from src.rag.enrichment.relevant_segment_extraction import merge_adjacent
 from src.rag.ranking.cross_encoder import CrossEncoder
 from src.rag.ranking.score_fusion import rrf_fuse
@@ -53,6 +58,9 @@ class RetrievalService:
         top_k_final: int = 5,
         rse_enabled: bool = False,
         rse_max_segment_tokens: int = 1500,
+        parent_context_enabled: bool = False,
+        parent_child_strategy: bool = False,
+        chunk_lookup: ChunkLookup | None = None,
     ) -> None:
         self._dense = dense_retriever
         self._hybrid = hybrid_retriever
@@ -64,6 +72,8 @@ class RetrievalService:
         self._top_k_final = top_k_final
         self._rse_enabled = rse_enabled
         self._rse_max_segment_tokens = rse_max_segment_tokens
+        self._parent_context_enabled = parent_context_enabled and parent_child_strategy
+        self._chunk_lookup = chunk_lookup
 
     @property
     def hybrid(self) -> HybridRetriever:
@@ -103,15 +113,23 @@ class RetrievalService:
                 span.set_attribute("merge_count", merge_count)
                 span.set_attribute("chunk_count", len(chunks))
 
-        # 5. Contextual compression (optional)
+        # 5. Parent context expansion (optional, parent_child strategy only)
+        if self._parent_context_enabled and self._chunk_lookup is not None:
+            with _tracer.start_as_current_span("retrieval.parent_context") as span:
+                chunks, resolved_count = enrich_with_parent_context(chunks, self._chunk_lookup)
+                chunks = drop_redundant_parent_hits(chunks)
+                span.set_attribute("resolved_count", resolved_count)
+                span.set_attribute("chunk_count", len(chunks))
+
+        # 6. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
             chunks = self._compress(query.text, chunks)
             span.set_attribute("chunk_count", len(chunks))
 
-        # 6. Final top-K cap
+        # 7. Final top-K cap
         chunks = chunks[: self._top_k_final]
 
-        context = "\n\n".join(chunk_context_text(c) for c in chunks)
+        context = join_chunk_context(chunks)
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(
             "Retrieval: %d chunks, %d context chars, %.1fms",

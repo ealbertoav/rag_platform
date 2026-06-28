@@ -22,6 +22,7 @@ CHUNK_TYPE_HYPE = "hype_question"
 SOURCE_CHUNK_ID_KEY = "source_chunk_id"
 MERGED_CHUNK_IDS_KEY = "merged_chunk_ids"
 RSE_MERGED_KEY = "rse_merged"
+PARENT_CONTEXT_TEXT_KEY = "parent_context_text"
 
 # ── Supported document types ───────────────────────────────────────────────────
 SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(

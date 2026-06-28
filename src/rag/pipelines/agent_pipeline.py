@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
-from src.rag.chunking.contextual_headers import chunk_context_text
+from src.rag.chunking.contextual_headers import join_chunk_context
 from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 from src.rag.ranking.score_fusion import rrf_fuse
@@ -211,7 +211,7 @@ class AgentPipeline:
     @staticmethod
     def _build_context(chunks: list[Chunk]) -> str:
         """Join chunk passages for LLM prompts (respects CCH raw_text and RSE merges)."""
-        return "\n\n".join(chunk_context_text(c) for c in chunks)
+        return join_chunk_context(chunks)
 
     def _decide(self, question: str, chunks: list[Chunk]) -> AgentDecision:
         """Ask the LLM whether to answer or refine retrieval."""
