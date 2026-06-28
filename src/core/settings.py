@@ -133,6 +133,10 @@ class RSESettings(BaseModel):
     max_segment_tokens: int = Field(default=1500, gt=0)
 
 
+class ParentContextSettings(BaseModel):
+    enabled: bool = False
+
+
 class RetrievalSettings(BaseModel):
     top_k_dense: int = 50
     top_k_final: int = 5
@@ -141,6 +145,7 @@ class RetrievalSettings(BaseModel):
     hybrid_fusion: Literal["rrf", "weighted_linear"] = "rrf"
     hype: HyPESettings = Field(default_factory=HyPESettings)
     rse: RSESettings = Field(default_factory=RSESettings)
+    parent_context: ParentContextSettings = Field(default_factory=ParentContextSettings)
 
 
 class Neo4jSettings(BaseModel):

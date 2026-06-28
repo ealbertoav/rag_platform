@@ -101,6 +101,9 @@ class TestYamlDefaults:
         assert settings.retrieval.rse.enabled is False
         assert settings.retrieval.rse.max_segment_tokens == 1500
 
+    def test_parent_context_defaults_from_yaml(self):
+        assert settings.retrieval.parent_context.enabled is False
+
 
 class TestEnvVarOverride:
     def test_llm_provider_override(self, monkeypatch: pytest.MonkeyPatch):

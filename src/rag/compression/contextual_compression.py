@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from string import Template
 
-from src.core.constants import CHUNK_RAW_TEXT_KEY
+from src.core.constants import CHUNK_PARENT_ID_KEY, CHUNK_RAW_TEXT_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
 from src.rag.chunking.contextual_headers import chunk_context_text
@@ -51,18 +51,32 @@ class ContextualCompressor:
 
         result: list[Chunk] = []
         remaining_tokens = self._max_tokens
+        compressed_passages: dict[str, str] = {}
 
         for chunk in chunks:
+            parent_id_raw = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
+            if (
+                isinstance(parent_id_raw, str)
+                and parent_id_raw
+                and PARENT_CONTEXT_TEXT_KEY in chunk.metadata
+            ):
+                passage_key = parent_id_raw
+            else:
+                passage_key = chunk.id
+            cached_text = compressed_passages.get(passage_key)
+            if cached_text is not None:
+                result.append(self._with_compressed_text(chunk, cached_text))
+                continue
+
             if remaining_tokens <= 0:
                 break
+
             text = self._extract(query, chunk)
             text = truncate_to_tokens(text, remaining_tokens)
             if not text:
                 continue
-            update: dict[str, object] = {"text": text}
-            if CHUNK_RAW_TEXT_KEY in chunk.metadata:
-                update["metadata"] = {**chunk.metadata, CHUNK_RAW_TEXT_KEY: text}
-            result.append(chunk.model_copy(update=update))
+            compressed_passages[passage_key] = text
+            result.append(self._with_compressed_text(chunk, text))
             remaining_tokens -= count_tokens(text)
 
         logger.debug(
@@ -102,3 +116,15 @@ class ContextualCompressor:
         except Exception as exc:
             logger.warning("Compression failed for chunk %r, using original: %s", chunk.id, exc)
             return source_text
+
+    @staticmethod
+    def _with_compressed_text(chunk: Chunk, text: str) -> Chunk:
+        metadata = dict(chunk.metadata)
+        if CHUNK_RAW_TEXT_KEY in metadata:
+            metadata[CHUNK_RAW_TEXT_KEY] = text
+        if PARENT_CONTEXT_TEXT_KEY in metadata:
+            metadata[PARENT_CONTEXT_TEXT_KEY] = text
+        update: dict[str, object] = {"text": text}
+        if metadata != chunk.metadata:
+            update["metadata"] = metadata
+        return chunk.model_copy(update=update)

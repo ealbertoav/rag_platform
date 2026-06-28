@@ -61,7 +61,8 @@ flowchart LR
         BS --> RF
         RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
         RR --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
-        RSE --> CC["Contextual Compression<br/>≤ 1500 tokens"]
+        RSE --> PC["Parent Context<br/>(optional · T-124)"]
+        PC --> CC["Contextual Compression<br/>≤ 1500 tokens"]
     end
 
     subgraph GENERATE["💬 Generation Pipeline"]
@@ -220,8 +221,10 @@ RETRIEVAL__HYPE__ENABLED=false            # HyPE question-question matching (T-1
 RETRIEVAL__HYPE__N_QUESTIONS=3
 RETRIEVAL__RSE__ENABLED=false             # merge adjacent retrieved chunks (T-123)
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
+RETRIEVAL__PARENT_CONTEXT__ENABLED=false  # expand child chunks to parent text (T-124; requires parent_child)
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
+CHUNKING__STRATEGY=recursive              # recursive | semantic | parent_child
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__CONTEXTUAL_HEADERS__EXCLUDE_FROM_LLM_CONTEXT=true
 CHUNKING__AUGMENTATION__ENABLED=false
@@ -250,7 +253,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, RSE, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, HyPE, RSE, parent context, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -276,6 +279,8 @@ uv run python scripts/ingest.py --list
 
 Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes old chunks and upserts new ones. Deduplication uses a content hash stored in the SQLite metadata store (`data/processed/metadata.db` by default).
 
+With `chunking.strategy: parent_child`, both parent and child chunks are indexed in Qdrant and BM25. At query time, retrieval matches on child embeddings; enable `retrieval.parent_context` to substitute parent text into the LLM context (see [Parent Context on Retrieve (T-124)](#parent-context-on-retrieve-t-124)).
+
 **Security notes:**
 - `POST /ingest/path` only reads files under `api.ingest_allowed_roots` (default: `data/raw`). It cannot ingest arbitrary server paths such as `/etc/passwd`.
 - `POST /ingest/upload` reads uploads in bounded chunks (`api.max_upload_bytes`, default 10 MiB) and accepts only supported extensions.
@@ -290,7 +295,7 @@ flowchart LR
     CL --> CH{"Chunking<br/>Strategy"}
     CH -->|recursive| RC["Recursive<br/>Splitter"]
     CH -->|semantic| SC["Semantic<br/>Splitter"]
-    CH -->|parent_child| PC["Parent-Child<br/>Splitter"]
+    CH -->|parent_child| PC["Parent-Child<br/>Splitter<br/>(child embed · parent stored)"]
     RC & SC & PC --> CCH{"Contextual<br/>Headers?<br/>(optional)"}
     CCH -->|enabled| HDR["Prepend doc/section/page<br/>to embedded text"]
     CCH -->|disabled| EM["Embed Both<br/>dense + sparse"]
@@ -1058,7 +1063,7 @@ rag_implementation/
 │   │   └── ingestion/          # chunk_header_template · generate_chunk_questions
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
-│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE indexer (T-122) · RSE (T-123)
+│   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · RSE (T-123) · parent context (T-124)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
@@ -1102,6 +1107,8 @@ RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYPE__ENABLED=false
 RETRIEVAL__RSE__ENABLED=false
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
+RETRIEVAL__PARENT_CONTEXT__ENABLED=false
+CHUNKING__STRATEGY=recursive
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 NEO4J__ENABLED=true
@@ -1175,7 +1182,8 @@ flowchart TD
 
     RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
     RR --> RSE["RSE · Merge Adjacent<br/>consecutive chunk_index<br/>(optional · T-123)"]
-    RSE --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
+    RSE --> PC["Parent Context<br/>child → parent text<br/>(optional · T-124)"]
+    PC --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
     CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
     GEN --> ANS["💬 Streamed Answer<br/>+ source chunk IDs"]
 
@@ -1183,7 +1191,7 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as a fourth RRF list; weighted-linear fusion is not used if HyPE or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
@@ -1203,13 +1211,40 @@ retrieval:
     max_segment_tokens: 1500
 ```
 
-**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (all set `chunk_index`). Complements parent-child chunking, where small child chunks are retrieved but adjacent hits can be stitched back into readable segments.
+**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (all set `chunk_index`). Complements parent-child chunking: RSE stitches adjacent sibling children into segments; for expanding a single child hit to its full parent passage, enable [Parent Context (T-124)](#parent-context-on-retrieve-t-124).
 
 **Behavior:** merged segments keep the lowest-index chunk's ID as anchor; `metadata.merged_chunk_ids` lists all contributing chunk IDs (also expanded in `Answer.sources` via `chunk_source_ids`). Chunks without `chunk_index` pass through unchanged. Contextual headers (T-120): merged `raw_text` includes all source bodies. OTel span `retrieval.rse` records `merge_count`.
 
 ```bash
 RETRIEVAL__RSE__ENABLED=true
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
+```
+
+##### Parent Context on Retrieve (T-124)
+
+Parent context is a **query-time** step for the **parent-child chunking strategy**. Small child chunks are retrieved (precise embedding match), then each child's parent chunk is looked up from the BM25 index and its text is substituted into the LLM context. `Answer.sources` still references the original child chunk IDs — citations point at the precise match, while the generator sees the broader parent passage.
+
+Activation requires **both** flags:
+
+```yaml
+# configs/retrieval.yaml
+chunking:
+  strategy: parent_child
+
+retrieval:
+  parent_context:
+    enabled: false              # set true to expand child hits to parent text
+```
+
+When a parent chunk cannot be found (e.g. index rebuilt without parents), the pipeline falls back to the child text and continues. Parent context adds no extra LLM or API calls — only BM25 lookups by `metadata.parent_id`.
+
+**When to use:** corpora indexed with `chunking.strategy: parent_child`, where child chunks improve retrieval precision but parent passages provide better generation context. Complements RSE (T-123): RSE merges adjacent sibling children; parent context expands a single child hit to its parent window.
+
+**Behavior:** parent text is stored in `metadata.parent_context_text` and takes priority in `chunk_context_text()` for LLM prompts. Contextual headers (T-120) on the parent are respected (uses `raw_text` when present). OTel span `retrieval.parent_context` records `resolved_count` (children expanded) and `chunk_count`.
+
+```bash
+CHUNKING__STRATEGY=parent_child
+RETRIEVAL__PARENT_CONTEXT__ENABLED=true
 ```
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
@@ -1274,10 +1309,11 @@ gantt
     retrieval.hybrid       :380, 780
     retrieval.reranking    :780, 1080
     retrieval.rse          :1080, 1130
-    retrieval.compression  :1130, 1280
+    retrieval.parent_context :1130, 1160
+    retrieval.compression  :1160, 1310
 
     section generation
-    generation.llm         :1280, 2300
+    generation.llm         :1310, 2300
 ```
 
 Configure the collector endpoint:
@@ -1285,7 +1321,9 @@ Configure the collector endpoint:
 LOGGING__OTEL_ENDPOINT=http://localhost:4317
 ```
 
-When RSE is enabled, span `retrieval.rse` appears between `retrieval.reranking` and `retrieval.compression`, with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
+When RSE is enabled, span `retrieval.rse` appears between `retrieval.reranking` and `retrieval.parent_context` (or `retrieval.compression` when parent context is off), with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
+
+When parent context is enabled (`chunking.strategy=parent_child` and `retrieval.parent_context.enabled=true`), span `retrieval.parent_context` appears between `retrieval.rse` (or `retrieval.reranking` when RSE is off) and `retrieval.compression`, with attributes `resolved_count` (child chunks expanded to parent text) and `chunk_count`.
 
 ### Prometheus Metrics
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.core.constants import CHUNK_RAW_TEXT_KEY
+from src.core.constants import CHUNK_PARENT_ID_KEY, CHUNK_RAW_TEXT_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.compression.contextual_compression import ContextualCompressor
@@ -162,8 +162,106 @@ class TestCompressEnabled:
         assert result[0].metadata[CHUNK_RAW_TEXT_KEY] == "Short extract."
         assert chunk_context_text(result[0]) == "Short extract."
 
+    def test_syncs_parent_context_text_after_compression(self):
+        """Parent-expanded chunks must keep metadata in sync so LLM context is compressed."""
+        chunk = Chunk(
+            id="child-0",
+            document_id="doc",
+            text="child slice.",
+            metadata={
+                CHUNK_PARENT_ID_KEY: "parent-0",
+                PARENT_CONTEXT_TEXT_KEY: "Full parent passage with lots of detail.",
+            },
+        )
+        result = _compressor("Compressed parent excerpt.").compress("q", [chunk])
+        assert result[0].text == "Compressed parent excerpt."
+        assert result[0].metadata[PARENT_CONTEXT_TEXT_KEY] == "Compressed parent excerpt."
+        assert chunk_context_text(result[0]) == "Compressed parent excerpt."
 
-# ── from_settings ──────────────────────────────────────────────────────────────
+    def test_sibling_parent_context_compresses_once(self):
+        parent_text = "Full parent passage with lots of detail."
+        siblings = [
+            Chunk(
+                id="child-0",
+                document_id="doc",
+                text="slice a.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+            Chunk(
+                id="child-1",
+                document_id="doc",
+                text="slice b.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+        ]
+        comp = _compressor("Compressed parent excerpt.")
+        result = comp.compress("q", siblings)
+        assert len(result) == 2
+        assert [c.id for c in result] == ["child-0", "child-1"]
+        parent_ctx_a = result[0].metadata[PARENT_CONTEXT_TEXT_KEY]
+        parent_ctx_b = result[1].metadata[PARENT_CONTEXT_TEXT_KEY]
+        assert parent_ctx_a == parent_ctx_b
+        assert comp._llm.generate.call_count == 1  # type: ignore[attr-defined]
+
+    def test_sibling_parent_context_kept_when_budget_exhausted(self):
+        parent_text = "Full parent passage with lots of detail."
+        siblings = [
+            Chunk(
+                id="child-0",
+                document_id="doc",
+                text="slice a.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+            Chunk(
+                id="child-1",
+                document_id="doc",
+                text="slice b.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+        ]
+        long_extract = "word " * 200
+        comp = _compressor(response=long_extract, max_tokens=60)
+        result = comp.compress("q", siblings)
+        assert len(result) == 2
+        assert [c.id for c in result] == ["child-0", "child-1"]
+        assert comp._llm.generate.call_count == 1  # type: ignore[attr-defined]
+
+    def test_parent_hit_and_enriched_child_compress_once(self):
+        parent_text = "Full parent passage with lots of detail."
+        chunks = [
+            Chunk(
+                id="parent-0",
+                document_id="doc",
+                text=parent_text,
+            ),
+            Chunk(
+                id="child-0",
+                document_id="doc",
+                text="child slice.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+        ]
+        comp = _compressor("Compressed parent excerpt.")
+        result = comp.compress("q", chunks)
+        assert len(result) == 2
+        assert [c.id for c in result] == ["parent-0", "child-0"]
+        assert result[0].text == result[1].text == "Compressed parent excerpt."
+        assert comp._llm.generate.call_count == 1  # type: ignore[attr-defined]
 
 
 class TestFromSettings:

@@ -152,5 +152,8 @@ class RetrievalPipeline:
             top_k_final=cfg.top_k_final,
             rse_enabled=cfg.rse.enabled,
             rse_max_segment_tokens=cfg.rse.max_segment_tokens,
+            parent_context_enabled=cfg.parent_context.enabled,
+            parent_child_strategy=settings.chunking.strategy == "parent_child",
+            chunk_lookup=bm25_index,
         )
         return cls(service=service)

@@ -1358,7 +1358,7 @@
 ---
 
 ### T-124 · Context Window Enhancement (Parent Context on Retrieve)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** When retrieving child chunks, include parent chunk text (and optional sibling context) in the context sent to the LLM — inspired by RAG_Techniques `context_enrichment_window_around_chunk.py`.
 - **Inputs:** T-011 (`ParentChildChunker`), T-123 (RSE — complementary)
 - **Outputs:** Retrieval resolves child → parent context before compression/generation.
@@ -1776,7 +1776,7 @@
 
 ### T-152 · Golden Dataset Population & CI Gate Hardening
 - **Status:** `[ ]`
-- **Goal:** Replace placeholder golden dataset rows with real QA pairs and enforce eval regression gates in CI — closes the gap identified vs RAG_Techniques eval operationalization.
+- **Goal:** Replace placeholder golden dataset rows with real QA pairs and enforce eval regression gates in CI — closes the gap identified vs RAG_Techniques eval operationalization. Static analysis gate hardening tracked separately in **T-171**.
 - **Inputs:** T-040 (`SyntheticDatasetBuilder`), T-044 (`/evals/run`), T-061 (CI pipeline)
 - **Outputs:** Populated `datasets/goldens/qa_dataset.json`; CI fails on metric regression with real data.
 - **Files:**
@@ -1790,6 +1790,212 @@
   - `POST /evals/run` returns 200 (not 204) after evals
   - CI retrieval regression job runs when real golden data present
   - README documents eval setup workflow
+
+---
+
+## Phase 15 — Production Hardening & Scalability (Priority 5)
+
+> **Motivation:** Close gaps identified in `CODE_ANALYSIS_REPORT.md` that are outside the RAG-technique roadmap (Phases 12–14). These are infrastructure, security, and scalability improvements required before high-traffic production deployment.
+>
+> **Reference:** `CODE_ANALYSIS_REPORT.md` — Security checklist, Performance bottlenecks, Known vulnerabilities
+>
+> **Depends on:** Phase 3 (T-032 API), Phase 6 (T-061 CI), Phase 8 (T-082 Docker), Phase 9 (T-095 Ingress)
+
+---
+
+### T-160 · API Rate Limiting Middleware
+- **Status:** `[ ]`
+- **Goal:** Protect sensitive endpoints (`/ingest`, `/chat`, `/chat/agent`, `/evals/run`) from abuse with configurable per-IP or per-API-key rate limits — closes the gap flagged in the code analysis security checklist.
+- **Inputs:** T-032 (`src/api/security.py`, routers), T-051 (Prometheus metrics)
+- **Outputs:** FastAPI middleware that returns `429 Too Many Requests` when limits are exceeded; metrics counter for throttled requests.
+- **Files:**
+  - `src/api/rate_limit.py` — sliding-window or token-bucket limiter (Redis-backed when available, in-memory fallback)
+  - `src/core/settings.py` — add `APIRateLimitSettings` nested under `APISettings`
+  - `configs/app.yaml` — add `api.rate_limit` block
+  - `.env.example` — add `API__RATE_LIMIT__ENABLED`, `API__RATE_LIMIT__REQUESTS_PER_MINUTE`
+  - `src/main.py` — register middleware after auth
+  - `src/observability/metrics.py` — `rag_rate_limit_rejected_total` counter
+  - `tests/unit/test_rate_limit.py`
+- **Config schema:**
+  ```yaml
+  api:
+    rate_limit:
+      enabled: false
+      requests_per_minute: 60
+      burst: 10
+  ```
+- **Acceptance Criteria:**
+  - Disabled by default (`enabled=false`) — no behavior change for local dev
+  - When enabled, exceeding limit returns `429` with `Retry-After` header
+  - `/health` and `/metrics` exempt from rate limiting
+  - Redis unavailable → in-memory limiter with warning log (graceful degradation)
+  - `pytest tests/unit/test_rate_limit.py` passes
+
+---
+
+### T-161 · Automated Dependency Scanning (CI)
+- **Status:** `[ ]`
+- **Goal:** Replace manual CVE tracking with automated dependency scanning on every PR — addresses the code analysis finding that dependency scanning is currently manual.
+- **Inputs:** T-061 (CI pipeline), `pyproject.toml`, `uv.lock`
+- **Outputs:** CI job that fails on high/critical CVEs in direct and transitive dependencies.
+- **Files:**
+  - `.github/workflows/ci.yml` — add `dependency-scan` job
+  - `scripts/check_dependencies.sh` — wrapper around `uv pip audit` or `pip-audit`
+  - `docs/dependency-policy.md` — document allowlist process for unfixable CVEs
+- **Acceptance Criteria:**
+  - CI runs dependency scan on every PR
+  - Known unfixable CVEs (e.g. diskcache) documented in allowlist file with expiry/review date
+  - Scan completes in < 2 minutes
+  - `make audit-deps` runs locally with same tool as CI
+
+---
+
+### T-162 · Transitive Dependency CVE Mitigation (diskcache)
+- **Status:** `[ ]`
+- **Goal:** Formalize monitoring and mitigation for CVE-2025-69872 in `diskcache` (transitive via `llama-cpp-python`). No PyPI fix available as of 2025-06 — track upstream and apply compensating controls.
+- **Inputs:** T-161 (dependency scanning), T-030 (`llama_cpp_provider.py`), `pyproject.toml` CVE comment
+- **Outputs:** Documented risk acceptance, optional cache disable switch, automated upstream version check.
+- **Files:**
+  - `docs/security-advisories.md` — diskcache CVE entry with impact assessment and review schedule
+  - `src/core/settings.py` — add `llm.disable_disk_cache: bool = False` (passes through to llama-cpp if supported)
+  - `.github/dependabot.yml` — enable weekly dependency updates for `llama-cpp-python`
+  - `scripts/check_diskcache_cve.sh` — checks PyPI for patched `diskcache` release
+- **Acceptance Criteria:**
+  - CVE documented with CVSS, exposure path, and quarterly review date
+  - `LLM__DISABLE_DISK_CACHE=true` disables llama.cpp disk caching when exploit becomes active
+  - T-161 allowlist entry references T-162 doc with expiry date
+  - Script exits 0 when no fix available, exits 2 when fix is available but not applied
+
+---
+
+### T-163 · Async llama.cpp Streaming
+- **Status:** `[ ]`
+- **Goal:** Replace the thread + queue streaming pattern in `LlamaCppProvider` with native async bindings (when available) or `asyncio.to_thread` isolation — addresses the code analysis performance bottleneck under concurrent load.
+- **Inputs:** T-030 (`llama_cpp_provider.py`), T-031 (`ChatPipeline`)
+- **Outputs:** Non-blocking streaming that does not contend with the FastAPI event loop under concurrent requests.
+- **Files:**
+  - `src/infrastructure/llm/llama_cpp_provider.py` — refactor `_stream_in_thread` to async-safe pattern
+  - `tests/unit/test_llama_cpp_provider.py` — concurrent stream smoke test
+  - `tests/integration/test_llm.py` — verify streaming still works end-to-end
+- **Approach (evaluate in order):**
+  1. Use `asyncio.to_thread` + bounded queue if llama-cpp-python adds async API
+  2. Process pool for model inference (heavier but fully isolated)
+  3. Document `LLM__PROVIDER=ollama` as recommended for high-concurrency deployments
+- **Acceptance Criteria:**
+  - 10 concurrent streaming requests complete without event-loop starvation (verified in test)
+  - Single-request latency unchanged within 5%
+  - Existing `generate_stream` API signature unchanged
+  - OTel span `llm.stream` records queue wait time
+
+---
+
+### T-164 · Neo4j Async Driver Integration
+- **Status:** `[ ]`
+- **Goal:** Migrate graph repository calls from synchronous Neo4j driver to `AsyncGraphDatabase` so graph retrieval does not block the event loop when `neo4j.enabled=true`.
+- **Inputs:** T-070 (`neo4j_graph.py`), T-111 (graph wiring), T-112 (Neo4j settings)
+- **Outputs:** Async graph queries compatible with the async hybrid retriever path.
+- **Files:**
+  - `src/infrastructure/vectordb/neo4j_graph.py` — migrate to `neo4j.AsyncGraphDatabase`
+  - `src/rag/retrieval/graph_retriever.py` — async `retrieve()` method
+  - `src/rag/retrieval/hybrid_retriever.py` — await graph branch in parallel gather
+  - `tests/unit/test_graph_rag.py` — update mocks for async interface
+- **Acceptance Criteria:**
+  - Graph retrieval runs concurrently with dense + BM25 via `asyncio.gather`
+  - Sync driver removed or isolated behind feature flag during migration
+  - Neo4j unreachable → same graceful degradation as T-111 (warning + continue)
+  - Connection pooling configured via `neo4j.max_connection_pool_size` in settings
+
+---
+
+### T-165 · Disk-Backed BM25 Index (Scale)
+- **Status:** `[ ]`
+- **Goal:** Extend the in-memory BM25 index (T-014) with a disk-backed mode for corpora exceeding 1M chunks — addresses the code analysis scalability note without replacing the current default.
+- **Inputs:** T-014 (`bm25.py`), T-015 (ingestion pipeline)
+- **Outputs:** Configurable BM25 backend: `memory` (default) or `disk` (mmap/segmented index).
+- **Files:**
+  - `src/infrastructure/vectordb/bm25_disk.py` — disk-backed index implementation
+  - `src/infrastructure/vectordb/bm25.py` — factory selects backend from settings
+  - `src/core/settings.py` — add `retrieval.bm25.backend: Literal["memory", "disk"]`
+  - `configs/retrieval.yaml` — add `bm25.backend`, `bm25.disk_path`
+  - `tests/unit/test_bm25_disk.py`
+- **Acceptance Criteria:**
+  - Default `backend=memory` — zero behavior change
+  - `backend=disk` indexes and searches correctly for 100K+ chunk fixture
+  - Incremental updates work (re-ingest adds/removes chunks)
+  - Memory usage for disk backend stays bounded regardless of corpus size
+  - README documents when to switch backends
+
+---
+
+## Phase 16 — Code Quality & Type Safety (Priority 6)
+
+> **Motivation:** Restore and maintain the Phase 6 quality gate (`T-060`: `make lint` exits 0) beyond the immediate mypy fixes applied during Phase 12. Reduce the 56 `type: ignore` comments flagged in the code analysis and harden CI enforcement.
+>
+> **Reference:** `CODE_ANALYSIS_REPORT.md` — Type Safety Gaps, Code Quality
+>
+> **Depends on:** Phase 6 (T-060, T-061), Phase 12 (T-120–T-124 — source of recent type regressions)
+
+---
+
+### T-170 · Type Ignore Audit & Reduction
+- **Status:** `[ ]`
+- **Goal:** Audit all 56 `type: ignore` comments, remove unnecessary ones, and replace fixable suppressions with proper types or targeted `mypy` overrides — brings type safety from grade B to A.
+- **Inputs:** T-060 (mypy strict config), current `src/` codebase
+- **Outputs:** Reduced `type: ignore` count (target: < 20), documented justification for each remaining suppression.
+- **Files:**
+  - `pyproject.toml` — tighten per-module overrides where possible; enable `warn_unused_ignores = true`
+  - `src/infrastructure/llm/llama_cpp_provider.py` — reduce ignores (5 current)
+  - `src/infrastructure/vectordb/qdrant.py` — reduce ignores (5 current)
+  - `src/rag/pipelines/ingestion_pipeline.py` — reduce ignores (5 current)
+  - `src/rag/pipelines/retrieval_pipeline.py` — reduce ignores (5 current)
+  - `docs/type-safety.md` — table of remaining ignores with reason and removal plan
+- **Acceptance Criteria:**
+  - `uv run mypy src` exits 0 with zero errors
+  - `type: ignore` count ≤ 20 (down from 56)
+  - Each remaining ignore documented in `docs/type-safety.md`
+  - `warn_unused_ignores = true` enabled without new warnings
+
+---
+
+### T-171 · Mypy CI Gate Hardening
+- **Status:** `[ ]`
+- **Goal:** Ensure CI blocks PRs on any mypy regression — extends T-152 eval gate hardening to static analysis. Closes the gap where Phase 12 feature work can reintroduce type errors.
+- **Inputs:** T-061 (CI pipeline), T-170 (clean baseline), T-152 (gate hardening pattern)
+- **Outputs:** CI fails if `mypy src` reports any error; pre-commit hook matches CI exactly.
+- **Files:**
+  - `.github/workflows/ci.yml` — verify mypy job fails on error (not `continue-on-error`)
+  - `.pre-commit-config.yaml` — ensure mypy hook matches CI args
+  - `Makefile` — `make lint` runs mypy + ruff + basedpyright in same order as CI
+  - `tests/unit/test_contextual_headers.py`, `tests/unit/test_compression.py` — type-regression fixtures
+- **Acceptance Criteria:**
+  - PR with intentional mypy error is blocked by CI
+  - `make lint` and CI use identical commands
+  - Pre-commit mypy hook catches errors before commit
+  - README documents lint workflow for contributors
+
+---
+
+### T-172 · Performance Baseline & Regression Benchmark
+- **Status:** `[ ]`
+- **Goal:** Establish baseline latency/throughput metrics for the infrastructure bottlenecks flagged in the code analysis (LLM streaming, BM25 memory, Neo4j sync) so Phase 15 optimizations can be measured.
+- **Inputs:** T-043 (`RAGBenchmark`), T-051 (Prometheus metrics), T-163–T-165 (optimization targets)
+- **Outputs:** Benchmark script and CI-optional regression check for p50/p95 latency under concurrent load.
+- **Files:**
+  - `scripts/benchmark_infra.py` — concurrent chat + ingest load test
+  - `src/evals/e2e/infra_benchmark.py` — orchestrates scenarios
+  - `configs/evals.yaml` — add `infra_benchmark` thresholds
+  - `data/exports/infra_baseline.json` — committed baseline for comparison
+  - `tests/benchmarks/test_infra_benchmark.py` — skip in CI unless `RUN_INFRA_BENCHMARK=1`
+- **Scenarios:**
+  1. Single streaming chat — p50/p95 token latency
+  2. 10 concurrent chats — event-loop health (no timeout failures)
+  3. BM25 search on 100K chunk fixture — memory + latency
+  4. Graph retrieval with Neo4j enabled — query latency
+- **Acceptance Criteria:**
+  - Baseline captured and committed after T-163–T-165 land
+  - `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
+  - `make benchmark-infra` documented in README
+  - Results saved to `data/exports/infra_benchmark_{timestamp}.json`
 
 ---
 
@@ -1836,6 +2042,14 @@ T-013 + T-117 ──► T-145
 T-043 + T-110..T-145 ──► T-150
 T-011 + T-043 ──► T-151
 T-040 + T-061 ──► T-152
+T-032 + T-051 ──► T-160
+T-061 ──► T-161 ──► T-162
+T-030 + T-031 ──► T-163
+T-111 + T-112 ──► T-164
+T-014 + T-015 ──► T-165
+T-060 + T-061 ──► T-170 ──► T-171
+T-043 + T-051 ──► T-172
+T-163 + T-164 + T-165 ──► T-172
 ```
 
 ## Quick Start Order for an Agent
@@ -1854,3 +2068,5 @@ T-040 + T-061 ──► T-152
 12. **Phase 12 — Priority 2 (Index-Time Enrichment):** T-120 → T-121 → T-122 → T-123 → T-124 → T-125 → T-126 _(~3 sessions)_
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → T-150 → T-151 → T-152 _(~3 sessions)_
+15. **Phase 15 — Priority 5 (Production Hardening & Scalability):** T-161 → T-162 → T-160 → T-163 → T-164 → T-165 _(~2 sessions)_
+16. **Phase 16 — Priority 6 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session)_

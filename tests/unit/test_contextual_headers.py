@@ -10,6 +10,7 @@ from src.rag.chunking.contextual_headers import (
     ContextualHeadersChunker,
     build_header_line,
     chunk_context_text,
+    join_chunk_context,
     prepend_headers,
 )
 from src.rag.chunking.recursive_chunker import RecursiveChunker
@@ -109,6 +110,19 @@ class TestChunkContextText:
         chunk = Chunk(document_id="d1", text="No header applied.")
         assert chunk_context_text(chunk) == "No header applied."
 
+    def test_empty_parent_context_falls_back_to_child_text(self):
+        from src.core.constants import CHUNK_PARENT_ID_KEY, PARENT_CONTEXT_TEXT_KEY
+
+        chunk = Chunk(
+            document_id="d1",
+            text="child fallback.",
+            metadata={
+                CHUNK_PARENT_ID_KEY: "parent-0",
+                PARENT_CONTEXT_TEXT_KEY: "",
+            },
+        )
+        assert chunk_context_text(chunk) == "child fallback."
+
     def test_exclude_false_returns_prefixed_text(self):
         chunk = Chunk(
             document_id="d1",
@@ -127,3 +141,126 @@ class TestChunkContextText:
             metadata={CHUNK_RAW_TEXT_KEY: "Actual content."},
         )
         assert chunk_context_text(chunk, exclude_from_llm_context=True) == "Actual content."
+
+
+class TestJoinChunkContext:
+    def test_joins_distinct_chunks(self):
+        chunks = [
+            Chunk(document_id="d1", text="first passage."),
+            Chunk(document_id="d1", text="second passage."),
+        ]
+        assert join_chunk_context(chunks) == "first passage.\n\nsecond passage."
+
+    def test_deduplicates_siblings_with_same_parent(self):
+        from src.core.constants import CHUNK_PARENT_ID_KEY, PARENT_CONTEXT_TEXT_KEY
+
+        parent_text = "shared parent passage."
+        chunks = [
+            Chunk(
+                id="child-0",
+                document_id="d1",
+                text="child one.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+            Chunk(
+                id="child-1",
+                document_id="d1",
+                text="child two.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+        ]
+        assert join_chunk_context(chunks) == parent_text
+
+    def test_keeps_distinct_children_without_parent_context(self):
+        from src.core.constants import CHUNK_PARENT_ID_KEY
+
+        chunks = [
+            Chunk(
+                id="child-0",
+                document_id="d1",
+                text="child one slice.",
+                metadata={CHUNK_PARENT_ID_KEY: "parent-0"},
+            ),
+            Chunk(
+                id="child-1",
+                document_id="d1",
+                text="child two slice.",
+                metadata={CHUNK_PARENT_ID_KEY: "parent-0"},
+            ),
+        ]
+        assert join_chunk_context(chunks) == "child one slice.\n\nchild two slice."
+
+    def test_deduplicates_parent_hit_when_enriched_child_present(self):
+        from src.core.constants import CHUNK_PARENT_ID_KEY, PARENT_CONTEXT_TEXT_KEY
+
+        parent_text = "shared parent passage."
+        chunks = [
+            Chunk(
+                id="parent-0",
+                document_id="d1",
+                text=parent_text,
+            ),
+            Chunk(
+                id="child-0",
+                document_id="d1",
+                text="child slice.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+        ]
+        assert join_chunk_context(chunks) == parent_text
+
+    def test_deduplicates_parent_hit_after_enriched_child(self):
+        from src.core.constants import CHUNK_PARENT_ID_KEY, PARENT_CONTEXT_TEXT_KEY
+
+        parent_text = "shared parent passage."
+        chunks = [
+            Chunk(
+                id="child-0",
+                document_id="d1",
+                text="child slice.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: parent_text,
+                },
+            ),
+            Chunk(
+                id="parent-0",
+                document_id="d1",
+                text=parent_text,
+            ),
+        ]
+        assert join_chunk_context(chunks) == parent_text
+
+    def test_empty_parent_context_keeps_sibling_child_text(self):
+        from src.core.constants import CHUNK_PARENT_ID_KEY, PARENT_CONTEXT_TEXT_KEY
+
+        chunks = [
+            Chunk(
+                id="child-0",
+                document_id="d1",
+                text="child one slice.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: "",
+                },
+            ),
+            Chunk(
+                id="child-1",
+                document_id="d1",
+                text="child two slice.",
+                metadata={
+                    CHUNK_PARENT_ID_KEY: "parent-0",
+                    PARENT_CONTEXT_TEXT_KEY: "",
+                },
+            ),
+        ]
+        assert join_chunk_context(chunks) == "child one slice.\n\nchild two slice."
