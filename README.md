@@ -372,7 +372,7 @@ chunking:
 
 ##### Proposition Chunking (T-126)
 
-Indexes **atomic factual propositions** instead of arbitrary text windows. At ingest, the document is split into processing segments (recursive chunker — these segments are not indexed), then an LLM extracts standalone factual statements from each segment and grades each proposition on accuracy, clarity, completeness, and conciseness. Propositions below `chunking.proposition.quality_threshold` (default 7/10 per category) are discarded.
+Indexes **atomic factual propositions** instead of arbitrary text windows. At ingest, the document is split into non-overlapping processing segments (recursive chunker with `overlap: 0` — these segments are not indexed), then an LLM extracts standalone factual statements from each segment and grades each proposition on accuracy, clarity, completeness, and conciseness. Propositions below `chunking.proposition.quality_threshold` (default 7/10 per category) are discarded. Duplicate propositions extracted from multiple segments are deduplicated before indexing.
 
 ```yaml
 # configs/retrieval.yaml
@@ -1268,7 +1268,7 @@ retrieval:
     max_segment_tokens: 1500
 ```
 
-**When to use:** corpora chunked with `recursive`, `semantic`, `parent_child`, or `proposition` strategies (all set `chunk_index`). Complements parent-child chunking: RSE stitches adjacent sibling children into segments; for expanding a single child hit to its full parent passage, enable [Parent Context (T-124)](#parent-context-on-retrieve-t-124).
+**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (passage slices with `chunk_index`). Not for `proposition` strategy — propositions are independent atomic facts and pass through unchanged. Complements parent-child chunking: RSE stitches adjacent sibling children into segments; for expanding a single child hit to its full parent passage, enable [Parent Context (T-124)](#parent-context-on-retrieve-t-124).
 
 **Behavior:** merged segments keep the lowest-index chunk's ID as anchor; `metadata.merged_chunk_ids` lists all contributing chunk IDs (also expanded in `Answer.sources` via `chunk_source_ids`). Chunks without `chunk_index` pass through unchanged. Contextual headers (T-120): merged `raw_text` includes all source bodies. OTel span `retrieval.rse` records `merge_count`.
 

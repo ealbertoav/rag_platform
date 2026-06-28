@@ -238,6 +238,7 @@ class IngestionPipeline:
 
             chunker_kwargs["llm"] = LlamaCppProvider.from_settings()
             chunker_kwargs["quality_threshold"] = cfg.proposition.quality_threshold
+            chunker_kwargs["overlap"] = 0
         chunker = get_chunker(
             cfg.strategy,
             use_contextual_headers=cfg.contextual_headers.enabled,

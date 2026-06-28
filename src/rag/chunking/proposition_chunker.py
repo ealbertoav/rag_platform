@@ -7,7 +7,12 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
-from src.core.constants import CHUNK_INDEX_KEY, CHUNK_SOURCE_KEY
+from src.core.constants import (
+    CHUNK_SOURCE_KEY,
+    CHUNK_TYPE_KEY,
+    CHUNK_TYPE_PROPOSITION,
+    PROPOSITION_INDEX_KEY,
+)
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.repositories.llm_repository import LLMRepository
@@ -17,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "ingestion" / "extract_propositions.txt"
 
-_GRADE_PROMPT = """Evaluate the proposition below against the original text.
+_GRADE_PROMPT = Template("""Evaluate the proposition below against the original text.
 
 Rate each category from 1 to 10:
 - accuracy: how well the proposition reflects the original text
@@ -26,13 +31,13 @@ Rate each category from 1 to 10:
 - conciseness: whether the proposition is concise without losing information
 
 Original text:
-{original_text}
+$original_text
 
 Proposition:
-{proposition}
+$proposition
 
 Output ONLY valid JSON with integer fields: accuracy, clarity, completeness, conciseness.
-"""
+""")
 
 
 def load_extract_template(path: Path | None = None) -> Template:
@@ -59,9 +64,9 @@ def grade_proposition(
     llm: LLMRepository,
 ) -> dict[str, int] | None:
     """Return quality scores for *proposition* or None when grading fails."""
-    prompt = _GRADE_PROMPT.format(
-        original_text=original_text.strip(),
-        proposition=proposition.strip(),
+    prompt = _GRADE_PROMPT.substitute(
+        original_text=_escape_template(original_text.strip()),
+        proposition=_escape_template(proposition.strip()),
     )
     response = llm.generate(prompt=prompt, context="").strip()
     return _parse_scores(response)
@@ -76,16 +81,18 @@ def passes_quality_threshold(scores: dict[str, int], threshold: int) -> bool:
 class PropositionChunker:
     """Extracts and quality-filters atomic factual propositions via LLM calls.
 
-    Documents are first split into processing segments (recursive chunker) that
-    are never indexed directly. Each segment is decomposed into propositions;
-    low-scoring propositions are discarded before indexing.
+    Documents are first split into non-overlapping processing segments (recursive
+    chunker) that are never indexed directly. Each segment is decomposed into
+    propositions; low-scoring and duplicate propositions are discarded before
+    indexing. Indexed chunks use "proposition_index" (not "chunk_index"), so
+    they are not merged by RSE at query time.
     """
 
     def __init__(
         self,
         llm: LLMRepository,
         chunk_size: int = 500,
-        overlap: int = 50,
+        overlap: int = 0,
         quality_threshold: int = 7,
         template: Template | None = None,
     ) -> None:
@@ -103,14 +110,14 @@ class PropositionChunker:
 
         chunks: list[Chunk] = []
         proposition_index = 0
+        seen_propositions: set[str] = set()
 
         for segment in segments:
             try:
                 propositions = extract_propositions(segment.text, self._llm, self._template)
             except Exception as exc:
                 logger.warning(
-                    "Proposition extraction failed for segment %s in %s: %s",
-                    segment.metadata.get(CHUNK_INDEX_KEY),
+                    "Proposition extraction failed for segment in %s: %s",
                     document.source,
                     exc,
                 )
@@ -136,10 +143,16 @@ class PropositionChunker:
                 if not passes_quality_threshold(scores, self._quality_threshold):
                     continue
 
+                normalized = _normalize_proposition_key(text)
+                if normalized in seen_propositions:
+                    continue
+                seen_propositions.add(normalized)
+
                 metadata = {
                     **document.metadata,
                     CHUNK_SOURCE_KEY: document.source,
-                    CHUNK_INDEX_KEY: proposition_index,
+                    CHUNK_TYPE_KEY: CHUNK_TYPE_PROPOSITION,
+                    PROPOSITION_INDEX_KEY: proposition_index,
                     "proposition_scores": scores,
                 }
                 chunks.append(
@@ -152,6 +165,16 @@ class PropositionChunker:
                 proposition_index += 1
 
         return chunks
+
+
+def _escape_template(text: str) -> str:
+    """Escape "$" so user content is safe for: class:`string.Template`."""
+    return text.replace("$", "$$")
+
+
+def _normalize_proposition_key(text: str) -> str:
+    """Normalize proposition text for cross-segment deduplication."""
+    return " ".join(text.split()).casefold()
 
 
 def _parse_propositions(text: str) -> list[str]:
@@ -209,13 +232,23 @@ def _normalise_scores(data: Any) -> dict[str, int] | None:
 
 
 def _coerce_score(value: Any) -> int | None:
-    """Convert LLM score values to integers (accepts whole-number floats)."""
+    """Convert LLM score values to integers (accepts whole-number floats and strings)."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
     if isinstance(value, float) and value.is_integer():
         return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = float(stripped)
+        except ValueError:
+            return None
+        if parsed.is_integer():
+            return int(parsed)
     return None
 
 

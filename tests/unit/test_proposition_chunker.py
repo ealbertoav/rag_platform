@@ -7,7 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.constants import CHUNK_INDEX_KEY, CHUNK_SOURCE_KEY
+from src.core.constants import (
+    CHUNK_SOURCE_KEY,
+    CHUNK_TYPE_KEY,
+    CHUNK_TYPE_PROPOSITION,
+    PROPOSITION_INDEX_KEY,
+)
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.rag.chunking import get_chunker
@@ -32,8 +37,8 @@ def _scores_json(**scores: int) -> str:
     return json.dumps(scores)
 
 
-def _chunker(llm: MagicMock) -> PropositionChunker:
-    return PropositionChunker(llm=llm, chunk_size=200, overlap=20, quality_threshold=7)
+def _chunker(llm: MagicMock, *, overlap: int = 0) -> PropositionChunker:
+    return PropositionChunker(llm=llm, chunk_size=200, overlap=overlap, quality_threshold=7)
 
 
 class TestPropositionParsing:
@@ -79,6 +84,37 @@ class TestPropositionParsing:
             "conciseness": 7,
         }
 
+    def test_grade_proposition_parses_string_scores(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps(
+            {"accuracy": "9", "clarity": "8", "completeness": "8", "conciseness": "7"}
+        )
+        scores = grade_proposition("Dental coverage begins January 1.", "source text", llm)
+        assert scores == {
+            "accuracy": 9,
+            "clarity": 8,
+            "completeness": 8,
+            "conciseness": 7,
+        }
+
+    def test_grade_proposition_handles_braces_in_text(self):
+        llm = MagicMock()
+        llm.generate.return_value = _scores_json(
+            accuracy=9, clarity=8, completeness=8, conciseness=7
+        )
+        original = 'Coverage applies when {"status": "active"} and {tier: "gold"}.'
+        proposition = 'The policy covers members with {"status": "active"}.'
+        scores = grade_proposition(proposition, original, llm)
+        assert scores == {
+            "accuracy": 9,
+            "clarity": 8,
+            "completeness": 8,
+            "conciseness": 7,
+        }
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert '{"status": "active"}' in prompt
+        assert '{tier: "gold"}' in prompt
+
 
 class TestPropositionChunker:
     def test_returns_standalone_proposition_chunks(self):
@@ -118,8 +154,10 @@ class TestPropositionChunker:
         chunks = _chunker(llm).chunk(doc)
         assert chunks[0].document_id == doc.id
         assert chunks[0].metadata[CHUNK_SOURCE_KEY] == "contracts/a.pdf"
-        assert chunks[0].metadata[CHUNK_INDEX_KEY] == 0
+        assert chunks[0].metadata[PROPOSITION_INDEX_KEY] == 0
+        assert chunks[0].metadata[CHUNK_TYPE_KEY] == CHUNK_TYPE_PROPOSITION
         assert "proposition_scores" in chunks[0].metadata
+        assert "chunk_index" not in chunks[0].metadata
 
     def test_empty_document_returns_empty(self):
         llm = MagicMock()
@@ -160,3 +198,32 @@ class TestPropositionChunker:
     def test_load_extract_template_reads_prompt_file(self):
         template = load_extract_template()
         assert "$text" in template.template
+
+    def test_deduplicates_propositions_across_segments(self):
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            _propositions_json(["Employees receive 20 days of paid leave per year."]),
+            _scores_json(accuracy=9, clarity=8, completeness=8, conciseness=8),
+            _propositions_json(["Employees receive 20 days of paid leave per year."]),
+            _scores_json(accuracy=9, clarity=8, completeness=8, conciseness=8),
+        ]
+        long_doc = _doc(" ".join(["Employees receive twenty days of paid leave each year."] * 40))
+        chunks = PropositionChunker(llm=llm, chunk_size=80, overlap=0, quality_threshold=7).chunk(
+            long_doc
+        )
+        assert len(chunks) == 1
+        assert chunks[0].text == "Employees receive 20 days of paid leave per year."
+
+    def test_case_insensitive_deduplication(self):
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            _propositions_json(["The policy covers dental care."]),
+            _scores_json(accuracy=9, clarity=8, completeness=8, conciseness=8),
+            _propositions_json(["the policy covers dental care."]),
+            _scores_json(accuracy=9, clarity=8, completeness=8, conciseness=8),
+        ]
+        long_doc = _doc(" ".join(["Dental coverage details for all employees."] * 40))
+        chunks = PropositionChunker(llm=llm, chunk_size=80, overlap=0, quality_threshold=7).chunk(
+            long_doc
+        )
+        assert len(chunks) == 1
