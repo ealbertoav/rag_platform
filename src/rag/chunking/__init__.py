@@ -6,6 +6,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.rag.chunking.contextual_headers import ContextualHeadersChunker
 from src.rag.chunking.parent_child_chunker import ParentChildChunker
+from src.rag.chunking.proposition_chunker import PropositionChunker
 from src.rag.chunking.recursive_chunker import RecursiveChunker
 from src.rag.chunking.semantic_chunker import SemanticChunker
 
@@ -28,6 +29,8 @@ def get_chunker(
             chunker = SemanticChunker(**kwargs)  # type: ignore[arg-type]
         case "parent_child":
             chunker = ParentChildChunker(**kwargs)  # type: ignore[arg-type]
+        case "proposition":
+            chunker = PropositionChunker(**kwargs)  # type: ignore[arg-type]
         case _:
             raise ValueError(f"Unknown chunking strategy: {strategy!r}")
 
@@ -40,6 +43,7 @@ __all__ = [
     "Chunker",
     "ContextualHeadersChunker",
     "ParentChildChunker",
+    "PropositionChunker",
     "RecursiveChunker",
     "SemanticChunker",
     "get_chunker",

@@ -108,6 +108,9 @@ class TestYamlDefaults:
         assert settings.chunking.hierarchical.enabled is False
         assert settings.chunking.hierarchical.summary_top_k == 3
 
+    def test_proposition_defaults_from_yaml(self):
+        assert settings.chunking.proposition.quality_threshold == 7
+
 
 class TestEnvVarOverride:
     def test_llm_provider_override(self, monkeypatch: pytest.MonkeyPatch):

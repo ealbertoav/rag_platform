@@ -10,6 +10,8 @@ from src.core.constants import (
     CHUNK_INDEX_KEY,
     CHUNK_PARENT_ID_KEY,
     CHUNK_RAW_TEXT_KEY,
+    CHUNK_TYPE_KEY,
+    CHUNK_TYPE_PROPOSITION,
     MERGED_CHUNK_IDS_KEY,
     RSE_MERGED_KEY,
 )
@@ -72,6 +74,25 @@ class TestMergeAdjacentBasics:
         chunk = Chunk(id="c0", document_id="doc-1", text="no index", metadata={})
         merged, merge_count = merge_adjacent([chunk], max_segment_tokens=500)
         assert merged == [chunk]
+        assert merge_count == 0
+
+    def test_proposition_chunks_not_merged_even_with_chunk_index(self):
+        chunks = [
+            _chunk(
+                "p0",
+                text="First atomic fact.",
+                chunk_index=0,
+                metadata={CHUNK_TYPE_KEY: CHUNK_TYPE_PROPOSITION},
+            ),
+            _chunk(
+                "p1",
+                text="Second atomic fact.",
+                chunk_index=1,
+                metadata={CHUNK_TYPE_KEY: CHUNK_TYPE_PROPOSITION},
+            ),
+        ]
+        merged, merge_count = merge_adjacent(chunks, max_segment_tokens=500)
+        assert len(merged) == 2
         assert merge_count == 0
 
 

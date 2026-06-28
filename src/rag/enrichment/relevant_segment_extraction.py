@@ -8,6 +8,8 @@ from src.core.constants import (
     CHUNK_INDEX_KEY,
     CHUNK_PARENT_ID_KEY,
     CHUNK_RAW_TEXT_KEY,
+    CHUNK_TYPE_KEY,
+    CHUNK_TYPE_PROPOSITION,
     MERGED_CHUNK_IDS_KEY,
     RSE_MERGED_KEY,
 )
@@ -37,7 +39,7 @@ def merge_adjacent(chunks: list[Chunk], max_segment_tokens: int) -> tuple[list[C
     passthrough: list[Chunk] = []
 
     for chunk in chunks:
-        if CHUNK_INDEX_KEY in chunk.metadata:
+        if _is_rse_mergeable(chunk):
             mergeable.append(chunk)
         else:
             passthrough.append(chunk)
@@ -91,6 +93,13 @@ def chunk_source_ids(chunk: Chunk) -> list[str]:
     if isinstance(ids, list) and ids:
         return [str(chunk_id) for chunk_id in ids]
     return [chunk.id]
+
+
+def _is_rse_mergeable(chunk: Chunk) -> bool:
+    """True when a chunk represents an adjacent passage slice eligible for RSE."""
+    if chunk.metadata.get(CHUNK_TYPE_KEY) == CHUNK_TYPE_PROPOSITION:
+        return False
+    return CHUNK_INDEX_KEY in chunk.metadata
 
 
 def _merge_group(chunk: Chunk) -> tuple[str, str | None]:

@@ -212,8 +212,12 @@ class HierarchicalSettings(BaseModel):
     summary_top_k: int = Field(default=3, ge=1, le=10)
 
 
+class PropositionSettings(BaseModel):
+    quality_threshold: int = Field(default=7, ge=1, le=10)
+
+
 class ChunkingSettings(BaseModel):
-    strategy: Literal["recursive", "semantic", "parent_child"] = "recursive"
+    strategy: Literal["recursive", "semantic", "parent_child", "proposition"] = "recursive"
     chunk_size: int = Field(default=500, gt=0)
     overlap: int = Field(default=50, ge=0)
     # SemanticChunker: split when cosine distance between adjacent sentences > threshold
@@ -224,6 +228,7 @@ class ChunkingSettings(BaseModel):
     contextual_headers: ContextualHeadersSettings = Field(default_factory=ContextualHeadersSettings)
     augmentation: AugmentationSettings = Field(default_factory=AugmentationSettings)
     hierarchical: HierarchicalSettings = Field(default_factory=HierarchicalSettings)
+    proposition: PropositionSettings = Field(default_factory=PropositionSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────

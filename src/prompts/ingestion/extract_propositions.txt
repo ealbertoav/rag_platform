@@ -1,0 +1,14 @@
+Break down the following text into simple, self-contained propositions.
+
+Each proposition must:
+1. Express a single fact or claim
+2. Be understandable without additional context (no unresolved pronouns)
+3. Include relevant qualifiers (dates, names, quantities) when present in the source
+4. Be concise — one sentence when possible
+
+Output ONLY valid JSON: a list of proposition strings. No markdown, headings, or commentary.
+
+Text:
+$text
+
+JSON output:
