@@ -96,19 +96,19 @@ class RetrievalService:
             chunks = self._rerank(query.text, chunks)
             span.set_attribute("chunk_count", len(chunks))
 
-        # 3.5 Relevant segment extraction (optional)
+        # 4. Relevant segment extraction (optional)
         if self._rse_enabled:
             with _tracer.start_as_current_span("retrieval.rse") as span:
                 chunks, merge_count = merge_adjacent(chunks, self._rse_max_segment_tokens)
                 span.set_attribute("merge_count", merge_count)
                 span.set_attribute("chunk_count", len(chunks))
 
-        # 4. Contextual compression (optional)
+        # 5. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
             chunks = self._compress(query.text, chunks)
             span.set_attribute("chunk_count", len(chunks))
 
-        # 5. Final top-K cap
+        # 6. Final top-K cap
         chunks = chunks[: self._top_k_final]
 
         context = "\n\n".join(chunk_context_text(c) for c in chunks)

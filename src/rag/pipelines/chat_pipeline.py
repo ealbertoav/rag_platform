@@ -9,6 +9,7 @@ from src.domain.entities.answer import Answer
 from src.domain.entities.query import Query
 from src.domain.services.generation_service import GenerationService
 from src.observability.metrics import record_generation, record_request
+from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
 from src.rag.pipelines.retrieval_pipeline import RetrievalPipeline
 
 if TYPE_CHECKING:
@@ -63,7 +64,7 @@ class ChatPipeline:
         query = Query(text=question)
         result = await self._retrieval.retrieve(query)
 
-        sources = [c.id for c in result.chunks]
+        sources = [chunk_id for c in result.chunks for chunk_id in chunk_source_ids(c)]
         answer = self._generation.generate(question, result.context, sources)
 
         elapsed = (time.monotonic() - t0) * 1000
@@ -91,7 +92,7 @@ class ChatPipeline:
         retrieval_result: RetrievalResult = await self._retrieval.retrieve(query)
 
         context_texts = [c.text for c in retrieval_result.chunks]
-        sources = [c.id for c in retrieval_result.chunks]
+        sources = [chunk_id for c in retrieval_result.chunks for chunk_id in chunk_source_ids(c)]
         answer = self._generation.generate(question, retrieval_result.context, sources)
 
         elapsed = (time.monotonic() - t0) * 1000

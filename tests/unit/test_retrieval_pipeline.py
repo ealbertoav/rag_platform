@@ -299,7 +299,11 @@ class TestRetrievalPipelineFromSettings:
             patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
         ):
             mock_settings.retrieval = MagicMock(
-                hybrid_alpha=0.7, top_k_dense=10, top_k_final=5, hybrid_fusion="rrf"
+                hybrid_alpha=0.7,
+                top_k_dense=10,
+                top_k_final=5,
+                hybrid_fusion="rrf",
+                rse=MagicMock(enabled=False, max_segment_tokens=1500),
             )
             mock_settings.neo4j = MagicMock(enabled=False)
             mock_settings.reranker = MagicMock(top_k=5)
@@ -328,7 +332,11 @@ class TestRetrievalPipelineFromSettings:
             patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
         ):
             mock_settings.retrieval = MagicMock(
-                hybrid_alpha=0.5, top_k_dense=20, top_k_final=5, hybrid_fusion="rrf"
+                hybrid_alpha=0.5,
+                top_k_dense=20,
+                top_k_final=5,
+                hybrid_fusion="rrf",
+                rse=MagicMock(enabled=False, max_segment_tokens=1500),
             )
             mock_settings.neo4j = MagicMock(enabled=False)
             mock_settings.reranker = MagicMock(top_k=5)
@@ -399,7 +407,11 @@ class TestBuildGraphRetriever:
             ),
         ):
             mock_settings.retrieval = MagicMock(
-                hybrid_alpha=0.7, top_k_dense=10, top_k_final=5, hybrid_fusion="rrf"
+                hybrid_alpha=0.7,
+                top_k_dense=10,
+                top_k_final=5,
+                hybrid_fusion="rrf",
+                rse=MagicMock(enabled=False, max_segment_tokens=1500),
             )
             mock_settings.neo4j = MagicMock(enabled=True)
             mock_settings.reranker = MagicMock(top_k=5)

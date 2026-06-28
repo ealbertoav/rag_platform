@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.core.constants import CHUNK_INDEX_KEY, MERGED_CHUNK_IDS_KEY
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
@@ -171,6 +172,20 @@ class TestChatPipelineFull:
         chunks = [_chunk(0), _chunk(1)]
         result = await _pipeline(chunks=chunks).chat_full("q")
         assert set(result.sources) == {"c0", "c1"}
+
+    @pytest.mark.asyncio
+    async def test_chat_full_sources_expand_rse_merged_chunk(self):
+        merged = Chunk(
+            id="c0",
+            document_id="doc",
+            text="merged segment",
+            metadata={
+                CHUNK_INDEX_KEY: 0,
+                MERGED_CHUNK_IDS_KEY: ["c0", "c1", "c2"],
+            },
+        )
+        result = await _pipeline(chunks=[merged]).chat_full("q")
+        assert set(result.sources) == {"c0", "c1", "c2"}
 
     @pytest.mark.asyncio
     async def test_chat_full_latency_positive(self):
