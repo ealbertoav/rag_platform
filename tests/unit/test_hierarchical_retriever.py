@@ -19,6 +19,7 @@ from src.rag.enrichment.hierarchical_indexer import (
     tag_detail_chunks,
 )
 from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
+from tests.unit.hybrid_retriever_helpers import assert_optional_retriever_participates_in_rrf
 
 
 def _document(text: str = "Revenue grew 12%. Costs fell 3%.") -> Document:
@@ -140,31 +141,4 @@ class TestHierarchicalRetriever:
 class TestHybridHierarchicalIntegration:
     @pytest.mark.asyncio
     async def test_hierarchical_results_participate_in_rrf(self):
-        from src.rag.retrieval.hybrid_retriever import HybridRetriever
-
-        dense_hit = Chunk(id="c0", document_id="doc", text="chunk 0")
-        hierarchical_hit = Chunk(
-            id="c1",
-            document_id="doc",
-            text="chunk 1",
-            metadata={CHUNK_TYPE_KEY: CHUNK_TYPE_DETAIL},
-        )
-
-        dense_mock = MagicMock()
-        dense_mock.retrieve.return_value = [(dense_hit, 0.9)]
-        bm25_mock = MagicMock()
-        bm25_mock.search.return_value = []
-        bm25_mock.get_by_id.side_effect = lambda cid: dense_hit
-        hierarchical_mock = MagicMock()
-        hierarchical_mock.retrieve.return_value = [(hierarchical_hit, 0.95)]
-
-        hr = HybridRetriever(
-            dense=dense_mock,
-            bm25=bm25_mock,
-            hierarchical_retriever=hierarchical_mock,
-        )
-        results = await hr.retrieve(Query(text="test"), top_k=3)
-        ids = {chunk.id for chunk, _ in results}
-        assert "c0" in ids
-        assert "c1" in ids
-        hierarchical_mock.retrieve.assert_called_once()
+        await assert_optional_retriever_participates_in_rrf("hierarchical_retriever")

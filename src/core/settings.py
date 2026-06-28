@@ -128,6 +128,10 @@ class HyPESettings(BaseModel):
     n_questions: int = Field(default=3, gt=0)
 
 
+class HyDESettings(BaseModel):
+    enabled: bool = False
+
+
 class RSESettings(BaseModel):
     enabled: bool = False
     max_segment_tokens: int = Field(default=1500, gt=0)
@@ -144,6 +148,7 @@ class RetrievalSettings(BaseModel):
     hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0)
     hybrid_fusion: Literal["rrf", "weighted_linear"] = "rrf"
     hype: HyPESettings = Field(default_factory=HyPESettings)
+    hyde: HyDESettings = Field(default_factory=HyDESettings)
     rse: RSESettings = Field(default_factory=RSESettings)
     parent_context: ParentContextSettings = Field(default_factory=ParentContextSettings)
 

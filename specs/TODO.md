@@ -1435,7 +1435,7 @@
 ---
 
 ### T-130 · HyDE — Hypothetical Document Embedding
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** At query time, generate a hypothetical answer document, embed it, and retrieve using that embedding — inspired by RAG_Techniques `HyDe_Hypothetical_Document_Embedding.py`. Helps vague or underspecified questions.
 - **Inputs:** T-021 (`DenseRetriever`), T-030 (LLM), T-110 (multi-query fusion pattern)
 - **Outputs:** Optional HyDE retrieval path selectable via config; results fused with standard retrieval via RRF.

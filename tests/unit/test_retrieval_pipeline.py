@@ -473,6 +473,56 @@ class TestBuildHyPERetriever:
         assert "HyPE retriever unavailable" in caplog.text
 
 
+class TestBuildHyDERetriever:
+    def test_returns_none_when_hyde_disabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_hyde_retriever
+
+        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+            mock_settings.retrieval = MagicMock(hyde=MagicMock(enabled=False))
+            assert _build_hyde_retriever(MagicMock(), MagicMock(), MagicMock()) is None
+
+    def test_returns_retriever_when_enabled(self):
+        from src.rag.pipelines.retrieval_pipeline import _build_hyde_retriever
+
+        llm = MagicMock()
+        embedder = MagicMock()
+        vector_store = MagicMock()
+        hyde_mock = MagicMock()
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.hyde_retriever.HyDERetriever",
+                return_value=hyde_mock,
+            ) as mock_cls,
+        ):
+            mock_settings.retrieval = MagicMock(hyde=MagicMock(enabled=True))
+            result = _build_hyde_retriever(llm, embedder, vector_store)
+
+        assert result is hyde_mock
+        mock_cls.assert_called_once_with(
+            llm=llm,
+            embedder=embedder,
+            vector_store=vector_store,
+        )
+
+    def test_returns_none_on_failure(self, caplog):
+        import logging
+
+        from src.rag.pipelines.retrieval_pipeline import _build_hyde_retriever
+
+        with (
+            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch(
+                "src.rag.retrieval.hyde_retriever.HyDERetriever",
+                side_effect=RuntimeError("hyde down"),
+            ),
+            caplog.at_level(logging.WARNING, logger="src.rag.pipelines.retrieval_pipeline"),
+        ):
+            mock_settings.retrieval = MagicMock(hyde=MagicMock(enabled=True))
+            assert _build_hyde_retriever(MagicMock(), MagicMock(), MagicMock()) is None
+        assert "HyDE retriever unavailable" in caplog.text
+
+
 class TestBuildHierarchicalRetriever:
     def test_returns_none_when_hierarchical_disabled(self):
         from src.rag.pipelines.retrieval_pipeline import _build_hierarchical_retriever
