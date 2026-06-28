@@ -11,6 +11,9 @@ chunking:
   augmentation:
     enabled: false               # generate synthetic questions per chunk at ingest (T-121)
     n_questions: 3
+  hierarchical:
+    enabled: false               # document summary + detail two-tier index (T-125)
+    summary_top_k: 3             # top matching documents from summary search
 
 retrieval:
   top_k_dense: 50

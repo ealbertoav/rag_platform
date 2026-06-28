@@ -104,6 +104,10 @@ class TestYamlDefaults:
     def test_parent_context_defaults_from_yaml(self):
         assert settings.retrieval.parent_context.enabled is False
 
+    def test_hierarchical_defaults_from_yaml(self):
+        assert settings.chunking.hierarchical.enabled is False
+        assert settings.chunking.hierarchical.summary_top_k == 3
+
 
 class TestEnvVarOverride:
     def test_llm_provider_override(self, monkeypatch: pytest.MonkeyPatch):

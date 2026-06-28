@@ -207,6 +207,11 @@ class AugmentationSettings(BaseModel):
     n_questions: int = Field(default=3, gt=0)
 
 
+class HierarchicalSettings(BaseModel):
+    enabled: bool = False
+    summary_top_k: int = Field(default=3, ge=1, le=10)
+
+
 class ChunkingSettings(BaseModel):
     strategy: Literal["recursive", "semantic", "parent_child"] = "recursive"
     chunk_size: int = Field(default=500, gt=0)
@@ -218,6 +223,7 @@ class ChunkingSettings(BaseModel):
     child_chunk_size: int = Field(default=400, gt=0)
     contextual_headers: ContextualHeadersSettings = Field(default_factory=ContextualHeadersSettings)
     augmentation: AugmentationSettings = Field(default_factory=AugmentationSettings)
+    hierarchical: HierarchicalSettings = Field(default_factory=HierarchicalSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────
