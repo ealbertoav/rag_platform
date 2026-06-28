@@ -4,7 +4,7 @@ import asyncio
 import logging
 import queue
 from collections.abc import AsyncIterator
-from threading import Thread
+from threading import Lock, Thread
 from typing import TYPE_CHECKING, Any
 
 from src.core.exceptions import GenerationError
@@ -23,6 +23,10 @@ class LlamaCppProvider(LLMRepository):
 
     The "Llama" instance is created lazily on the first call and reused for
     all later requests, so model weights are loaded only once.
+
+    llama.cpp model instances are not thread-safe. A process-wide lock serializes
+    "generate" and streaming completions so concurrent retrieval paths (HyDE,
+    multi-query fusion) and overlapping API requests cannot corrupt inference.
     """
 
     def __init__(
@@ -41,23 +45,25 @@ class LlamaCppProvider(LLMRepository):
         self.max_tokens = max_tokens
         self.stop_tokens: list[str] = stop_tokens or ["<|im_end|>"]
         self._model: Llama | None = None
+        self._lock = Lock()
 
     # ── LLMRepository interface ────────────────────────────────────────────────
 
     def generate(self, prompt: str, context: str, **kwargs: Any) -> str:
         """Return the full completion as a single string (blocking)."""
-        model = self._get_model()
-        try:
-            output = model.create_chat_completion(
-                messages=[{"role": "user", "content": _join(prompt, context)}],  # type: ignore[arg-type]
-                max_tokens=kwargs.get("max_tokens", self.max_tokens),
-                temperature=kwargs.get("temperature", self.temperature),
-                stop=self.stop_tokens,
-                stream=False,
-            )
-            return str(output["choices"][0]["message"]["content"])  # type: ignore[index]
-        except Exception as exc:
-            raise GenerationError("llama.cpp generate() failed", cause=exc) from exc
+        with self._lock:
+            model = self._get_model()
+            try:
+                output = model.create_chat_completion(
+                    messages=[{"role": "user", "content": _join(prompt, context)}],  # type: ignore[arg-type]
+                    max_tokens=kwargs.get("max_tokens", self.max_tokens),
+                    temperature=kwargs.get("temperature", self.temperature),
+                    stop=self.stop_tokens,
+                    stream=False,
+                )
+                return str(output["choices"][0]["message"]["content"])  # type: ignore[index]
+            except Exception as exc:
+                raise GenerationError("llama.cpp generate() failed", cause=exc) from exc
 
     def generate_stream(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Return an async iterator that yields tokens as they are produced.
@@ -117,18 +123,19 @@ class LlamaCppProvider(LLMRepository):
 
         def _run() -> None:
             try:
-                model = self._get_model()
-                for chunk in model.create_chat_completion(
-                    messages=[{"role": "user", "content": full_prompt}],  # type: ignore[arg-type]
-                    max_tokens=kwargs.get("max_tokens", self.max_tokens),
-                    temperature=kwargs.get("temperature", self.temperature),
-                    stop=self.stop_tokens,
-                    stream=True,
-                ):
-                    choices = chunk["choices"]  # type: ignore[union-attr,index]
-                    delta = str(choices[0]["delta"].get("content", ""))
-                    if delta:
-                        token_queue.put(delta)
+                with self._lock:
+                    model = self._get_model()
+                    for chunk in model.create_chat_completion(
+                        messages=[{"role": "user", "content": full_prompt}],  # type: ignore[arg-type]
+                        max_tokens=kwargs.get("max_tokens", self.max_tokens),
+                        temperature=kwargs.get("temperature", self.temperature),
+                        stop=self.stop_tokens,
+                        stream=True,
+                    ):
+                        choices = chunk["choices"]  # type: ignore[union-attr,index]
+                        delta = str(choices[0]["delta"].get("content", ""))
+                        if delta:
+                            token_queue.put(delta)
             except Exception as exc:
                 token_queue.put(exc)
             finally:

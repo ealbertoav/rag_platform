@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,7 +38,7 @@ def _stream_mock(tokens: list[str]) -> MagicMock:
     return m
 
 
-# ── prompt + context joining (tested through generate) ────────────────────────
+# ── prompt + context joining (tested through generating) ────────────────────────
 
 
 class TestPromptJoining:
@@ -132,6 +133,29 @@ class TestGenerate:
         p.generate("q", "")
         _, kwargs = mock.create_chat_completion.call_args
         assert kwargs["stream"] is False
+
+    def test_concurrent_generate_serializes_on_shared_model(self):
+        mock = _llama_mock()
+        active = 0
+        peak = 0
+
+        def _track(**_: object) -> dict[str, object]:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            active -= 1
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        mock.create_chat_completion.side_effect = _track
+        p = _provider(mock)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda i: p.generate(f"prompt-{i}", ""), range(16)))
+
+        assert len(results) == 16
+        assert all(r == "ok" for r in results)
+        assert peak == 1
+        assert mock.create_chat_completion.call_count == 16
 
 
 # ── generate_stream ────────────────────────────────────────────────────────────
