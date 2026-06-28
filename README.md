@@ -224,7 +224,8 @@ RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false  # expand child chunks to parent text (T-124; requires parent_child)
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
-CHUNKING__STRATEGY=recursive              # recursive | semantic | parent_child
+CHUNKING__STRATEGY=recursive              # recursive | semantic | parent_child | proposition
+CHUNKING__PROPOSITION__QUALITY_THRESHOLD=7  # min score 1-10 per category when strategy=proposition (T-126)
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__CONTEXTUAL_HEADERS__EXCLUDE_FROM_LLM_CONTEXT=true
 CHUNKING__AUGMENTATION__ENABLED=false
@@ -255,7 +256,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking, contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, RSE, parent context, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, RSE, parent context, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -298,7 +299,8 @@ flowchart LR
     CH -->|recursive| RC["Recursive<br/>Splitter"]
     CH -->|semantic| SC["Semantic<br/>Splitter"]
     CH -->|parent_child| PC["Parent-Child<br/>Splitter<br/>(child embed · parent stored)"]
-    RC & SC & PC --> CCH{"Contextual<br/>Headers?<br/>(optional)"}
+    CH -->|proposition| PR["Proposition<br/>Splitter<br/>(segment · LLM extract · grade)"]
+    RC & SC & PC & PR --> CCH{"Contextual<br/>Headers?<br/>(optional)"}
     CCH -->|enabled| HDR["Prepend doc/section/page<br/>to embedded text"]
     CCH -->|disabled| EM["Embed Both<br/>dense + sparse"]
     HDR --> EM
@@ -321,6 +323,8 @@ flowchart LR
 ```
 
 #### Optional Chunk Enrichment
+
+Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semantic`, `parent_child`, or `proposition` — see [Proposition Chunking (T-126)](#proposition-chunking-t-126)). The optional enrichments below stack on top of whichever strategy is active.
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
@@ -365,6 +369,22 @@ chunking:
 ```
 
 **Trade-offs:** augmentation adds one LLM call per chunk at ingest (failures on individual chunks are logged and skipped). Re-ingest after toggling these flags — existing indexes are not updated retroactively.
+
+##### Proposition Chunking (T-126)
+
+Indexes **atomic factual propositions** instead of arbitrary text windows. At ingest, the document is split into processing segments (recursive chunker — these segments are not indexed), then an LLM extracts standalone factual statements from each segment and grades each proposition on accuracy, clarity, completeness, and conciseness. Propositions below `chunking.proposition.quality_threshold` (default 7/10 per category) are discarded.
+
+```yaml
+# configs/retrieval.yaml
+chunking:
+  strategy: proposition          # recursive | semantic | parent_child | proposition
+  proposition:
+    quality_threshold: 7
+```
+
+**When to use:** dense factual corpora (policies, contracts, compliance docs) where precise fact retrieval matters more than narrative context.
+
+**Trade-offs:** significantly slower ingestion than `recursive` or `semantic` — expect roughly two LLM calls per extracted proposition (extract + grade) plus one per processing segment. A 10-page policy may take minutes instead of seconds. Failures on individual segments or propositions are logged and skipped. Re-ingest after changing strategy — existing indexes are not updated retroactively.
 
 ##### HyPE — Hypothetical Prompt Embeddings (T-122)
 
@@ -1091,9 +1111,9 @@ rag_implementation/
 │   │   └── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
-│   │   └── ingestion/          # chunk_header_template · generate_chunk_questions · generate_document_summary
+│   │   └── ingestion/          # chunk_header_template · extract_propositions · generate_chunk_questions · generate_document_summary
 │   ├── rag/                    # Chunkers, retrievers, pipelines
-│   │   ├── chunking/           # Recursive / semantic / parent-child + contextual_headers
+│   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hierarchical retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
@@ -1140,6 +1160,7 @@ RETRIEVAL__RSE__ENABLED=false
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false
 CHUNKING__STRATEGY=recursive
+CHUNKING__PROPOSITION__QUALITY_THRESHOLD=7
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 CHUNKING__HIERARCHICAL__ENABLED=false
@@ -1247,7 +1268,7 @@ retrieval:
     max_segment_tokens: 1500
 ```
 
-**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (all set `chunk_index`). Complements parent-child chunking: RSE stitches adjacent sibling children into segments; for expanding a single child hit to its full parent passage, enable [Parent Context (T-124)](#parent-context-on-retrieve-t-124).
+**When to use:** corpora chunked with `recursive`, `semantic`, `parent_child`, or `proposition` strategies (all set `chunk_index`). Complements parent-child chunking: RSE stitches adjacent sibling children into segments; for expanding a single child hit to its full parent passage, enable [Parent Context (T-124)](#parent-context-on-retrieve-t-124).
 
 **Behavior:** merged segments keep the lowest-index chunk's ID as anchor; `metadata.merged_chunk_ids` lists all contributing chunk IDs (also expanded in `Answer.sources` via `chunk_source_ids`). Chunks without `chunk_index` pass through unchanged. Contextual headers (T-120): merged `raw_text` includes all source bodies. OTel span `retrieval.rse` records `merge_count`.
 

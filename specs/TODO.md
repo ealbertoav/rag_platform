@@ -1402,7 +1402,7 @@
 ---
 
 ### T-126 · Proposition Chunking
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** LLM extracts atomic factual propositions from document text and indexes each proposition as a separate chunk — inspired by RAG_Techniques `proposition_chunking.ipynb`. Best for dense factual corpora (policies, contracts).
 - **Inputs:** T-011 (chunking protocol), T-030 (LLM), T-015 (ingestion)
 - **Outputs:** New chunking strategy `proposition` available via config.

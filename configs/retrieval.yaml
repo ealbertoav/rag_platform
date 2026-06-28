@@ -1,5 +1,5 @@
 chunking:
-  strategy: recursive          # recursive | semantic | parent_child
+  strategy: recursive          # recursive | semantic | parent_child | proposition
   chunk_size: 500              # approximate tokens
   overlap: 50
   similarity_threshold: 0.4   # semantic chunker: distance > threshold → split
@@ -14,6 +14,8 @@ chunking:
   hierarchical:
     enabled: false               # document summary + detail two-tier index (T-125)
     summary_top_k: 3             # top matching documents from summary search
+  proposition:
+    quality_threshold: 7           # min LLM score (1-10) per accuracy/clarity/completeness/conciseness (T-126)
 
 retrieval:
   top_k_dense: 50

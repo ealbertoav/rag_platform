@@ -229,11 +229,19 @@ class IngestionPipeline:
         from src.rag.chunking import get_chunker
 
         cfg = settings.chunking
+        chunker_kwargs: dict[str, object] = {
+            "chunk_size": cfg.chunk_size,
+            "overlap": cfg.overlap,
+        }
+        if cfg.strategy == "proposition":
+            from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
+
+            chunker_kwargs["llm"] = LlamaCppProvider.from_settings()
+            chunker_kwargs["quality_threshold"] = cfg.proposition.quality_threshold
         chunker = get_chunker(
             cfg.strategy,
             use_contextual_headers=cfg.contextual_headers.enabled,
-            chunk_size=cfg.chunk_size,
-            overlap=cfg.overlap,
+            **chunker_kwargs,
         )
         embedder = get_embedding_provider()
         vector_store = QdrantVectorStore.from_settings()
@@ -319,7 +327,7 @@ def _build_hype_indexer(embedder: object, cfg: object) -> object | None:
 
 
 def _build_hierarchical_indexer(embedder: object, cfg: object) -> object | None:
-    """Build hierarchical summary indexer when two-tier indexing is enabled."""
+    """Build a hierarchical summary indexer when two-tier indexing is enabled."""
     if not getattr(cfg, "enabled", False):
         return None
     try:
