@@ -55,9 +55,12 @@ flowchart LR
     subgraph RETRIEVE["🔍 Retrieval Pipeline"]
         direction TB
         QX["User Query<br/>+ Expansion · 3 variants"] --> EM[BGE-M3 Embedding]
+        QX --> HYDE["HyDE · Hypothetical Doc<br/>(optional · T-130)"]
+        HYDE --> DS2["Dense Search<br/>hypo passage embed"]
         EM --> DS["Dense Search<br/>Qdrant HNSW"]
         EM --> BS[BM25 Search]
         DS --> RF["RRF Fusion<br/>Top 50"]
+        DS2 --> RF
         BS --> RF
         RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
         RR --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
@@ -219,6 +222,7 @@ RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
 RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
 RETRIEVAL__HYPE__ENABLED=false            # HyPE question-question matching (T-122)
 RETRIEVAL__HYPE__N_QUESTIONS=3
+RETRIEVAL__HYDE__ENABLED=false            # HyDE hypothetical document embedding (T-130)
 RETRIEVAL__RSE__ENABLED=false             # merge adjacent retrieved chunks (T-123)
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false  # expand child chunks to parent text (T-124; requires parent_child)
@@ -256,7 +260,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, RSE, parent context, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, RSE, parent context, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -327,6 +331,8 @@ flowchart LR
 Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semantic`, `parent_child`, or `proposition` — see [Proposition Chunking (T-126)](#proposition-chunking-t-126)). The optional enrichments below stack on top of whichever strategy is active.
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
+
+Query-time retrieval techniques (**HyDE** · T-130, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -402,7 +408,7 @@ retrieval:
 
 **When to use:** FAQ-style corpora and question-like queries where matching the user's phrasing to pre-generated questions improves recall. Can be combined with document augmentation (T-121), but both add LLM calls per chunk at ingest — enable deliberately.
 
-**Trade-offs:** one LLM call per chunk at ingest (same generator as T-121; failures are logged and skipped). Re-ingest after enabling — existing indexes are not updated retroactively. `rebuild_embeddings.py` re-embeds passage chunks from BM25; re-run ingestion to rebuild HyPE question vectors.
+**Trade-offs:** one LLM call per chunk at ingest (same generator as T-121; failures are logged and skipped). Re-ingest after enabling — existing indexes are not updated retroactively. `rebuild_embeddings.py` re-embeds passage chunks from BM25; re-run ingestion to rebuild HyPE question vectors. For query-time hypothetical passage retrieval without ingest overhead, see [HyDE (T-130)](#hyde--hypothetical-document-embedding-t-130).
 
 ```bash
 # HyPE only
@@ -1111,11 +1117,12 @@ rag_implementation/
 │   │   └── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
-│   │   └── ingestion/          # chunk_header_template · extract_propositions · generate_chunk_questions · generate_document_summary
+│   │   ├── ingestion/          # chunk_header_template · extract_propositions · generate_chunk_questions · generate_document_summary
+│   │   └── retrieval/          # query_expansion · hyde_generate · entity_extraction · agent_decision
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
-│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hierarchical retrievers
+│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical retrievers
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
@@ -1156,6 +1163,7 @@ LLM__TEMPERATURE=0.0
 RETRIEVAL__HYBRID_FUSION=rrf
 RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYPE__ENABLED=false
+RETRIEVAL__HYDE__ENABLED=false
 RETRIEVAL__RSE__ENABLED=false
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false
@@ -1222,14 +1230,17 @@ Integration tests auto-skip when models or Qdrant are absent (CI runs them but d
 flowchart TD
     Q["🔎 User Question"] --> QE["Query Expander<br/>LLM generates 3 variants"]
     QE --> EMB["BGE-M3 Encoder<br/>1024-dim dense + sparse"]
+    QE --> HYDE["HyDE · Hypothetical Doc<br/>LLM → embed passage<br/>(optional · T-130)"]
 
     EMB --> DS["Dense Search<br/>Qdrant HNSW cosine<br/>(excludes hype_question + summary)"]
+    HYDE --> DS2["Dense Search<br/>hypothetical passage embed"]
     EMB --> BS["BM25 Search<br/>In-memory lexical"]
     EMB --> HS["HyPE Search<br/>question→question dense<br/>(optional · T-122)"]
     EMB --> HRS["Hierarchical Search<br/>summary → detail<br/>(optional · T-125)"]
     QE --> GS["Graph Search<br/>Neo4j entity traversal<br/>(optional)"]
 
     DS -->|Top 50 candidates| RRF["RRF Fusion<br/>score = Σ 1/(k+rank)"]
+    DS2 -->|Top 50 candidates| RRF
     BS -->|Top 50 candidates| RRF
     HS -->|resolved source chunks| RRF
     HRS -->|detail chunks only| RRF
@@ -1246,13 +1257,36 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, hierarchical, or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled (`retrieval.hyde.enabled: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
 When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `hype_question` vectors, resolves hits to source chunks, and merges them into RRF alongside dense, BM25, and graph results. Standard dense search excludes HyPE points so passage and question embeddings do not compete in the same index query.
 
+When **HyDE** (T-130) is enabled, `HyDERetriever` generates a hypothetical answer passage via LLM, embeds it, and runs dense search against standard chunk vectors (same exclusions as dense search). Results merge into RRF alongside dense, BM25, HyPE, hierarchical, and graph lists. LLM or embedding failures return no HyDE hits and the pipeline continues with standard retrieval only. No ingest-time setup or re-ingestion is required.
+
 When **hierarchical summaries** (T-125) are enabled, detail chunks are tagged at ingest (`type=detail`) and document summaries are indexed separately (`type=summary`). `HierarchicalRetriever` matches summaries first to select documents, then retrieves detail chunks within those documents. Summary vectors are excluded from BM25 and standard dense search; only detail chunks are returned to downstream reranking and generation.
+
+##### HyDE — Hypothetical Document Embedding (T-130)
+
+HyDE is a **query-time** retrieval augmentation inspired by hypothetical document embeddings. For each query, the LLM writes a short passage that would answer the question as if it appeared in the corpus; that passage is embedded and used for dense search. Hits are fused via RRF with dense, BM25, HyPE, hierarchical, and graph results.
+
+Unlike HyPE (T-122), HyDE does not index separate vectors at ingest — it adds one LLM call per query when enabled.
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  hyde:
+    enabled: false       # set true to retrieve via hypothetical document embedding
+```
+
+**When to use:** vague or underspecified questions where the raw query embedding is a poor match for passage text (short questions, conversational phrasing, missing domain terminology).
+
+**Trade-offs:** one extra LLM call per query when enabled. Failures are logged and fall back silently to standard retrieval (HyDE contributes an empty RRF list). OTel span `retrieval.hyde` records `hypothetical_doc_length`.
+
+```bash
+RETRIEVAL__HYDE__ENABLED=true
+```
 
 ##### Relevant Segment Extraction (T-123)
 
@@ -1362,15 +1396,16 @@ gantt
 
     section retrieval
     retrieval.expansion    :0, 180
-    retrieval.embedding    :180, 380
-    retrieval.hybrid       :380, 780
-    retrieval.reranking    :780, 1080
-    retrieval.rse          :1080, 1130
-    retrieval.parent_context :1130, 1160
-    retrieval.compression  :1160, 1310
+    retrieval.hyde         :180, 280
+    retrieval.embedding    :280, 480
+    retrieval.hybrid       :480, 880
+    retrieval.reranking    :880, 1180
+    retrieval.rse          :1180, 1230
+    retrieval.parent_context :1230, 1260
+    retrieval.compression  :1260, 1410
 
     section generation
-    generation.llm         :1310, 2300
+    generation.llm         :1410, 2400
 ```
 
 Configure the collector endpoint:
@@ -1379,6 +1414,8 @@ LOGGING__OTEL_ENDPOINT=http://localhost:4317
 ```
 
 When RSE is enabled, span `retrieval.rse` appears between `retrieval.reranking` and `retrieval.parent_context` (or `retrieval.compression` when parent context is off), with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
+
+When HyDE is enabled (`retrieval.hyde.enabled=true`), span `retrieval.hyde` appears during hybrid retrieval (inside the per-variant search path), with attribute `hypothetical_doc_length` (characters in the LLM-generated passage). On failure the span still records `hypothetical_doc_length=0`.
 
 When parent context is enabled (`chunking.strategy=parent_child` and `retrieval.parent_context.enabled=true`), span `retrieval.parent_context` appears between `retrieval.rse` (or `retrieval.reranking` when RSE is off) and `retrieval.compression`, with attributes `resolved_count` (child chunks expanded to parent text) and `chunk_count`.
 

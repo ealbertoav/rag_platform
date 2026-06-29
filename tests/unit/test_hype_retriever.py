@@ -12,6 +12,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.enrichment.hype_indexer import HyPEIndexer, is_hype_question, make_hype_chunk
 from src.rag.retrieval.hype_retriever import HyPERetriever
+from tests.unit.hybrid_retriever_helpers import assert_optional_retriever_participates_in_rrf
 
 
 def _source_chunk(text: str = "Revenue grew 12% year over year.") -> Chunk:
@@ -115,26 +116,4 @@ class TestHyPERetriever:
 class TestHybridHyPEIntegration:
     @pytest.mark.asyncio
     async def test_hype_results_participate_in_rrf(self):
-        from src.rag.retrieval.hybrid_retriever import HybridRetriever
-
-        source = Chunk(id="c0", document_id="doc", text="chunk 0")
-        hype_only = Chunk(id="c1", document_id="doc", text="chunk 1")
-
-        dense_mock = MagicMock()
-        dense_mock.retrieve.return_value = [(source, 0.9)]
-        bm25_mock = MagicMock()
-        bm25_mock.search.return_value = []
-        bm25_mock.get_by_id.side_effect = lambda cid: source if cid == source.id else hype_only
-        hype_mock = MagicMock()
-        hype_mock.retrieve.return_value = [(hype_only, 0.95)]
-
-        hr = HybridRetriever(
-            dense=dense_mock,
-            bm25=bm25_mock,
-            hype_retriever=hype_mock,
-        )
-        results = await hr.retrieve(Query(text="test"), top_k=3)
-        ids = {chunk.id for chunk, _ in results}
-        assert "c0" in ids
-        assert "c1" in ids
-        hype_mock.retrieve.assert_called_once()
+        await assert_optional_retriever_participates_in_rrf("hype_retriever")

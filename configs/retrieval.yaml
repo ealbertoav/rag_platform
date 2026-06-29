@@ -25,6 +25,8 @@ retrieval:
   hype:
     enabled: false               # HyPE question-question matching at query time (T-122)
     n_questions: 3
+  hyde:
+    enabled: false               # hypothetical document embedding at query time (T-130)
   rse:
     enabled: false               # merge adjacent retrieved chunks into segments (T-123)
     max_segment_tokens: 1500

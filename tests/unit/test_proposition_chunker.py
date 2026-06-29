@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+import logging
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -114,6 +115,106 @@ class TestPropositionParsing:
         prompt = llm.generate.call_args.kwargs["prompt"]
         assert '{"status": "active"}' in prompt
         assert '{tier: "gold"}' in prompt
+
+    def test_extract_propositions_returns_empty_on_unparseable_response(self, caplog):
+        llm = MagicMock()
+        llm.generate.return_value = "Sorry, I cannot extract propositions."
+        with caplog.at_level(logging.WARNING):
+            assert extract_propositions("Some text.", llm) == []
+        assert "Could not parse propositions" in caplog.text
+
+    def test_extract_propositions_parses_embedded_json_array(self):
+        llm = MagicMock()
+        llm.generate.return_value = 'Here are propositions:\n["Fact one.", "Fact two."]'
+        assert extract_propositions("Source.", llm) == ["Fact one.", "Fact two."]
+
+    def test_extract_propositions_ignores_non_list_json(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps({"accuracy": 9, "clarity": 8})
+        assert extract_propositions("Source.", llm) == []
+
+    def test_extract_propositions_skips_empty_llm_response(self):
+        llm = MagicMock()
+        llm.generate.return_value = "   "
+        assert extract_propositions("Source.", llm) == []
+
+    def test_extract_propositions_skips_malformed_json(self):
+        llm = MagicMock()
+        llm.generate.return_value = "[unclosed array"
+        assert extract_propositions("Source.", llm) == []
+
+    def test_extract_propositions_ignores_list_with_no_strings(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps([123, "", "   "])
+        assert extract_propositions("Source.", llm) == []
+
+    def test_grade_proposition_returns_none_on_unparseable_response(self, caplog):
+        llm = MagicMock()
+        llm.generate.return_value = "No scores here."
+        with caplog.at_level(logging.WARNING):
+            assert grade_proposition("Prop.", "Source.", llm) is None
+        assert "Could not parse proposition quality scores" in caplog.text
+
+    def test_grade_proposition_skips_empty_llm_response(self):
+        llm = MagicMock()
+        llm.generate.return_value = ""
+        assert grade_proposition("Prop.", "Source.", llm) is None
+
+    def test_grade_proposition_skips_malformed_json(self):
+        llm = MagicMock()
+        llm.generate.return_value = "{accuracy: not-json"
+        assert grade_proposition("Prop.", "Source.", llm) is None
+
+    def test_grade_proposition_parses_embedded_json_object(self):
+        llm = MagicMock()
+        llm.generate.return_value = "Scores:\n" + _scores_json(
+            accuracy=8, clarity=7, completeness=8, conciseness=7
+        )
+        scores = grade_proposition("Prop.", "Source.", llm)
+        assert scores == {
+            "accuracy": 8,
+            "clarity": 7,
+            "completeness": 8,
+            "conciseness": 7,
+        }
+
+    def test_grade_proposition_returns_none_for_non_object_json(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps(["accuracy", 8])
+        assert grade_proposition("Prop.", "Source.", llm) is None
+
+    def test_grade_proposition_returns_none_when_score_key_missing(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps({"accuracy": 9, "clarity": 8, "completeness": 8})
+        assert grade_proposition("Prop.", "Source.", llm) is None
+
+    def test_grade_proposition_rejects_bool_scores(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps(
+            {"accuracy": True, "clarity": 8, "completeness": 8, "conciseness": 7}
+        )
+        assert grade_proposition("Prop.", "Source.", llm) is None
+
+    def test_grade_proposition_rejects_non_integer_scores(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps(
+            {"accuracy": 8.5, "clarity": 8, "completeness": 8, "conciseness": 7}
+        )
+        assert grade_proposition("Prop.", "Source.", llm) is None
+
+    def test_grade_proposition_rejects_non_numeric_string_scores(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps(
+            {"accuracy": "high", "clarity": 8, "completeness": 8, "conciseness": 7}
+        )
+        assert grade_proposition("Prop.", "Source.", llm) is None
+
+    def test_grade_proposition_rejects_empty_string_scores(self):
+        llm = MagicMock()
+        llm.generate.return_value = json.dumps(
+            {"accuracy": "", "clarity": 8, "completeness": 8, "conciseness": 7}
+        )
+        assert grade_proposition("Prop.", "Source.", llm) is None
 
 
 class TestPropositionChunker:
@@ -227,3 +328,29 @@ class TestPropositionChunker:
             long_doc
         )
         assert len(chunks) == 1
+
+    def test_skips_whitespace_only_propositions(self):
+        llm = MagicMock()
+        llm.generate.return_value = _scores_json(
+            accuracy=9, clarity=8, completeness=8, conciseness=8
+        )
+        with patch(
+            "src.rag.chunking.proposition_chunker.extract_propositions",
+            return_value=["   ", "Valid proposition text."],
+        ):
+            chunks = _chunker(llm).chunk(_doc("Source text about employee benefits."))
+        assert len(chunks) == 1
+        assert chunks[0].text == "Valid proposition text."
+
+    def test_skips_ungradable_propositions(self, caplog):
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            _propositions_json(["Ungradable proposition.", "Graded proposition."]),
+            "not valid json",
+            _scores_json(accuracy=9, clarity=8, completeness=8, conciseness=8),
+        ]
+        with caplog.at_level(logging.DEBUG):
+            chunks = _chunker(llm).chunk(_doc("Policy text about benefits."))
+        assert len(chunks) == 1
+        assert chunks[0].text == "Graded proposition."
+        assert "Skipping ungradable proposition" in caplog.text

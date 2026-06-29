@@ -55,6 +55,27 @@ def _build_hype_retriever(
         return None
 
 
+def _build_hyde_retriever(
+    llm: LLMRepository,
+    embedder: object,
+    vector_store: object,
+) -> object | None:
+    """Return a HyDERetriever when HyDE is enabled, else None."""
+    if not settings.retrieval.hyde.enabled:
+        return None
+    try:
+        from src.rag.retrieval.hyde_retriever import HyDERetriever
+
+        return HyDERetriever(
+            llm=llm,
+            embedder=embedder,  # type: ignore[arg-type]
+            vector_store=vector_store,  # type: ignore[arg-type]
+        )
+    except Exception as exc:
+        logger.warning("HyDE retriever unavailable (continuing without it): %s", exc)
+        return None
+
+
 def _build_hierarchical_retriever(
     embedder: object,
     vector_store: object,
@@ -146,6 +167,7 @@ class RetrievalPipeline:
         dense = DenseRetriever(embedder=embedder, vector_store=vector_store)
         graph = _build_graph_retriever(llm, bm25)
         hype = _build_hype_retriever(embedder, vector_store, bm25)
+        hyde = _build_hyde_retriever(llm, embedder, vector_store)
         hierarchical = _build_hierarchical_retriever(embedder, vector_store)
         hybrid = HybridRetriever(
             dense=dense,
@@ -153,6 +175,7 @@ class RetrievalPipeline:
             alpha=cfg.hybrid_alpha,
             graph_retriever=graph,  # type: ignore[arg-type]
             hype_retriever=hype,  # type: ignore[arg-type]
+            hyde_retriever=hyde,  # type: ignore[arg-type]
             hierarchical_retriever=hierarchical,  # type: ignore[arg-type]
             fusion_mode=cfg.hybrid_fusion,
         )

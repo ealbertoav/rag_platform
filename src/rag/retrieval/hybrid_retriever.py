@@ -14,6 +14,7 @@ from src.rag.retrieval.dense_retriever import DenseRetriever
 if TYPE_CHECKING:
     from src.rag.retrieval.graph_retriever import GraphRetriever
     from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
+    from src.rag.retrieval.hyde_retriever import HyDERetriever
     from src.rag.retrieval.hype_retriever import HyPERetriever
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class HybridRetriever:
         alpha: float = 0.7,
         graph_retriever: GraphRetriever | None = None,
         hype_retriever: HyPERetriever | None = None,
+        hyde_retriever: HyDERetriever | None = None,
         hierarchical_retriever: HierarchicalRetriever | None = None,
         fusion_mode: str = "rrf",
     ) -> None:
@@ -48,6 +50,7 @@ class HybridRetriever:
         self.alpha = alpha
         self._graph = graph_retriever
         self._hype = hype_retriever
+        self._hyde = hyde_retriever
         self._hierarchical = hierarchical_retriever
         self._fusion_mode = fusion_mode
 
@@ -69,6 +72,8 @@ class HybridRetriever:
             tasks.append(asyncio.to_thread(self._graph.search, query.text, expansion))
         if self._hype is not None:
             tasks.append(asyncio.to_thread(self._hype.retrieve, query, expansion))
+        if self._hyde is not None:
+            tasks.append(asyncio.to_thread(self._hyde.retrieve, query, expansion))
         if self._hierarchical is not None:
             tasks.append(asyncio.to_thread(self._hierarchical.retrieve, query, expansion))
 
@@ -93,6 +98,13 @@ class HybridRetriever:
         if self._hype is not None:
             hype_results = gathered[graph_idx]
             graph_idx += 1
+        hyde_results: list[SearchResult] = []
+        if self._hyde is not None:
+            hyde_results = resolve_synthetic_questions(
+                gathered[graph_idx],
+                lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+            )
+            graph_idx += 1
         hierarchical_results: list[SearchResult] = []
         if self._hierarchical is not None:
             hierarchical_results = gathered[graph_idx]
@@ -101,6 +113,7 @@ class HybridRetriever:
             self._fusion_mode == "weighted_linear"
             and self._graph is None
             and self._hype is None
+            and self._hyde is None
             and self._hierarchical is None
         ):
             fused = weighted_linear_fuse(dense_results, bm25_results, alpha=self.alpha, top_k=top_k)
@@ -110,18 +123,20 @@ class HybridRetriever:
                 bm25_results,
                 graph_results,
                 hype_results,
+                hyde_results,
                 hierarchical_results,
                 top_k=top_k,
             )
         logger.debug(
             (
                 "Hybrid retrieval: %d dense + %d bm25 + %d graph + %d hype "
-                "+ %d hierarchical → %d fused"
+                "+ %d hyde + %d hierarchical → %d fused"
             ),
             len(dense_results),
             len(bm25_results),
             len(graph_results),
             len(hype_results),
+            len(hyde_results),
             len(hierarchical_results),
             len(fused),
         )
@@ -138,6 +153,10 @@ class HybridRetriever:
     @property
     def hype(self) -> HyPERetriever | None:
         return self._hype
+
+    @property
+    def hyde(self) -> HyDERetriever | None:
+        return self._hyde
 
     @property
     def hierarchical(self) -> HierarchicalRetriever | None:
