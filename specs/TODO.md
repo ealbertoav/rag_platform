@@ -166,9 +166,10 @@
   - `src/infrastructure/vectordb/bm25.py`
   - `src/rag/retrieval/bm25_retriever.py`
 - **Acceptance Criteria:**
-  - Index serializes/deserializes to `data/processed/bm25_index.pkl`
+  - Index serializes/deserializes to `data/processed/bm25_index.json`
   - `search(query, top_k)` returns `list[tuple[Chunk, float]]` sorted by score
   - Supports incremental updates (re-index on new chunks)
+  - `deferred_rebuild()` context defers rebuilds until exit; `rebuild()` flushes pending changes
 
 ---
 
@@ -189,6 +190,7 @@
   ```
 - **Acceptance Criteria:**
   - Idempotent: re-ingesting same file updates existing chunks (deduplicate by hash)
+  - `ingest_directory()` defers BM25 rebuild until the batch completes (single rebuild per directory)
   - Progress reported via `tqdm` or Rich
   - Errors on individual chunks logged and skipped (pipeline continues)
   - `scripts/ingest.py --source data/raw/` works end-to-end
@@ -1458,7 +1460,7 @@
 ---
 
 ### T-131 · Adaptive Query Classification
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Classify incoming queries into categories (Factual, Analytical, Opinion, Contextual) to drive retrieval strategy selection — inspired by RAG_Techniques `adaptive_retrieval.py`.
 - **Inputs:** T-030 (LLM with structured output), T-003 (`Query` entity)
 - **Outputs:** `Query.metadata["category"]` populated before retrieval.
@@ -1732,6 +1734,14 @@
 
 ---
 
+## Phase 15 — Evaluation Operationalization (Priority 5)
+
+> **Motivation:** Operationalize the evaluation framework from Phase 4 — benchmark RAG techniques side-by-side, tune chunk sizes, and enforce CI regression gates with real golden data.
+>
+> **Depends on:** Phase 4 (T-040–T-043), Phase 11–14 technique flags
+
+---
+
 ### T-150 · Evaluation-Driven Technique Benchmark
 - **Status:** `[ ]`
 - **Goal:** Benchmark script that compares RAG techniques side-by-side (baseline vs expansion vs HyDE vs CCH vs Self-RAG) — inspired by RAG_Techniques `choose_chunk_size.py` and `evaluation/` notebooks.
@@ -1793,7 +1803,7 @@
 
 ---
 
-## Phase 15 — Production Hardening & Scalability (Priority 5)
+## Phase 16 — Production Hardening & Scalability (Priority 6)
 
 > **Motivation:** Close gaps identified in `CODE_ANALYSIS_REPORT.md` that are outside the RAG-technique roadmap (Phases 12–14). These are infrastructure, security, and scalability improvements required before high-traffic production deployment.
 >
@@ -1927,7 +1937,7 @@
 
 ---
 
-## Phase 16 — Code Quality & Type Safety (Priority 6)
+## Phase 17 — Code Quality & Type Safety (Priority 7)
 
 > **Motivation:** Restore and maintain the Phase 6 quality gate (`T-060`: `make lint` exits 0) beyond the immediate mypy fixes applied during Phase 12. Reduce the 56 `type: ignore` comments flagged in the code analysis and harden CI enforcement.
 >
@@ -1977,7 +1987,7 @@
 
 ### T-172 · Performance Baseline & Regression Benchmark
 - **Status:** `[ ]`
-- **Goal:** Establish baseline latency/throughput metrics for the infrastructure bottlenecks flagged in the code analysis (LLM streaming, BM25 memory, Neo4j sync) so Phase 15 optimizations can be measured.
+- **Goal:** Establish baseline latency/throughput metrics for the infrastructure bottlenecks flagged in the code analysis (LLM streaming, BM25 memory, Neo4j sync) so Phase 16 optimizations can be measured.
 - **Inputs:** T-043 (`RAGBenchmark`), T-051 (Prometheus metrics), T-163–T-165 (optimization targets)
 - **Outputs:** Benchmark script and CI-optional regression check for p50/p95 latency under concurrent load.
 - **Files:**
@@ -2067,6 +2077,7 @@ T-163 + T-164 + T-165 ──► T-172
 11. **Phase 11 — Priority 1 (Wire Existing Code):** T-112 → T-110 → T-111 → T-113 → T-114 → T-115 → T-116 → T-117 _(~2 sessions)_
 12. **Phase 12 — Priority 2 (Index-Time Enrichment):** T-120 → T-121 → T-122 → T-123 → T-124 → T-125 → T-126 _(~3 sessions)_
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
-14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → T-150 → T-151 → T-152 _(~3 sessions)_
-15. **Phase 15 — Priority 5 (Production Hardening & Scalability):** T-161 → T-162 → T-160 → T-163 → T-164 → T-165 _(~2 sessions)_
-16. **Phase 16 — Priority 6 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session)_
+14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 _(~2 sessions)_
+15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 → T-151 → T-152 _(~1 session)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-161 → T-162 → T-160 → T-163 → T-164 → T-165 _(~2 sessions)_
+17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session)_

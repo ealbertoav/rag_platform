@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pickle
+import threading
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,11 +23,11 @@ _INDEX_FORMAT_VERSION = 1
 
 _fcntl: types.ModuleType | None = None
 try:
-    import fcntl
+    import fcntl as _fcntl
 except ImportError:  # pragma: no cover - Windows and other non-Unix platforms
-    pass
-else:
-    _fcntl = fcntl
+    _fcntl = None
+
+fcntl = _fcntl
 
 
 @contextmanager
@@ -35,12 +36,12 @@ def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
     try:
-        if _fcntl is not None:
-            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         yield
     finally:
-        if _fcntl is not None:
-            _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
 
 
@@ -62,41 +63,68 @@ class BM25Index:
 
     def __init__(self, index_path: Path | None = None) -> None:
         self._path: Path = index_path or BM25_INDEX_PATH
+        self._lock = threading.RLock()
         self._chunks: list[Chunk] = []
         self._bm25: BM25Okapi | None = None
+        self._defer_rebuild_depth = 0
+        self._needs_rebuild = False
 
     # ── Indexing ───────────────────────────────────────────────────────────────
 
     def index(self, chunks: list[Chunk]) -> None:
         """Replace the entire index with *chunks* and rebuild."""
-        self._chunks = list(chunks)
-        self._rebuild()
+        with self._lock:
+            self._chunks = list(chunks)
+            self._rebuild()
+            self._needs_rebuild = False
         logger.debug("BM25 index built: %d chunks", len(self._chunks))
 
     def add(self, chunks: list[Chunk]) -> None:
-        """Append *chunks* to the index and rebuild.
+        """Append *chunks* to the index and rebuild unless inside: meth:`deferred_rebuild`.
 
         Existing chunks with the same "id" are replaced (deduplication).
         """
-        incoming_ids = {c.id for c in chunks}
-        self._chunks = [c for c in self._chunks if c.id not in incoming_ids]
-        self._chunks.extend(chunks)
-        self._rebuild()
+        with self._lock:
+            incoming_ids = {c.id for c in chunks}
+            self._chunks = [c for c in self._chunks if c.id not in incoming_ids]
+            self._chunks.extend(chunks)
+            self._schedule_rebuild()
         logger.debug("BM25 index updated: +%d chunks, total %d", len(chunks), len(self._chunks))
 
     def remove_by_ids(self, chunk_ids: list[str]) -> None:
-        """Remove chunks by ID and rebuild the index."""
+        """Remove chunks by ID and rebuild the index unless inside: meth:`deferred_rebuild`."""
         if not chunk_ids:
             return
-        remove = set(chunk_ids)
-        before = len(self._chunks)
-        self._chunks = [c for c in self._chunks if c.id not in remove]
-        self._rebuild()
+        with self._lock:
+            remove = set(chunk_ids)
+            before = len(self._chunks)
+            self._chunks = [c for c in self._chunks if c.id not in remove]
+            self._schedule_rebuild()
         logger.debug("BM25 index removed %d chunks", before - len(self._chunks))
+
+    def rebuild(self) -> None:
+        """Rebuild the in-memory BM25 model from the current chunk list."""
+        with self._lock:
+            self._rebuild()
+            self._needs_rebuild = False
+
+    @contextmanager
+    def deferred_rebuild(self) -> Iterator[BM25Index]:
+        """Defer rebuilds until the context exits, then rebuild once if needed."""
+        with self._lock:
+            self._defer_rebuild_depth += 1
+        try:
+            yield self
+        finally:
+            with self._lock:
+                self._defer_rebuild_depth -= 1
+                if self._defer_rebuild_depth == 0:
+                    self._ensure_built()
 
     def remove_by_document_id(self, document_id: str) -> list[str]:
         """Remove all chunks belonging to *document_id*. Returns removed chunk IDs."""
-        removed = [c.id for c in self._chunks if c.document_id == document_id]
+        with self._lock:
+            removed = [c.id for c in self._chunks if c.document_id == document_id]
         if removed:
             self.remove_by_ids(removed)
         return removed
@@ -105,29 +133,32 @@ class BM25Index:
 
     def search(self, query: str, top_k: int) -> list[tuple[Chunk, float]]:
         """Return up to *top_k* (chunk, score) pairs sorted by BM25 score desc."""
-        if self._bm25 is None or not self._chunks:
-            return []
-        tokens = _tokenize(query)
-        scores: list[float] = self._bm25.get_scores(tokens).tolist()
-        ranked = sorted(
-            (
-                (chunk, score)
-                for chunk, score in zip(self._chunks, scores, strict=True)
-                if score > 0
-            ),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        return ranked[:top_k]
+        with self._lock:
+            self._ensure_built()
+            bm25 = self._bm25
+            chunks = self._chunks
+            if bm25 is None or not chunks:
+                return []
+            tokens = _tokenize(query)
+            scores: list[float] = bm25.get_scores(tokens).tolist()
+            ranked = sorted(
+                ((chunk, score) for chunk, score in zip(chunks, scores, strict=True) if score > 0),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            return ranked[:top_k]
 
     # ── Persistence ────────────────────────────────────────────────────────────
 
     def save(self) -> None:
         """Persist chunk metadata as JSON and rebuild BM25 on a load."""
+        with self._lock:
+            self._ensure_built()
+            chunks = list(self._chunks)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": _INDEX_FORMAT_VERSION,
-            "chunks": [chunk.model_dump(mode="json") for chunk in self._chunks],
+            "chunks": [chunk.model_dump(mode="json") for chunk in chunks],
         }
         tmp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
         try:
@@ -155,8 +186,10 @@ class BM25Index:
         if not isinstance(raw_chunks, list):
             raise VectorStoreError(f"Invalid BM25 index format at {self._path}")
 
-        self._chunks = [Chunk.model_validate(item) for item in raw_chunks]
-        self._rebuild()
+        with self._lock:
+            self._chunks = [Chunk.model_validate(item) for item in raw_chunks]
+            self._rebuild()
+            self._needs_rebuild = False
         logger.info("BM25 index loaded from %s (%d chunks)", self._path, len(self._chunks))
 
     @classmethod
@@ -178,18 +211,21 @@ class BM25Index:
 
     @property
     def size(self) -> int:
-        return len(self._chunks)
+        with self._lock:
+            return len(self._chunks)
 
     @property
     def chunks(self) -> list[Chunk]:
         """Return a snapshot of all indexed chunks."""
-        return list(self._chunks)
+        with self._lock:
+            return list(self._chunks)
 
     def get_by_id(self, chunk_id: str) -> Chunk | None:
         """Return the chunk with *chunk_id*, or "None" if not indexed."""
-        for chunk in self._chunks:
-            if chunk.id == chunk_id:
-                return chunk
+        with self._lock:
+            for chunk in self._chunks:
+                if chunk.id == chunk_id:
+                    return chunk
         return None
 
     # ── Internals ──────────────────────────────────────────────────────────────
@@ -217,9 +253,24 @@ class BM25Index:
         if not isinstance(chunks, list):
             raise VectorStoreError(f"Invalid legacy BM25 index format at {path}")
 
-        self._chunks = list(chunks)
-        self._rebuild()
+        with self._lock:
+            self._chunks = list(chunks)
+            self._rebuild()
+            self._needs_rebuild = False
         logger.info("BM25 legacy pickle loaded from %s (%d chunks)", path, len(self._chunks))
+
+    def _ensure_built(self) -> None:
+        """Rebuild the BM25 model when writes were deferred."""
+        if self._needs_rebuild:
+            self._rebuild()
+            self._needs_rebuild = False
+
+    def _schedule_rebuild(self) -> None:
+        if self._defer_rebuild_depth > 0:
+            self._needs_rebuild = True
+            return
+        self._rebuild()
+        self._needs_rebuild = False
 
     def _rebuild(self) -> None:
         if not self._chunks:

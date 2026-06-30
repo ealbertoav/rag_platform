@@ -132,7 +132,7 @@ class IngestionPipeline:
 
         self._index_graph(chunks, document.id)
         self._vector_store.upsert(indexed_chunks)
-        self._bm25.add(_bm25_indexable(indexed_chunks))
+        self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
@@ -168,12 +168,15 @@ class IngestionPipeline:
             return []
 
         results: list[IngestionResult] = []
-        with Progress(
-            TextColumn("[cyan]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-        ) as progress:
+        with (
+            self._bm25.deferred_rebuild(),
+            Progress(
+                TextColumn("[cyan]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+            ) as progress,
+        ):
             task = progress.add_task("Ingesting", total=len(files))
             for f in files:
                 progress.update(task, description=f"[cyan]{f.name}")
@@ -200,6 +203,11 @@ class IngestionPipeline:
         return self._metadata.list_documents()
 
     # ── Internals ──────────────────────────────────────────────────────────────
+
+    def _bm25_add(self, indexed_chunks: list[Chunk]) -> None:
+        indexable = _bm25_indexable(indexed_chunks)
+        if indexable:
+            self._bm25.add(indexable)
 
     def _remove_document_chunks(self, metadata_doc_id: str) -> None:
         if self._metadata is None:

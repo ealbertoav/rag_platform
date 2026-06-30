@@ -350,9 +350,113 @@ class TestBM25IndexErrors:
         idx.index(_CORPUS)
         assert idx.remove_by_document_id("missing-doc") == []
 
+
+class TestBM25DeferredRebuild:
+    def test_deferred_rebuild_rebuilds_once_on_exit(self):
+        idx = BM25Index()
+        with patch.object(idx, "_rebuild", wraps=idx._rebuild) as mock_rebuild:
+            with idx.deferred_rebuild():
+                idx.add([_chunk("alpha text", idx=10)])
+                idx.add([_chunk("beta text", idx=11)])
+                assert mock_rebuild.call_count == 0
+            assert mock_rebuild.call_count == 1
+
+    def test_deferred_chunks_searchable_after_exit(self):
+        idx = BM25Index()
+        with idx.deferred_rebuild():
+            idx.add(_CORPUS)
+        assert idx.size == len(_CORPUS)
+        results = idx.search("kubernetes", top_k=1)
+        assert results
+        assert results[0][0].id == "chunk-0001"
+
+    def test_save_flushes_pending_rebuild(self, tmp_path: Path):
+        path = tmp_path / "bm25.json"
+        idx = BM25Index(index_path=path)
+        with idx.deferred_rebuild():
+            idx.add(_CORPUS)
+            idx.save()
+        loaded = BM25Index(index_path=path)
+        loaded.load()
+        assert loaded.size == len(_CORPUS)
+        assert loaded.search("kubernetes", top_k=1)
+
     def test_rebuild_clears_index_when_all_chunks_removed(self):
         idx = BM25Index()
         idx.index(_CORPUS)
         idx.remove_by_ids([c.id for c in _CORPUS])
         assert idx.size == 0
         assert idx.search("kubernetes", top_k=1) == []
+
+    def test_deferred_search_rebuilds_on_read(self):
+        idx = BM25Index()
+        idx.index(_CORPUS[:2])
+        with idx.deferred_rebuild():
+            idx.add([_chunk("unique new term xyzzy", idx=99)])
+            results = idx.search("xyzzy", top_k=1)
+            assert results
+            assert results[0][0].id == "chunk-0099"
+        assert idx.search("xyzzy", top_k=1)
+
+    def test_concurrent_search_during_deferred_rebuild(self):
+        import threading
+
+        idx = BM25Index()
+        idx.index(_CORPUS[:3])
+        errors: list[Exception] = []
+        started = threading.Barrier(5)
+
+        def search_loop() -> None:
+            try:
+                started.wait(timeout=5)
+                for _ in range(100):
+                    idx.search("kubernetes", top_k=5)
+            except Exception as exc:  # pragma: no cover - test assertion below
+                errors.append(exc)
+
+        search_threads = [threading.Thread(target=search_loop) for _ in range(4)]
+        with idx.deferred_rebuild():
+            for thread in search_threads:
+                thread.start()
+            started.wait(timeout=5)
+            for extra in _CORPUS[3:]:
+                idx.add([extra])
+            for thread in search_threads:
+                thread.join(timeout=10)
+        assert not errors
+        assert idx.search("vector databases", top_k=1)
+
+    def test_search_sees_chunks_added_during_shared_batch_ingest(self):
+        """Simulates API ingest_directory + concurrent chat retrieval on one index."""
+        import threading
+
+        idx = BM25Index()
+        idx.index(_CORPUS[:3])
+        new_chunk = _chunk("kubernetes deployment rollout strategy", idx=99)
+        search_ready = threading.Event()
+        added = threading.Event()
+        found_during_batch = threading.Event()
+
+        def batch_ingest() -> None:
+            with idx.deferred_rebuild():
+                search_ready.wait(timeout=5)
+                idx.add([new_chunk])
+                added.set()
+                found_during_batch.wait(timeout=5)
+
+        def concurrent_search() -> None:
+            search_ready.set()
+            added.wait(timeout=5)
+            results = idx.search("kubernetes deployment rollout", top_k=1)
+            if results and results[0][0].id == new_chunk.id:
+                found_during_batch.set()
+
+        ingest_thread = threading.Thread(target=batch_ingest)
+        search_thread = threading.Thread(target=concurrent_search)
+        ingest_thread.start()
+        search_thread.start()
+        ingest_thread.join(timeout=5)
+        search_thread.join(timeout=5)
+        assert found_during_batch.is_set()
+        results = idx.search("kubernetes deployment rollout", top_k=1)
+        assert results[0][0].id == new_chunk.id

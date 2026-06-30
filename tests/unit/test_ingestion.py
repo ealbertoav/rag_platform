@@ -11,6 +11,7 @@ from src.core.exceptions import IngestionError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.services.ingestion_service import IngestionService
+from src.infrastructure.vectordb.bm25 import BM25Index
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult, content_hash
 from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
 
@@ -223,6 +224,68 @@ class TestIngestionPipelineDirectory:
         pipeline, _, _, bm25 = mock_ingestion_pipeline()
         pipeline.save_indexes()
         bm25.save.assert_called_once()
+
+    def test_ingest_directory_rebuilds_bm25_once(self, tmp_path: Path):
+        for i in range(3):
+            (tmp_path / f"doc{i}.md").write_text(f"# Doc {i}\n\nContent {i}.")
+        bm25 = BM25Index()
+        service = MagicMock()
+        service.prepare.return_value = [embedded_chunk()]
+        pipeline = IngestionPipeline(
+            service=service,
+            vector_store=MagicMock(),
+            bm25=bm25,
+        )
+        with patch.object(bm25, "_rebuild", wraps=bm25._rebuild) as mock_rebuild:
+            results = pipeline.ingest_directory(tmp_path)
+        assert len(results) == 3
+        assert mock_rebuild.call_count == 1
+
+    def test_ingest_directory_searchable_during_batch(self, tmp_path: Path):
+        """Shared BM25 index stays searchable while directory ingest defers rebuilds."""
+        import threading
+
+        (tmp_path / "doc0.md").write_text("# Doc 0\n\nkubernetes scheduling.")
+        (tmp_path / "doc1.md").write_text("# Doc 1\n\nvector database indexing.")
+        bm25 = BM25Index()
+        bm25.index([Chunk(document_id="baseline", text="baseline corpus for bm25 idf")])
+        service = MagicMock()
+        service.prepare.side_effect = [
+            [Chunk(document_id="doc-0", text="kubernetes scheduling.", embedding=[0.1] * 4)],
+            [Chunk(document_id="doc-1", text="vector database indexing.", embedding=[0.2] * 4)],
+        ]
+        pipeline = IngestionPipeline(
+            service=service,
+            vector_store=MagicMock(),
+            bm25=bm25,
+        )
+        search_ready = threading.Event()
+        added = threading.Event()
+        found = threading.Event()
+        original_ingest_file = pipeline.ingest_file
+
+        def ingest_file_with_sync(path: Path) -> IngestionResult:
+            if path.name == "doc1.md":
+                search_ready.wait(timeout=5)
+            result = original_ingest_file(path)
+            if path.name == "doc1.md":
+                added.set()
+            return result
+
+        pipeline.ingest_file = ingest_file_with_sync  # type: ignore[method-assign]
+
+        def search_while_ingesting() -> None:
+            search_ready.set()
+            added.wait(timeout=5)
+            if bm25.search("vector database", top_k=1):
+                found.set()
+
+        search_thread = threading.Thread(target=search_while_ingesting)
+        search_thread.start()
+        pipeline.ingest_directory(tmp_path)
+        search_thread.join(timeout=5)
+        assert found.is_set()
+        assert bm25.search("kubernetes scheduling", top_k=1)
 
     def test_skips_unchanged_file_when_metadata_matches(self, tmp_path: Path):
         path = tmp_path / "doc.md"

@@ -181,6 +181,11 @@ class RetrievalPipeline:
         )
 
         expander = QueryExpander.from_settings(llm) if settings.query_expansion.enabled else None
+        classifier = None
+        if settings.retrieval.adaptive.enabled:
+            from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
+
+            classifier = QueryClassifier.from_settings(llm)
         reranker = CrossEncoder.from_settings()
         compressor = (
             ContextualCompressor.from_settings(llm) if settings.compression.enabled else None
@@ -190,6 +195,7 @@ class RetrievalPipeline:
             dense_retriever=dense,
             hybrid_retriever=hybrid,
             query_expander=expander,
+            query_classifier=classifier,
             reranker=reranker,
             compressor=compressor,
             top_k_retrieval=cfg.top_k_dense,
