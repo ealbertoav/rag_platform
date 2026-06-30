@@ -26,6 +26,10 @@ from src.rag.retrieval.query_expansion import QueryExpander
 
 if TYPE_CHECKING:
     from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
+    from src.rag.retrieval.adaptive.strategies import (
+        AdaptiveStrategyRegistry,
+        RetrievalStrategyParams,
+    )
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
@@ -56,6 +60,7 @@ class RetrievalService:
         hybrid_retriever: HybridRetriever,
         query_expander: QueryExpander | None = None,
         query_classifier: QueryClassifier | None = None,
+        strategy_registry: AdaptiveStrategyRegistry | None = None,
         reranker: CrossEncoder | None = None,
         compressor: ContextualCompressor | None = None,
         top_k_retrieval: int = 50,
@@ -71,6 +76,7 @@ class RetrievalService:
         self._hybrid = hybrid_retriever
         self._expander = query_expander
         self._classifier = query_classifier
+        self._strategy_registry = strategy_registry
         self._reranker = reranker
         self._compressor = compressor
         self._top_k_retrieval = top_k_retrieval
@@ -93,14 +99,15 @@ class RetrievalService:
 
         # 0. Adaptive query classification (optional)
         query = self._classify(query)
+        strategy = self._resolve_strategy(query)
 
         # 1. Query expansion (optional)
         with _tracer.start_as_current_span("retrieval.expansion"):
-            query = self._expand(query)
+            query = self._expand(query, strategy)
 
         # 2. Multi-query hybrid retrieval (original + expanded variants)
         with _tracer.start_as_current_span("retrieval.multi_query_fusion") as span:
-            search_results = await self._retrieve_variants(query)
+            search_results = await self._retrieve_variants(query, strategy)
             chunks = [c for c, _ in search_results]
             variant_count = len(self._query_variants(query))
             span.set_attribute("variant_count", variant_count)
@@ -132,7 +139,7 @@ class RetrievalService:
 
         # 6. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
-            chunks = self._compress(query.text, chunks)
+            chunks = self._compress(query.text, chunks, strategy)
             span.set_attribute("chunk_count", len(chunks))
 
         # 7. Final top-K cap
@@ -155,10 +162,22 @@ class RetrievalService:
             return query
         return self._classifier.classify(query)
 
-    def _expand(self, query: Query) -> Query:
+    def _resolve_strategy(self, query: Query) -> RetrievalStrategyParams | None:
+        if self._strategy_registry is None:
+            return None
+        from src.rag.retrieval.adaptive.strategies import record_strategy_span
+
+        category = query.metadata.get("category")
+        params = self._strategy_registry.resolve_params(category)
+        with _tracer.start_as_current_span("retrieval.adaptive.strategy"):
+            record_strategy_span(category, params)
+        return params
+
+    def _expand(self, query: Query, strategy: RetrievalStrategyParams | None = None) -> Query:
         if self._expander is None:
             return query
-        return self._expander.expand(query)
+        n_variants = strategy.n_variants if strategy is not None else None
+        return self._expander.expand(query, n_variants=n_variants)
 
     @staticmethod
     def _query_variants(query: Query) -> list[str]:
@@ -172,28 +191,45 @@ class RetrievalService:
                 variants.append(normalized)
         return variants
 
-    async def _retrieve_variants(self, query: Query) -> list[tuple[Chunk, float]]:
+    async def _retrieve_variants(
+        self,
+        query: Query,
+        strategy: RetrievalStrategyParams | None = None,
+    ) -> list[tuple[Chunk, float]]:
+        top_k = strategy.top_k if strategy is not None else self._top_k_retrieval
+        use_hyde = strategy.hyde if strategy is not None else True
         variants = self._query_variants(query)
         if len(variants) == 1:
             embedded = self._dense.embed_query(query)
-            return await self._hybrid.retrieve(embedded, top_k=self._top_k_retrieval)
+            return await self._hybrid.retrieve(embedded, top_k=top_k, use_hyde=use_hyde)
 
         async def _search_variant(text: str) -> list[tuple[Chunk, float]]:
             variant_query = query.model_copy(update={"text": text, "embedding": None})
             variant_embedded = await asyncio.to_thread(self._dense.embed_query, variant_query)
-            return await self._hybrid.retrieve(variant_embedded, top_k=self._top_k_retrieval)
+            return await self._hybrid.retrieve(
+                variant_embedded,
+                top_k=top_k,
+                use_hyde=use_hyde,
+            )
 
         gathered = await asyncio.gather(*[_search_variant(text) for text in variants])
         if len(gathered) == 1:
             return gathered[0]
-        return rrf_fuse(*gathered, top_k=self._top_k_retrieval)
+        return rrf_fuse(*gathered, top_k=top_k)
 
     def _rerank(self, query_text: str, chunks: list[Chunk]) -> list[Chunk]:
         if self._reranker is None or not chunks:
             return chunks
         return self._reranker.rerank(query_text, chunks, top_k=self._top_k_rerank)
 
-    def _compress(self, query_text: str, chunks: list[Chunk]) -> list[Chunk]:
+    def _compress(
+        self,
+        query_text: str,
+        chunks: list[Chunk],
+        strategy: RetrievalStrategyParams | None = None,
+    ) -> list[Chunk]:
+        if strategy is not None and not strategy.compression:
+            return chunks
         if self._compressor is None or not chunks:
             return chunks
         return self._compressor.compress(query_text, chunks)

@@ -1487,7 +1487,7 @@
 ---
 
 ### T-132 · Adaptive Retrieval Strategies
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Apply category-specific retrieval parameters — inspired by RAG_Techniques `adaptive_retrieval.py` strategy pattern.
 - **Inputs:** T-131 (query classification), T-025 (retrieval service)
 - **Outputs:** Strategy objects that tune k, expansion count, compression, and HyDE per query category.

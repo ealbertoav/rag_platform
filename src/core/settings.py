@@ -132,8 +132,29 @@ class HyDESettings(BaseModel):
     enabled: bool = False
 
 
+class CategoryStrategySettings(BaseModel):
+    top_k: int = Field(gt=0)
+    n_variants: int = Field(default=1, ge=1, le=10)
+    hyde: bool = False
+    compression: bool = True
+
+
+def _default_adaptive_strategies() -> dict[str, CategoryStrategySettings]:
+    return {
+        "factual": CategoryStrategySettings(top_k=30, n_variants=1, hyde=False, compression=True),
+        "analytical": CategoryStrategySettings(top_k=50, n_variants=3, hyde=True, compression=True),
+        "opinion": CategoryStrategySettings(top_k=20, n_variants=2, hyde=False, compression=False),
+        "contextual": CategoryStrategySettings(
+            top_k=40, n_variants=2, hyde=False, compression=True
+        ),
+    }
+
+
 class AdaptiveSettings(BaseModel):
     enabled: bool = False
+    strategies: dict[str, CategoryStrategySettings] = Field(
+        default_factory=_default_adaptive_strategies,
+    )
 
 
 class RSESettings(BaseModel):

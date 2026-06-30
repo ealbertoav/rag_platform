@@ -102,6 +102,12 @@ class TestYamlDefaults:
 
     def test_adaptive_defaults_from_yaml(self):
         assert settings.retrieval.adaptive.enabled is False
+        factual = settings.retrieval.adaptive.strategies["factual"]
+        assert factual.top_k == 30
+        assert factual.n_variants == 1
+        analytical = settings.retrieval.adaptive.strategies["analytical"]
+        assert analytical.top_k == 50
+        assert analytical.hyde is True
 
     def test_rse_defaults_from_yaml(self):
         assert settings.retrieval.rse.enabled is False

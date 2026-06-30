@@ -56,7 +56,13 @@ class HybridRetriever:
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
-    async def retrieve(self, query: Query, top_k: int) -> list[SearchResult]:
+    async def retrieve(
+        self,
+        query: Query,
+        top_k: int,
+        *,
+        use_hyde: bool = True,
+    ) -> list[SearchResult]:
         """Return up to *top_k* (Chunk, score) pairs fused from dense + BM25.
 
         Uses a 3× candidate pool per source before RRF so that chunks that
@@ -72,7 +78,7 @@ class HybridRetriever:
             tasks.append(asyncio.to_thread(self._graph.search, query.text, expansion))
         if self._hype is not None:
             tasks.append(asyncio.to_thread(self._hype.retrieve, query, expansion))
-        if self._hyde is not None:
+        if self._hyde is not None and use_hyde:
             tasks.append(asyncio.to_thread(self._hyde.retrieve, query, expansion))
         if self._hierarchical is not None:
             tasks.append(asyncio.to_thread(self._hierarchical.retrieve, query, expansion))
@@ -99,7 +105,7 @@ class HybridRetriever:
             hype_results = gathered[graph_idx]
             graph_idx += 1
         hyde_results: list[SearchResult] = []
-        if self._hyde is not None:
+        if self._hyde is not None and use_hyde:
             hyde_results = resolve_synthetic_questions(
                 gathered[graph_idx],
                 lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
@@ -109,11 +115,12 @@ class HybridRetriever:
         if self._hierarchical is not None:
             hierarchical_results = gathered[graph_idx]
 
+        hyde_active = self._hyde is not None and use_hyde
         if (
             self._fusion_mode == "weighted_linear"
             and self._graph is None
             and self._hype is None
-            and self._hyde is None
+            and not hyde_active
             and self._hierarchical is None
         ):
             fused = weighted_linear_fuse(dense_results, bm25_results, alpha=self.alpha, top_k=top_k)

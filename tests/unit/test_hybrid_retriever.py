@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -138,3 +138,55 @@ class TestAlpha:
     def test_alpha_stored(self):
         hr = _retriever(alpha=0.3)
         assert hr.alpha == pytest.approx(0.3)
+
+
+# ── fusion mode ───────────────────────────────────────────────────────────────
+
+
+class TestFusionMode:
+    @pytest.mark.asyncio
+    async def test_weighted_linear_when_hyde_present_but_disabled(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        hyde_mock = MagicMock()
+        hr = HybridRetriever(
+            dense=dense_mock,
+            bm25=bm25_mock,
+            hyde_retriever=hyde_mock,
+            fusion_mode="weighted_linear",
+        )
+        with (
+            patch("src.rag.retrieval.hybrid_retriever.weighted_linear_fuse") as wl,
+            patch("src.rag.retrieval.hybrid_retriever.rrf_fuse") as rrf,
+        ):
+            wl.return_value = [(_chunk(0), 0.5)]
+            await hr.retrieve(_query(), top_k=3, use_hyde=False)
+            wl.assert_called_once()
+            rrf.assert_not_called()
+        hyde_mock.retrieve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rrf_when_hyde_active(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        hyde_mock = MagicMock()
+        hyde_mock.retrieve.return_value = [(_chunk(2), 0.6)]
+        hr = HybridRetriever(
+            dense=dense_mock,
+            bm25=bm25_mock,
+            hyde_retriever=hyde_mock,
+            fusion_mode="weighted_linear",
+        )
+        with (
+            patch("src.rag.retrieval.hybrid_retriever.weighted_linear_fuse") as wl,
+            patch("src.rag.retrieval.hybrid_retriever.rrf_fuse") as rrf,
+        ):
+            rrf.return_value = [(_chunk(0), 0.5)]
+            await hr.retrieve(_query(), top_k=3, use_hyde=True)
+            rrf.assert_called_once()
+            wl.assert_not_called()
+        hyde_mock.retrieve.assert_called_once()

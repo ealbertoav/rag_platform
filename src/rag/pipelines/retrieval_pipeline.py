@@ -59,9 +59,13 @@ def _build_hyde_retriever(
     llm: LLMRepository,
     embedder: object,
     vector_store: object,
+    *,
+    enabled: bool | None = None,
 ) -> object | None:
     """Return a HyDERetriever when HyDE is enabled, else None."""
-    if not settings.retrieval.hyde.enabled:
+    if enabled is None:
+        enabled = settings.retrieval.hyde.enabled
+    if not enabled:
         return None
     try:
         from src.rag.retrieval.hyde_retriever import HyDERetriever
@@ -167,7 +171,13 @@ class RetrievalPipeline:
         dense = DenseRetriever(embedder=embedder, vector_store=vector_store)
         graph = _build_graph_retriever(llm, bm25)
         hype = _build_hype_retriever(embedder, vector_store, bm25)
-        hyde = _build_hyde_retriever(llm, embedder, vector_store)
+        # Build HyDE when globally enabled or when adaptive may opt in per query.
+        hyde = _build_hyde_retriever(
+            llm,
+            embedder,
+            vector_store,
+            enabled=cfg.hyde.enabled or cfg.adaptive.enabled,
+        )
         hierarchical = _build_hierarchical_retriever(embedder, vector_store)
         hybrid = HybridRetriever(
             dense=dense,
@@ -182,10 +192,13 @@ class RetrievalPipeline:
 
         expander = QueryExpander.from_settings(llm) if settings.query_expansion.enabled else None
         classifier = None
+        strategy_registry = None
         if settings.retrieval.adaptive.enabled:
             from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
+            from src.rag.retrieval.adaptive.strategies import AdaptiveStrategyRegistry
 
             classifier = QueryClassifier.from_settings(llm)
+            strategy_registry = AdaptiveStrategyRegistry.from_settings()
         reranker = CrossEncoder.from_settings()
         compressor = (
             ContextualCompressor.from_settings(llm) if settings.compression.enabled else None
@@ -196,6 +209,7 @@ class RetrievalPipeline:
             hybrid_retriever=hybrid,
             query_expander=expander,
             query_classifier=classifier,
+            strategy_registry=strategy_registry,
             reranker=reranker,
             compressor=compressor,
             top_k_retrieval=cfg.top_k_dense,
