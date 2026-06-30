@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 
@@ -22,6 +23,9 @@ from src.rag.ranking.score_fusion import rrf_fuse
 from src.rag.retrieval.dense_retriever import DenseRetriever
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
 from src.rag.retrieval.query_expansion import QueryExpander
+
+if TYPE_CHECKING:
+    from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
@@ -51,6 +55,7 @@ class RetrievalService:
         dense_retriever: DenseRetriever,
         hybrid_retriever: HybridRetriever,
         query_expander: QueryExpander | None = None,
+        query_classifier: QueryClassifier | None = None,
         reranker: CrossEncoder | None = None,
         compressor: ContextualCompressor | None = None,
         top_k_retrieval: int = 50,
@@ -65,6 +70,7 @@ class RetrievalService:
         self._dense = dense_retriever
         self._hybrid = hybrid_retriever
         self._expander = query_expander
+        self._classifier = query_classifier
         self._reranker = reranker
         self._compressor = compressor
         self._top_k_retrieval = top_k_retrieval
@@ -84,6 +90,9 @@ class RetrievalService:
     async def retrieve(self, query: Query) -> RetrievalResult:
         """Execute the full retrieval flow and return a "RetrievalResult"."""
         t0 = time.monotonic()
+
+        # 0. Adaptive query classification (optional)
+        query = self._classify(query)
 
         # 1. Query expansion (optional)
         with _tracer.start_as_current_span("retrieval.expansion"):
@@ -140,6 +149,11 @@ class RetrievalService:
         return RetrievalResult(query=query, chunks=chunks, context=context, latency_ms=elapsed)
 
     # ── Internals ──────────────────────────────────────────────────────────────
+
+    def _classify(self, query: Query) -> Query:
+        if self._classifier is None:
+            return query
+        return self._classifier.classify(query)
 
     def _expand(self, query: Query) -> Query:
         if self._expander is None:

@@ -115,6 +115,10 @@ class TestQuery:
         q = Query(text="question")
         assert q.embedding is None
 
+    def test_metadata_defaults_to_empty(self):
+        q = Query(text="question")
+        assert q.metadata == {}
+
     def test_with_expansions(self):
         q = Query(text="q", expanded_texts=["q1", "q2"])
         assert len(q.expanded_texts) == 2

@@ -100,6 +100,9 @@ class TestYamlDefaults:
     def test_hyde_defaults_from_yaml(self):
         assert settings.retrieval.hyde.enabled is False
 
+    def test_adaptive_defaults_from_yaml(self):
+        assert settings.retrieval.adaptive.enabled is False
+
     def test_rse_defaults_from_yaml(self):
         assert settings.retrieval.rse.enabled is False
         assert settings.retrieval.rse.max_segment_tokens == 1500
