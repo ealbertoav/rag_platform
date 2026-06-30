@@ -9,6 +9,7 @@ import pytest
 
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.infrastructure.vectordb.bm25 import BM25Index
 from src.rag.retrieval.bm25_retriever import BM25Retriever
 
@@ -112,6 +113,19 @@ class TestBM25Index:
         idx.index(_CORPUS)
         results = idx.search("kubernetes", top_k=10)
         assert all(s > 0 for _, s in results)
+
+    def test_document_id_filter_restricts_results(self):
+        idx = BM25Index()
+        scoped = [
+            _chunk("kubernetes pod scheduling", doc_id="doc-a", idx=0),
+            _chunk("vector databases store embeddings", doc_id="doc-b", idx=1),
+            _chunk("python async programming", doc_id="doc-c", idx=2),
+        ]
+        idx.index(scoped)
+        filt = RetrievalFilter(document_ids=["doc-a"])
+        results = idx.search("kubernetes", top_k=5, filters=filt)
+        assert len(results) == 1
+        assert results[0][0].document_id == "doc-a"
 
     def test_index_replaces_existing(self):
         idx = BM25Index()

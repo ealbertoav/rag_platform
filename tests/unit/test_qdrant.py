@@ -247,6 +247,20 @@ class TestSearchDense:
         assert query_filter.must[0].key == "document_id"
         assert set(query_filter.must[0].match.any) == {"doc-a", "doc-b"}
 
+    def test_metadata_filter(self, store: QdrantVectorStore, mock_client: MagicMock):
+        from src.rag.retrieval.filters import RetrievalFilter
+
+        mock_client.query_points.return_value = _query_response([])
+        store.search_dense(
+            [0.1] * 4,
+            top_k=5,
+            filters=RetrievalFilter(metadata={"source": "report.pdf"}),
+        )
+        _, kwargs = mock_client.query_points.call_args
+        query_filter = kwargs["query_filter"]
+        assert query_filter.must[0].key == "metadata.source"
+        assert query_filter.must[0].match.value == "report.pdf"
+
 
 # ── search_sparse ──────────────────────────────────────────────────────────────
 

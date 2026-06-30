@@ -65,6 +65,7 @@ class TestRetrieve:
             custom_vec,
             top_k=3,
             exclude_types=frozenset({CHUNK_TYPE_HYPE, CHUNK_TYPE_SUMMARY}),
+            filters=None,
         )
 
     def test_top_k_forwarded(self):

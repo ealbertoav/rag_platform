@@ -10,8 +10,10 @@ from pydantic import BaseModel, Field
 from src.api.dependencies import get_agent_pipeline, get_chat_pipeline
 from src.api.schemas.agent import AgentChatResponse
 from src.api.security import require_api_key
+from src.domain.entities.query import Query
 from src.rag.pipelines.agent_pipeline import AgentPipeline
 from src.rag.pipelines.chat_pipeline import ChatPipeline
+from src.rag.retrieval.filters import filters_from_request
 
 router = APIRouter(
     prefix="/chat",
@@ -24,6 +26,23 @@ _MAX_AGENT_ITERATIONS = 5
 
 class ChatRequest(BaseModel):
     question: str
+    document_ids: list[str] = Field(default_factory=list)
+    metadata_filters: dict[str, str] = Field(default_factory=dict)
+    min_score: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Minimum cosine similarity score for retrieved chunks.",
+    )
+
+
+def _query_from_request(body: ChatRequest) -> Query:
+    filters = filters_from_request(
+        document_ids=body.document_ids,
+        metadata_filters=body.metadata_filters,
+        min_score=body.min_score,
+    )
+    return Query(text=body.question, filters=filters)
 
 
 class AgentChatRequest(BaseModel):
@@ -49,8 +68,10 @@ async def chat_stream(
     The stream ends with "data: [DONE]".
     """
 
+    query = _query_from_request(body)
+
     async def _generate() -> AsyncIterator[str]:
-        async for token in await pipeline.chat(body.question):
+        async for token in await pipeline.chat(query):
             yield f"data: {json.dumps({'token': token})}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -63,7 +84,8 @@ async def chat_full(
     pipeline: ChatPipeline = Depends(get_chat_pipeline),
 ) -> ChatFullResponse:
     """Non-streaming endpoint — returns the complete answer once generated."""
-    answer = await pipeline.chat_full(body.question)
+    query = _query_from_request(body)
+    answer = await pipeline.chat_full(query)
     return ChatFullResponse(
         answer=answer.text,
         sources=answer.sources,

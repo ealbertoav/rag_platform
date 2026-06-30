@@ -5,11 +5,9 @@ from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    Condition,
     Distance,
     FieldCondition,
     Filter,
-    MatchAny,
     MatchValue,
     PointIdsList,
     PointStruct,
@@ -24,8 +22,10 @@ from qdrant_client.models import (
 from src.core.constants import CHUNK_TYPE_KEY, RRF_K
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.domain.repositories.embedding_repository import DenseVector, SparseVector
 from src.domain.repositories.vector_store_repository import SearchResult, VectorStoreRepository
+from src.rag.retrieval.filters import build_qdrant_filter
 
 logger = logging.getLogger(__name__)
 
@@ -33,45 +33,6 @@ _DENSE = "dense"
 _SPARSE = "sparse"
 _EXPANSION = 3  # multiplier for hybrid search candidate pool
 _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
-
-
-def _build_search_filter(
-    *,
-    type_equals: str | None = None,
-    exclude_types: frozenset[str] | None = None,
-    document_ids: frozenset[str] | None = None,
-) -> Filter | None:
-    """Build a Qdrant payload filter for chunk metadata."""
-    must: list[Condition] = []
-
-    if type_equals is not None:
-        must.append(
-            FieldCondition(
-                key=CHUNK_TYPE_KEY,
-                match=MatchValue(value=type_equals),
-            )
-        )
-    if document_ids:
-        must.append(
-            FieldCondition(
-                key="document_id",
-                match=MatchAny(any=sorted(document_ids)),
-            )
-        )
-
-    must_not: list[Condition] = []
-    if exclude_types:
-        must_not.extend(
-            FieldCondition(key=CHUNK_TYPE_KEY, match=MatchValue(value=chunk_type))
-            for chunk_type in exclude_types
-        )
-
-    if not must and not must_not:
-        return None
-    return Filter(
-        must=must if must else None,
-        must_not=must_not if must_not else None,
-    )
 
 
 # ── RRF fusion (module-level so it can be tested independently) ────────────────
@@ -173,12 +134,14 @@ class QdrantVectorStore(VectorStoreRepository):
         type_equals: str | None = None,
         exclude_types: frozenset[str] | None = None,
         document_ids: frozenset[str] | None = None,
+        filters: RetrievalFilter | None = None,
     ) -> list[SearchResult]:
         self._ensure_collection()
-        query_filter = _build_search_filter(
+        query_filter = build_qdrant_filter(
             type_equals=type_equals,
             exclude_types=exclude_types,
             document_ids=document_ids,
+            filters=filters,
         )
         try:
             response = self._client.query_points(

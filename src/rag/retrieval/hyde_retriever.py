@@ -64,6 +64,7 @@ class HyDERetriever:
                     embedding,
                     top_k=top_k,
                     exclude_types=_HIERARCHICAL_EXCLUDE,
+                    filters=query.filters,
                 )
                 logger.debug(
                     "HyDE retrieval: %d results for %r (hypo_doc=%d chars)",

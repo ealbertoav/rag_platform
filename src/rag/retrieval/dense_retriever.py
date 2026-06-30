@@ -40,6 +40,7 @@ class DenseRetriever:
             embedding,
             top_k=top_k,
             exclude_types=_HIERARCHICAL_EXCLUDE,
+            filters=query.filters,
         )
         logger.debug("Dense retrieval: %d results for %r", len(results), query.text[:60])
         return results

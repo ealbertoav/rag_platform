@@ -7,6 +7,7 @@ from src.domain.entities.query import Query
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.vector_store_repository import SearchResult, VectorStoreRepository
 from src.rag.enrichment.hierarchical_indexer import is_summary_chunk
+from src.rag.retrieval.filters import effective_document_ids
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,12 @@ class HierarchicalRetriever:
             embedding,
             top_k=self._summary_top_k,
             type_equals=CHUNK_TYPE_SUMMARY,
+            filters=query.filters,
         )
-        document_ids = _document_ids_from_summaries(summary_hits)
+        document_ids = effective_document_ids(
+            _document_ids_from_summaries(summary_hits),
+            query.filters,
+        )
         if not document_ids:
             logger.debug("Hierarchical retrieval: no summary matches")
             return []
@@ -48,6 +53,7 @@ class HierarchicalRetriever:
             top_k=top_k,
             type_equals=CHUNK_TYPE_DETAIL,
             document_ids=document_ids,
+            filters=query.filters,
         )
         detail_results = [
             (chunk, score) for chunk, score in detail_hits if not is_summary_chunk(chunk)

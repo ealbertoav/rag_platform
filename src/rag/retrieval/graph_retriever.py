@@ -7,10 +7,12 @@ from pathlib import Path
 from string import Template
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.domain.repositories.llm_repository import LLMRepository
 from src.domain.repositories.vector_store_repository import SearchResult
 from src.infrastructure.vectordb.neo4j_graph import GraphRelation, Neo4jGraphRepository
 from src.rag.retrieval.bm25_retriever import BM25Retriever
+from src.rag.retrieval.filters import apply_chunk_filters
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +84,13 @@ class GraphRetriever:
         self._graph = graph
         self._bm25 = bm25
 
-    def search(self, query: str, top_k: int) -> list[SearchResult]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        filters: RetrievalFilter | None = None,
+    ) -> list[SearchResult]:
         """Return up to *top_k* (Chunk, score) pairs from the knowledge graph."""
         entity_names = self._extractor.extract_entity_names(query)
         if not entity_names:
@@ -100,8 +108,14 @@ class GraphRetriever:
             if isinstance(chunk, Chunk):
                 results.append((chunk, score))
 
-        logger.debug("Graph retrieval: %d entities → %d chunks", len(entity_names), len(results))
-        return results
+        filtered = apply_chunk_filters(results, filters)
+        logger.debug(
+            "Graph retrieval: %d entities → %d chunks (%d after filters)",
+            len(entity_names),
+            len(results),
+            len(filtered),
+        )
+        return filtered[:top_k]
 
     @classmethod
     def from_settings(

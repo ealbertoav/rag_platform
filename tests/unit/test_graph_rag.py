@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.infrastructure.vectordb.neo4j_graph import GraphRelation, Neo4jGraphRepository
 from src.rag.retrieval.graph_retriever import EntityExtractor, GraphRetriever
 
@@ -149,6 +150,12 @@ class TestGraphRetriever:
         bm25 = _bm25_mock()
         retriever = GraphRetriever(extractor=ex, graph=graph, bm25=bm25)
         assert retriever.search("AWS EKS", top_k=5) == []
+
+    def test_document_id_filter_excludes_out_of_scope_chunks(self):
+        chunk = Chunk(id="c0", document_id="doc-a", text="text 0")
+        r = self._retriever([("c0", 0.9)], chunk=chunk)
+        filt = RetrievalFilter(document_ids=["doc-b"])
+        assert r.search("AWS EKS IAM roles", top_k=3, filters=filt) == []
 
 
 # ── HybridRetriever with graph ────────────────────────────────────────────────

@@ -69,7 +69,7 @@ class TestHybridRetrieverAsync:
     async def test_calls_bm25_search(self):
         hr = _retriever()
         await hr.retrieve(_query("my query"), top_k=3)
-        hr._bm25.search.assert_called_once_with("my query", 9)  # type: ignore[attr-defined]
+        hr._bm25.search.assert_called_once_with("my query", 9, filters=None)  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_deduplicates_shared_chunk(self):

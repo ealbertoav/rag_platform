@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.domain.entities.retrieval_filter import RetrievalFilter
+
 
 class Query(BaseModel):
     """A user question, optionally expanded into multiple sub-queries."""
@@ -20,3 +22,5 @@ class Query(BaseModel):
     embedding: list[float] | None = None
     # Query-time annotations (e.g. adaptive classification category).
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Optional document scope, metadata, and score constraints for retrieval.
+    filters: RetrievalFilter | None = None

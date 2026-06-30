@@ -16,6 +16,8 @@ from rank_bm25 import BM25Okapi
 from src.core.constants import BM25_INDEX_PATH, BM25_LEGACY_PICKLE_PATH
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
+from src.rag.retrieval.filters import chunk_matches_filter
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +133,13 @@ class BM25Index:
 
     # ── Search ─────────────────────────────────────────────────────────────────
 
-    def search(self, query: str, top_k: int) -> list[tuple[Chunk, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        filters: RetrievalFilter | None = None,
+    ) -> list[tuple[Chunk, float]]:
         """Return up to *top_k* (chunk, score) pairs sorted by BM25 score desc."""
         with self._lock:
             self._ensure_built()
@@ -142,7 +150,11 @@ class BM25Index:
             tokens = _tokenize(query)
             scores: list[float] = bm25.get_scores(tokens).tolist()
             ranked = sorted(
-                ((chunk, score) for chunk, score in zip(chunks, scores, strict=True) if score > 0),
+                (
+                    (chunk, score)
+                    for chunk, score in zip(chunks, scores, strict=True)
+                    if score > 0 and chunk_matches_filter(chunk, filters)
+                ),
                 key=lambda x: x[1],
                 reverse=True,
             )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.infrastructure.vectordb.bm25 import BM25Index
 
 
@@ -34,9 +35,15 @@ class BM25Retriever:
         """Append chunks and rebuild."""
         self._index.add(chunks)
 
-    def search(self, query: str, top_k: int) -> list[tuple[Chunk, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        filters: RetrievalFilter | None = None,
+    ) -> list[tuple[Chunk, float]]:
         """Return up to *top_k* (chunk, score) pairs ranked by BM25 score."""
-        return self._index.search(query, top_k)
+        return self._index.search(query, top_k, filters=filters)
 
     def save(self) -> None:
         self._index.save()

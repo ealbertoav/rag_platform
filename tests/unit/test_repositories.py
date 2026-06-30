@@ -65,6 +65,7 @@ class _VectorStore(VectorStoreRepository):
         type_equals: str | None = None,
         exclude_types: frozenset[str] | None = None,
         document_ids: frozenset[str] | None = None,
+        filters: object | None = None,
     ) -> list[SearchResult]:
         return []
 

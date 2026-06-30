@@ -1532,7 +1532,7 @@
 ---
 
 ### T-134 · Multi-Faceted Qdrant Filtering
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Apply metadata filters, similarity thresholds, and document scope constraints at retrieval time — inspired by RAG_Techniques **multi-faceted filtering** (README; notebook missing from reference repo).
 - **Inputs:** T-013 (Qdrant), T-021 (`DenseRetriever`), T-003 (`Chunk.metadata`)
 - **Outputs:** Retrieval accepts optional filter parameters; Qdrant payload filters applied.
