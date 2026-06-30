@@ -48,7 +48,7 @@ def _service(
 
     expander = MagicMock() if with_expander else None
     if expander:
-        expander.expand.side_effect = lambda q: q.model_copy(
+        expander.expand.side_effect = lambda q, n_variants=None: q.model_copy(
             update={"expanded_texts": ["variant 1"]}
         )
 

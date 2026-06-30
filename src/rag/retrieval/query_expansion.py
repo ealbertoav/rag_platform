@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "retrieval" / "query_expansion.txt"
 
 # Strip leading list markers such as "1.", "-", "•" from LLM output lines.
-_LIST_PREFIX = re.compile(r"^[\d]+[.)]\s*|^[-•*]\s*")
+_LIST_PREFIX = re.compile(r"^\d+[.)]\s*|^[-•*]\s*")
 
 
 def _load_prompt() -> Template:
@@ -39,7 +39,9 @@ class QueryExpander:
     Query is returned unchanged — retrieval falls back to the single query.
 
     Results are cached in-memory per query text for the lifetime of this
-    instance, so the same question never triggers more than one LLM call.
+    instance. A cached entry is reused when the requested variant count is
+    less than or equal to what was already generated; a higher limit triggers
+    a fresh LLM call so adaptive per-category overrides are honored.
     """
 
     def __init__(
@@ -56,18 +58,21 @@ class QueryExpander:
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
-    def expand(self, query: Query) -> Query:
+    def expand(self, query: Query, n_variants: int | None = None) -> Query:
         """Return *query* with "expanded_texts" populated.
 
         If disabled or the LLM call fails, it returns the original query unchanged.
+        *n_variants* overrides the instance default when provided.
         """
-        if not self._enabled or self._n_variants < 1:
+        limit = self._n_variants if n_variants is None else n_variants
+        if not self._enabled or limit < 1:
             return query
 
-        if query.text not in self._cache:
-            self._cache[query.text] = self._generate(query.text)
+        cached = self._cache.get(query.text)
+        if cached is None or len(cached) < limit:
+            self._cache[query.text] = self._generate(query.text, limit)
 
-        variants = self._cache[query.text]
+        variants = self._cache[query.text][:limit]
         if not variants:
             return query
 
@@ -87,19 +92,19 @@ class QueryExpander:
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
-    def _build_prompt(self, query_text: str) -> str:
-        if self._prompt_template is None:
-            self._prompt_template = _load_prompt()
-        return self._prompt_template.substitute(
-            n_variants=self._n_variants,
+    def _build_prompt(self, query_text: str, n_variants: int) -> str:
+        template = self._prompt_template or _load_prompt()
+        self._prompt_template = template
+        return template.substitute(
+            n_variants=n_variants,
             query=query_text,
         )
 
-    def _generate(self, query_text: str) -> list[str]:
+    def _generate(self, query_text: str, n_variants: int) -> list[str]:
         try:
-            prompt = self._build_prompt(query_text)
+            prompt = self._build_prompt(query_text, n_variants)
             response = self._llm.generate(prompt=prompt, context="")
-            variants = _parse_variants(response, self._n_variants)
+            variants = _parse_variants(response, n_variants)
             logger.debug("Query expanded: %d variants for %r", len(variants), query_text[:60])
             return variants
         except Exception as exc:

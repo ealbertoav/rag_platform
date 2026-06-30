@@ -140,6 +140,25 @@ class TestQueryExpanderCache:
         exp.expand(_query("q"))
         assert llm.generate.call_count == 2
 
+    def test_higher_n_variants_regenerates_when_cache_too_small(self):
+        llm = _llm("One\nTwo\nThree")
+        exp = QueryExpander(llm=llm, n_variants=3)
+        q = _query("same question")
+        r1 = exp.expand(q, n_variants=1)
+        assert r1.expanded_texts == ["One"]
+        r2 = exp.expand(q, n_variants=3)
+        assert r2.expanded_texts == ["One", "Two", "Three"]
+        assert llm.generate.call_count == 2
+
+    def test_lower_n_variants_reuses_cache_without_extra_llm_call(self):
+        llm = _llm("One\nTwo\nThree")
+        exp = QueryExpander(llm=llm, n_variants=3)
+        q = _query("same question")
+        exp.expand(q, n_variants=3)
+        result = exp.expand(q, n_variants=1)
+        assert result.expanded_texts == ["One"]
+        assert llm.generate.call_count == 1
+
 
 # ── from_settings ──────────────────────────────────────────────────────────────
 

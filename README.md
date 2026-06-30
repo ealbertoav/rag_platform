@@ -55,7 +55,8 @@ flowchart LR
     subgraph RETRIEVE["🔍 Retrieval Pipeline"]
         direction TB
         QX["User Query"] --> ADAPT["Adaptive Classification<br/>(optional · T-131)"]
-        ADAPT --> EXP["Query Expansion<br/>3 variants"]
+        ADAPT --> STRAT["Adaptive Strategy<br/>top_k · variants · hyde · compression<br/>(optional · T-132)"]
+        STRAT --> EXP["Query Expansion<br/>3 variants"]
         EXP --> EM[BGE-M3 Embedding]
         EXP --> HYDE["HyDE · Hypothetical Doc<br/>(optional · T-130)"]
         HYDE --> DS2["Dense Search<br/>hypo passage embed"]
@@ -225,7 +226,10 @@ RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
 RETRIEVAL__HYPE__ENABLED=false            # HyPE question-question matching (T-122)
 RETRIEVAL__HYPE__N_QUESTIONS=3
 RETRIEVAL__HYDE__ENABLED=false            # HyDE hypothetical document embedding (T-130)
-RETRIEVAL__ADAPTIVE__ENABLED=false        # LLM query intent classification (T-131)
+RETRIEVAL__ADAPTIVE__ENABLED=false        # LLM query classification + per-category strategies (T-131/T-132)
+# Per-category strategy overrides (when adaptive enabled), e.g.:
+# RETRIEVAL__ADAPTIVE__STRATEGIES__ANALYTICAL__TOP_K=50
+# RETRIEVAL__ADAPTIVE__STRATEGIES__ANALYTICAL__HYDE=true
 RETRIEVAL__RSE__ENABLED=false             # merge adjacent retrieved chunks (T-123)
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false  # expand child chunks to parent text (T-124; requires parent_child)
@@ -263,7 +267,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification, RSE, parent context, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, RSE, parent context, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -335,7 +339,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**adaptive classification** · T-131, **HyDE** · T-130, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
+Query-time retrieval techniques (**adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -1125,7 +1129,7 @@ rag_implementation/
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
-│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive retrievers
+│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive classification & strategies
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
@@ -1233,7 +1237,8 @@ Integration tests auto-skip when models or Qdrant are absent (CI runs them but d
 ```mermaid
 flowchart TD
     Q["🔎 User Question"] --> ADAPT["Adaptive Classification<br/>factual · analytical · opinion · contextual<br/>(optional · T-131)"]
-    ADAPT --> QE["Query Expander<br/>LLM generates 3 variants"]
+    ADAPT --> STRAT["Adaptive Strategy<br/>top_k · n_variants · hyde · compression<br/>(optional · T-132)"]
+    STRAT --> QE["Query Expander<br/>LLM generates variants"]
     QE --> EMB["BGE-M3 Encoder<br/>1024-dim dense + sparse"]
     QE --> HYDE["HyDE · Hypothetical Doc<br/>LLM → embed passage<br/>(optional · T-130)"]
 
@@ -1262,17 +1267,17 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to 3 variants; hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled (`retrieval.hyde.enabled: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled); hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
 When **HyPE** (T-122) is enabled, the dedicated `HyPERetriever` searches only `hype_question` vectors, resolves hits to source chunks, and merges them into RRF alongside dense, BM25, and graph results. Standard dense search excludes HyPE points so passage and question embeddings do not compete in the same index query.
 
-When **HyDE** (T-130) is enabled, `HyDERetriever` generates a hypothetical answer passage via LLM, embeds it, and runs dense search against standard chunk vectors (same exclusions as dense search). Results merge into RRF alongside dense, BM25, HyPE, hierarchical, and graph lists. LLM or embedding failures return no HyDE hits and the pipeline continues with standard retrieval only. No ingest-time setup or re-ingestion is required.
+When **HyDE** (T-130) is enabled globally, `HyDERetriever` generates a hypothetical answer passage via LLM, embeds it, and runs dense search against standard chunk vectors (same exclusions as dense search). Results merge into RRF alongside dense, BM25, HyPE, hierarchical, and graph lists. When **adaptive strategies** (T-132) are enabled, the HyDE retriever is also built and invoked only for categories whose strategy sets `hyde: true` (e.g. `analytical`), even if `retrieval.hyde.enabled` is false. LLM or embedding failures return no HyDE hits and the pipeline continues with standard retrieval only. No ingest-time setup or re-ingestion is required.
 
 When **hierarchical summaries** (T-125) are enabled, detail chunks are tagged at ingest (`type=detail`) and document summaries are indexed separately (`type=summary`). `HierarchicalRetriever` matches summaries first to select documents, then retrieves detail chunks within those documents. Summary vectors are excluded from BM25 and standard dense search; only detail chunks are returned to downstream reranking and generation.
 
-When **adaptive classification** (T-131) is enabled, `QueryClassifier` runs before query expansion and attaches `Query.metadata["category"]` (`factual`, `analytical`, `opinion`, or `contextual`) using structured LLM output. Classification is recorded on OTel span `retrieval.adaptive.classification`. Parse or LLM failures default to `factual`. Category-specific retrieval tuning (T-132) is not wired yet — enabling T-131 today is observability and metadata only.
+When **adaptive classification** (T-131) is enabled, `QueryClassifier` runs before query expansion and attaches `Query.metadata["category"]` (`factual`, `analytical`, `opinion`, or `contextual`) using structured LLM output. Classification is recorded on OTel span `retrieval.adaptive.classification`. Parse or LLM failures default to `factual`. When **adaptive strategies** (T-132) are also enabled (same `retrieval.adaptive.enabled` flag), `AdaptiveStrategyRegistry` selects category-specific `top_k`, `n_variants`, `hyde`, and `compression` parameters before expansion and hybrid retrieval.
 
 ##### Adaptive Query Classification (T-131)
 
@@ -1289,10 +1294,10 @@ Adaptive classification is a **query-time** intent label applied before expansio
 # configs/retrieval.yaml
 retrieval:
   adaptive:
-    enabled: false       # set true to classify queries before retrieval
+    enabled: false       # set true to classify queries and apply category strategies
 ```
 
-**When to use:** preparing for category-specific retrieval strategies (T-132), debugging query intent in traces, or downstream routing that reads `Query.metadata["category"]`.
+**When to use:** tuning retrieval depth and cost by query intent, debugging query routing in traces, or downstream logic that reads `Query.metadata["category"]`.
 
 **Trade-offs:** one extra LLM call per unique query text when enabled (results are cached per query string for the lifetime of the classifier instance). Failures are logged and default to `factual`. OTel span `retrieval.adaptive.classification` records `query.category`.
 
@@ -1300,11 +1305,68 @@ retrieval:
 RETRIEVAL__ADAPTIVE__ENABLED=true
 ```
 
+##### Adaptive Retrieval Strategies (T-132)
+
+When `retrieval.adaptive.enabled=true`, `AdaptiveStrategyRegistry` maps the classified category to retrieval parameters. Unknown or missing categories fall back to the `factual` strategy. Each parameter overrides the global default for that query only:
+
+| Category | `top_k` | `n_variants` | `hyde` | `compression` |
+|---|---:|---:|---|---|
+| `factual` | 30 | 1 | false | true |
+| `analytical` | 50 | 3 | true | true |
+| `opinion` | 20 | 2 | false | false |
+| `contextual` | 40 | 2 | false | true |
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  adaptive:
+    enabled: false
+    strategies:
+      factual:
+        top_k: 30
+        n_variants: 1
+        hyde: false
+        compression: true
+      analytical:
+        top_k: 50
+        n_variants: 3
+        hyde: true
+        compression: true
+      opinion:
+        top_k: 20
+        n_variants: 2
+        hyde: false
+        compression: false
+      contextual:
+        top_k: 40
+        n_variants: 2
+        hyde: false
+        compression: true
+```
+
+**What each knob does:**
+
+- **`top_k`** — candidate pool size per query variant in hybrid retrieval (replaces `retrieval.top_k_dense` for that query).
+- **`n_variants`** — caps how many LLM-expanded query strings are fused (requires `query_expansion.enabled: true`).
+- **`hyde`** — when true, runs HyDE dense search for that category (HyDE retriever is built whenever adaptive is enabled, even if `retrieval.hyde.enabled` is false).
+- **`compression`** — when false, skips contextual compression for that category even if `compression.enabled` is true.
+
+**When to use:** corpora with mixed query types where factual lookups need fewer candidates but analytical questions benefit from broader retrieval and HyDE.
+
+**Trade-offs:** strategy selection adds no extra LLM calls (classification cost is T-131). Analytical queries may trigger HyDE plus more expansion variants, increasing latency. OTel span `retrieval.adaptive.strategy` records `query.category` and the resolved `retrieval.strategy.*` attributes.
+
+```bash
+RETRIEVAL__ADAPTIVE__ENABLED=true
+RETRIEVAL__ADAPTIVE__STRATEGIES__ANALYTICAL__TOP_K=50
+RETRIEVAL__ADAPTIVE__STRATEGIES__ANALYTICAL__HYDE=true
+RETRIEVAL__ADAPTIVE__STRATEGIES__OPINION__COMPRESSION=false
+```
+
 ##### HyDE — Hypothetical Document Embedding (T-130)
 
 HyDE is a **query-time** retrieval augmentation inspired by hypothetical document embeddings. For each query, the LLM writes a short passage that would answer the question as if it appeared in the corpus; that passage is embedded and used for dense search. Hits are fused via RRF with dense, BM25, HyPE, hierarchical, and graph results.
 
-Unlike HyPE (T-122), HyDE does not index separate vectors at ingest — it adds one LLM call per query when enabled.
+Unlike HyPE (T-122), HyDE does not index separate vectors at ingest — it adds one LLM call per query when active. HyDE runs when `retrieval.hyde.enabled=true` **or** when adaptive strategies enable it for the query's category (`retrieval.adaptive.strategies.*.hyde: true`; requires `retrieval.adaptive.enabled=true`).
 
 ```yaml
 # configs/retrieval.yaml
@@ -1429,17 +1491,18 @@ gantt
 
     section retrieval
     retrieval.adaptive.classification :0, 120
-    retrieval.expansion    :120, 300
-    retrieval.hyde         :300, 400
-    retrieval.embedding    :400, 600
-    retrieval.hybrid       :600, 1000
-    retrieval.reranking    :1000, 1300
-    retrieval.rse          :1300, 1350
-    retrieval.parent_context :1350, 1380
-    retrieval.compression  :1380, 1530
+    retrieval.adaptive.strategy :120, 140
+    retrieval.expansion    :140, 320
+    retrieval.hyde         :320, 420
+    retrieval.embedding    :420, 620
+    retrieval.hybrid       :620, 1020
+    retrieval.reranking    :1020, 1320
+    retrieval.rse          :1320, 1370
+    retrieval.parent_context :1370, 1400
+    retrieval.compression  :1400, 1550
 
     section generation
-    generation.llm         :1530, 2520
+    generation.llm         :1550, 2540
 ```
 
 Configure the collector endpoint:
@@ -1449,9 +1512,9 @@ LOGGING__OTEL_ENDPOINT=http://localhost:4317
 
 When RSE is enabled, span `retrieval.rse` appears between `retrieval.reranking` and `retrieval.parent_context` (or `retrieval.compression` when parent context is off), with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
 
-When adaptive classification is enabled (`retrieval.adaptive.enabled=true`), span `retrieval.adaptive.classification` appears before `retrieval.expansion`, with attribute `query.category` (`factual`, `analytical`, `opinion`, or `contextual`).
+When adaptive classification is enabled (`retrieval.adaptive.enabled=true`), span `retrieval.adaptive.classification` appears before `retrieval.expansion`, with attribute `query.category` (`factual`, `analytical`, `opinion`, or `contextual`). Span `retrieval.adaptive.strategy` follows immediately with resolved parameters: `retrieval.strategy.top_k`, `retrieval.strategy.n_variants`, `retrieval.strategy.hyde`, and `retrieval.strategy.compression`.
 
-When HyDE is enabled (`retrieval.hyde.enabled=true`), span `retrieval.hyde` appears during hybrid retrieval (inside the per-variant search path), with attribute `hypothetical_doc_length` (characters in the LLM-generated passage). On failure the span still records `hypothetical_doc_length=0`.
+When HyDE is enabled globally (`retrieval.hyde.enabled=true`) or per-category via adaptive strategies, span `retrieval.hyde` appears during hybrid retrieval (inside the per-variant search path), with attribute `hypothetical_doc_length` (characters in the LLM-generated passage). On failure the span still records `hypothetical_doc_length=0`.
 
 When parent context is enabled (`chunking.strategy=parent_child` and `retrieval.parent_context.enabled=true`), span `retrieval.parent_context` appears between `retrieval.rse` (or `retrieval.reranking` when RSE is off) and `retrieval.compression`, with attributes `resolved_count` (child chunks expanded to parent text) and `chunk_count`.
 
