@@ -40,6 +40,7 @@ retrieval:
         n_variants: 3
         hyde: true
         compression: true
+        # pairs well with query_expansion.step_back.enabled (T-133)
       opinion:
         top_k: 20
         n_variants: 2
@@ -65,6 +66,8 @@ reranker:
 query_expansion:
   enabled: true
   n_variants: 3
+  step_back:
+    enabled: false             # broader background query for multi-query RRF fusion (T-133)
 
 compression:
   enabled: true

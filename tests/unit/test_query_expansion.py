@@ -159,6 +159,15 @@ class TestQueryExpanderCache:
         assert result.expanded_texts == ["One"]
         assert llm.generate.call_count == 1
 
+    def test_failure_not_cached_retries_on_next_call(self):
+        llm = MagicMock()
+        llm.generate.side_effect = [RuntimeError("LLM down"), "Recovered variant"]
+        exp = QueryExpander(llm=llm, n_variants=1, enabled=True)
+        q = _query("same question")
+        assert exp.expand(q).expanded_texts == []
+        assert exp.expand(q).expanded_texts == ["Recovered variant"]
+        assert llm.generate.call_count == 2
+
 
 # ── from_settings ──────────────────────────────────────────────────────────────
 

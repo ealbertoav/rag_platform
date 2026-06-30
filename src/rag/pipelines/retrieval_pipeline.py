@@ -190,7 +190,9 @@ class RetrievalPipeline:
             fusion_mode=cfg.hybrid_fusion,
         )
 
-        expander = QueryExpander.from_settings(llm) if settings.query_expansion.enabled else None
+        expander = None
+        if settings.query_expansion.enabled or settings.query_expansion.step_back.enabled:
+            expander = QueryExpander.from_settings(llm)
         classifier = None
         strategy_registry = None
         if settings.retrieval.adaptive.enabled:

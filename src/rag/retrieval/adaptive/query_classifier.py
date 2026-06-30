@@ -69,7 +69,8 @@ class QueryClassifier:
     """Classifies queries by intent using structured LLM output.
 
     When disabled, returns the query unchanged with no LLM call. On parse or
-    LLM failure, defaults to "QueryCategory.FACTUAL".
+    LLM failure, defaults to "QueryCategory.FACTUAL" without caching so a
+    transient error can be retried on the next call.
     """
 
     def __init__(
@@ -124,8 +125,8 @@ class QueryClassifier:
                 query_text[:60],
                 output.reasoning[:80],
             )
+            self._cache[query_text] = category
         except Exception as exc:
             logger.warning("Query classification failed for %r: %s", query_text[:60], exc)
 
-        self._cache[query_text] = category
         return category

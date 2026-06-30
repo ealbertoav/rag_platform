@@ -7,6 +7,7 @@ from string import Template
 
 from src.domain.entities.query import Query
 from src.domain.repositories.llm_repository import LLMRepository
+from src.rag.retrieval.step_back import StepBackGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,10 @@ class QueryExpander:
     Query is returned unchanged — retrieval falls back to the single query.
 
     Results are cached in-memory per query text for the lifetime of this
-    instance. A cached entry is reused when the requested variant count is
-    less than or equal to what was already generated; a higher limit triggers
-    a fresh LLM call so adaptive per-category overrides are honored.
+    instance. Only successful non-empty variant lists are cached; failures
+    are retried on the next call. A cached entry is reused when the requested
+    variant count is less than or equal to what was already generated; a higher
+    limit triggers a fresh LLM call, so adaptive per-category overrides are honored.
     """
 
     def __init__(
@@ -49,37 +51,43 @@ class QueryExpander:
         llm: LLMRepository,
         n_variants: int = 3,
         enabled: bool = True,
+        step_back: StepBackGenerator | None = None,
     ) -> None:
         self._llm = llm
         self._n_variants = n_variants
         self._enabled = enabled
+        self._step_back = step_back
         self._cache: dict[str, list[str]] = {}
         self._prompt_template: Template | None = None
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def expand(self, query: Query, n_variants: int | None = None) -> Query:
-        """Return *query* with "expanded_texts" populated.
+        """Return *query* with "expanded_texts" and optional step-back metadata.
 
         If disabled or the LLM call fails, it returns the original query unchanged.
         *n_variants* overrides the instance default when provided.
         """
         limit = self._n_variants if n_variants is None else n_variants
-        if not self._enabled or limit < 1:
-            return query
+        result = query
 
-        cached = self._cache.get(query.text)
-        if cached is None or len(cached) < limit:
-            self._cache[query.text] = self._generate(query.text, limit)
+        if self._enabled and limit >= 1:
+            cached = self._cache.get(query.text)
+            if cached is None or len(cached) < limit:
+                generated = self._generate(query.text, limit)
+                if generated:
+                    self._cache[query.text] = generated
 
-        variants = self._cache[query.text][:limit]
-        if not variants:
-            return query
+            variants = (self._cache.get(query.text) or [])[:limit]
+            if variants:
+                result = query.model_copy(update={"expanded_texts": variants})
 
-        return query.model_copy(update={"expanded_texts": variants})
+        return self._apply_step_back(result)
 
     def clear_cache(self) -> None:
         self._cache.clear()
+        if self._step_back is not None:
+            self._step_back.clear_cache()
 
     # ── Factory ────────────────────────────────────────────────────────────────
 
@@ -88,7 +96,13 @@ class QueryExpander:
         from src.core.settings import settings
 
         cfg = settings.query_expansion
-        return cls(llm=llm, n_variants=cfg.n_variants, enabled=cfg.enabled)
+        step_back = StepBackGenerator.from_settings(llm) if cfg.step_back.enabled else None
+        return cls(
+            llm=llm,
+            n_variants=cfg.n_variants,
+            enabled=cfg.enabled,
+            step_back=step_back,
+        )
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
@@ -99,6 +113,18 @@ class QueryExpander:
             n_variants=n_variants,
             query=query_text,
         )
+
+    def _apply_step_back(self, query: Query) -> Query:
+        if self._step_back is None or not self._step_back.enabled:
+            return query
+
+        step_back_text = self._step_back.generate(query.text)
+        if not step_back_text:
+            return query
+
+        metadata = dict(query.metadata)
+        metadata["step_back"] = step_back_text
+        return query.model_copy(update={"metadata": metadata})
 
     def _generate(self, query_text: str, n_variants: int) -> list[str]:
         try:

@@ -184,7 +184,11 @@ class RetrievalService:
         """Return deduplicated query strings for multi-query retrieval."""
         seen: set[str] = set()
         variants: list[str] = []
-        for text in [query.text, *query.expanded_texts]:
+        step_back = query.metadata.get("step_back")
+        texts = [query.text, *query.expanded_texts]
+        if isinstance(step_back, str):
+            texts.append(step_back)
+        for text in texts:
             normalized = text.strip()
             if normalized and normalized not in seen:
                 seen.add(normalized)
