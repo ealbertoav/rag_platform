@@ -120,6 +120,19 @@ class TestQueryClassifier:
 
         llm.generate.assert_called_once()
 
+    def test_failure_not_cached_retries_on_next_call(self):
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            RuntimeError("LLM down"),
+            '{"category": "analytical", "reasoning": "compare"}',
+        ]
+        classifier = QueryClassifier(llm=llm, enabled=True)
+        q = Query(text="Compare revenue trends")
+
+        assert classifier.classify(q).metadata["category"] == "factual"
+        assert classifier.classify(q).metadata["category"] == "analytical"
+        assert llm.generate.call_count == 2
+
     def test_otel_span_records_category(self):
         import src.rag.retrieval.adaptive.query_classifier as qc_module
 

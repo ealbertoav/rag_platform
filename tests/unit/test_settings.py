@@ -73,6 +73,7 @@ class TestYamlDefaults:
     def test_query_expansion_defaults_from_yaml(self):
         assert settings.query_expansion.enabled is True
         assert settings.query_expansion.n_variants == 3
+        assert settings.query_expansion.step_back.enabled is False
 
     def test_compression_defaults_from_yaml(self):
         assert settings.compression.enabled is True

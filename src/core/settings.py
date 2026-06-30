@@ -201,9 +201,14 @@ class MetadataSettings(BaseModel):
     enabled: bool = True
 
 
+class StepBackSettings(BaseModel):
+    enabled: bool = False
+
+
 class QueryExpansionSettings(BaseModel):
     enabled: bool = True
     n_variants: int = Field(default=3, ge=1, le=10)
+    step_back: StepBackSettings = Field(default_factory=StepBackSettings)
 
 
 class CompressionSettings(BaseModel):

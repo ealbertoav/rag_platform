@@ -1513,7 +1513,7 @@
 ---
 
 ### T-133 · Step-Back Query Transformation
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Generate a broader "step-back" query alongside the original to retrieve background context — inspired by RAG_Techniques `query_transformations.ipynb` (step-back prompting).
 - **Inputs:** T-020 (`QueryExpander` — extend or parallel module), T-110 (multi-query fusion)
 - **Outputs:** Step-back variant added to `Query.expanded_texts` or separate `Query.metadata["step_back"]`.
