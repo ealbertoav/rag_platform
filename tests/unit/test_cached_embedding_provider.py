@@ -264,6 +264,15 @@ class TestDelegation:
         inner.embed_query.assert_called_once_with(_TEXTS)
         assert result == _VECS
 
+    def test_embed_passage_uses_document_cache_path(self) -> None:
+        inner = _make_inner()
+        inner.embed.return_value = _VECS
+        provider = _make_provider(inner)
+        result = provider.embed_passage(_TEXTS)
+        inner.embed.assert_called_once_with(_TEXTS)
+        inner.embed_query.assert_not_called()
+        assert result == _VECS
+
     def test_embed_sparse_delegates_to_inner(self) -> None:
         inner = _make_inner()
         provider = _make_provider(inner)

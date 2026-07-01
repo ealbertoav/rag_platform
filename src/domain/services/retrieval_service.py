@@ -19,12 +19,14 @@ from src.rag.enrichment.parent_context_resolver import (
 )
 from src.rag.enrichment.relevant_segment_extraction import merge_adjacent
 from src.rag.ranking.cross_encoder import CrossEncoder
+from src.rag.ranking.diversity import mmr_select
 from src.rag.ranking.score_fusion import rrf_fuse
 from src.rag.retrieval.dense_retriever import DenseRetriever
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
 from src.rag.retrieval.query_expansion import QueryExpander
 
 if TYPE_CHECKING:
+    from src.domain.repositories.embedding_repository import EmbeddingRepository
     from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
     from src.rag.retrieval.adaptive.strategies import (
         AdaptiveStrategyRegistry,
@@ -71,6 +73,9 @@ class RetrievalService:
         parent_context_enabled: bool = False,
         parent_child_strategy: bool = False,
         chunk_lookup: ChunkLookup | None = None,
+        diversity_enabled: bool = False,
+        diversity_lambda: float = 0.7,
+        embedder: EmbeddingRepository | None = None,
     ) -> None:
         self._dense = dense_retriever
         self._hybrid = hybrid_retriever
@@ -86,6 +91,9 @@ class RetrievalService:
         self._rse_max_segment_tokens = rse_max_segment_tokens
         self._parent_context_enabled = parent_context_enabled and parent_child_strategy
         self._chunk_lookup = chunk_lookup
+        self._diversity_enabled = diversity_enabled
+        self._diversity_lambda = diversity_lambda
+        self._embedder = embedder
 
     @property
     def hybrid(self) -> HybridRetriever:
@@ -121,6 +129,13 @@ class RetrievalService:
         with _tracer.start_as_current_span("retrieval.reranking") as span:
             chunks = self._rerank(query.text, chunks)
             span.set_attribute("chunk_count", len(chunks))
+
+        # 3b. MMR diversity selection (optional, after rerank, before compression)
+        if self._diversity_enabled:
+            with _tracer.start_as_current_span("retrieval.diversity") as span:
+                chunks = self._apply_diversity(chunks)
+                span.set_attribute("chunk_count", len(chunks))
+                span.set_attribute("diversity.lambda", self._diversity_lambda)
 
         # 4. Relevant segment extraction (optional)
         if self._rse_enabled:
@@ -225,6 +240,63 @@ class RetrievalService:
         if self._reranker is None or not chunks:
             return chunks
         return self._reranker.rerank(query_text, chunks, top_k=self._top_k_rerank)
+
+    def _apply_diversity(self, chunks: list[Chunk]) -> list[Chunk]:
+        if not chunks:
+            return chunks
+        embeddings = self._resolve_chunk_embeddings(chunks)
+        if embeddings is None:
+            logger.warning(
+                "Skipping MMR diversity: could not resolve document embeddings for all chunks"
+            )
+            return chunks
+        return mmr_select(
+            chunks,
+            embeddings,
+            self._diversity_lambda,
+            top_k=self._top_k_rerank,
+        )
+
+    def _resolve_chunk_embeddings(self, chunks: list[Chunk]) -> list[list[float]] | None:
+        """Resolve document-space dense vectors for MMR pairwise similarity."""
+        if not chunks:
+            return []
+
+        resolved: list[list[float] | None] = [None] * len(chunks)
+        missing: list[tuple[int, Chunk]] = []
+
+        for index, chunk in enumerate(chunks):
+            if chunk.embedding is not None:
+                resolved[index] = chunk.embedding
+            else:
+                missing.append((index, chunk))
+
+        if missing and self._chunk_lookup is not None:
+            still_missing: list[tuple[int, Chunk]] = []
+            for index, chunk in missing:
+                stored = self._chunk_lookup.get_by_id(chunk.id)
+                if stored is not None and stored.embedding is not None:
+                    resolved[index] = stored.embedding
+                else:
+                    still_missing.append((index, chunk))
+            missing = still_missing
+
+        if missing:
+            if self._embedder is None:
+                logger.warning(
+                    "Diversity enabled but %d/%d chunks lack embeddings and no embedder configured",
+                    len(missing),
+                    len(chunks),
+                )
+                return None
+            texts = [chunk.text for _, chunk in missing]
+            embedded = self._embedder.embed_passage(texts)
+            for (index, _), vector in zip(missing, embedded, strict=True):
+                resolved[index] = vector
+
+        if any(vector is None for vector in resolved):
+            return None
+        return [vector for vector in resolved if vector is not None]
 
     def _compress(
         self,

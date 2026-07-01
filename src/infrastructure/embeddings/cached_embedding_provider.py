@@ -123,6 +123,10 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         # single-shot during retrieval, so the cache hit-rate would be low anyway.
         return self._inner.embed_query(texts)
 
+    def embed_passage(self, texts: list[str]) -> list[DenseVector]:
+        # Passage vectors share the document cache path (same as embed()).
+        return self.embed(texts)
+
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         # Sparse vectors are not cached — delegate directly to inner provider.
         return self._inner.embed_sparse(texts)

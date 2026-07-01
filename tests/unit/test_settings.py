@@ -117,6 +117,10 @@ class TestYamlDefaults:
     def test_parent_context_defaults_from_yaml(self):
         assert settings.retrieval.parent_context.enabled is False
 
+    def test_diversity_defaults_from_yaml(self):
+        assert settings.retrieval.diversity.enabled is False
+        assert settings.retrieval.diversity.lambda_ == pytest.approx(0.7)
+
     def test_hierarchical_defaults_from_yaml(self):
         assert settings.chunking.hierarchical.enabled is False
         assert settings.chunking.hierarchical.summary_top_k == 3

@@ -166,6 +166,11 @@ class ParentContextSettings(BaseModel):
     enabled: bool = False
 
 
+class DiversitySettings(BaseModel):
+    enabled: bool = False
+    lambda_: float = Field(default=0.7, ge=0.0, le=1.0, alias="lambda")
+
+
 class RetrievalSettings(BaseModel):
     top_k_dense: int = 50
     top_k_final: int = 5
@@ -177,6 +182,9 @@ class RetrievalSettings(BaseModel):
     adaptive: AdaptiveSettings = Field(default_factory=AdaptiveSettings)
     rse: RSESettings = Field(default_factory=RSESettings)
     parent_context: ParentContextSettings = Field(default_factory=ParentContextSettings)
+    diversity: DiversitySettings = Field(default_factory=DiversitySettings)
+
+    model_config = {"populate_by_name": True}
 
 
 class Neo4jSettings(BaseModel):
