@@ -333,14 +333,14 @@ class AgentPipeline:
         """Finish on refuse or last iteration; otherwise reretrieve with a refined query."""
         _record_utility_on_step(step, util)
         decisions.append(step)
-        if iteration == max_iterations - 1:
-            actions.append(AgentAction.RETRIEVE_MORE)
+        if util.action == UtilityAction.REFUSE:
+            actions.append(AgentAction.CLARIFY)
             return (
                 self._self_rag_no_info_result(question, iteration + 1, actions, decisions),
                 search_query,
             )
-        if util.action == UtilityAction.REFUSE:
-            actions.append(AgentAction.CLARIFY)
+        if iteration == max_iterations - 1:
+            actions.append(AgentAction.RETRIEVE_MORE)
             return (
                 self._self_rag_no_info_result(question, iteration + 1, actions, decisions),
                 search_query,

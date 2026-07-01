@@ -572,6 +572,29 @@ class TestAgentPipelineSelfRAG:
         assert chat.retrieval.retrieve.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_empty_context_refuse_on_last_iteration_labels_clarify(self):
+        """Utility refuse must win over last-iteration reretrieve exhaustion."""
+        chat = _chat_mock()
+        chat.retrieval.retrieve = AsyncMock(return_value=_retrieval_result([], context=""))
+        side_effect = [
+            json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
+            json.dumps(
+                {
+                    "score": 0.0,
+                    "action": "refuse",
+                    "reasoning": "no relevant documents",
+                    "refined_query": "",
+                }
+            ),
+        ]
+        chat.generation.call_llm.side_effect = side_effect
+        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=1)
+        result = await pipeline.chat_full("kubernetes")
+        assert result.answer.text == "I don't have information about this."
+        assert result.actions == [AgentAction.CLARIFY]
+        assert result.self_rag_decisions[-1].utility_action == "refuse"
+
+    @pytest.mark.asyncio
     async def test_unsupported_with_utility_refuse_returns_no_info(self):
         chat = _chat_mock()
         side_effect = [
@@ -591,6 +614,38 @@ class TestAgentPipelineSelfRAG:
         result = await pipeline.chat_full("kubernetes")
         assert result.answer.text == "I don't have information about this."
         assert result.actions == [AgentAction.CLARIFY]
+
+    @pytest.mark.asyncio
+    async def test_unsupported_refuse_on_last_iteration_labels_clarify(self):
+        """Utility refuse on the final retry iteration must not be labeled RETRIEVE_MORE."""
+        chat = _chat_mock()
+        side_effect = [
+            json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
+            json.dumps({"supported": False, "reasoning": "not grounded"}),
+            json.dumps(
+                {
+                    "score": 0.2,
+                    "action": "reretrieve",
+                    "reasoning": "retry",
+                    "refined_query": "kubernetes details",
+                }
+            ),
+            json.dumps({"supported": False, "reasoning": "still unsupported"}),
+            json.dumps(
+                {
+                    "score": 0.0,
+                    "action": "refuse",
+                    "reasoning": "unsupported claims",
+                    "refined_query": "",
+                }
+            ),
+        ]
+        chat.generation.call_llm.side_effect = side_effect
+        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=2)
+        result = await pipeline.chat_full("kubernetes")
+        assert result.answer.text == "I don't have information about this."
+        assert result.actions == [AgentAction.RETRIEVE_MORE, AgentAction.CLARIFY]
+        assert result.self_rag_decisions[-1].utility_action == "refuse"
 
     @pytest.mark.asyncio
     async def test_supported_reretrieve_exhausts_iterations_returns_last_grounded_draft(self):
