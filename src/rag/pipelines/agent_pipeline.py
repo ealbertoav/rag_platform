@@ -8,14 +8,24 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from pathlib import Path
 from string import Template
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from src.core.settings import settings
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
+from src.domain.repositories.llm_repository import LLMRepository
+from src.domain.services.generation_service import GenerationService
 from src.rag.chunking.contextual_headers import join_chunk_context
 from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
 from src.rag.pipelines.chat_pipeline import ChatPipeline
+from src.rag.quality.self_rag import (
+    UtilityAction,
+    UtilityScore,
+    check_support,
+    decide_retrieval,
+    score_utility,
+)
 from src.rag.ranking.score_fusion import rrf_fuse
 
 if TYPE_CHECKING:
@@ -44,12 +54,28 @@ class AgentDecision:
 
 
 @dataclasses.dataclass
+class SelfRAGStepDecision:
+    """Self-RAG gate results for one iteration (API-serializable)."""
+
+    iteration: int
+    need_retrieval: bool | None = None
+    retrieval_reasoning: str = ""
+    supported: bool | None = None
+    support_reasoning: str = ""
+    utility_score: float | None = None
+    utility_action: str | None = None
+    utility_reasoning: str = ""
+    refined_query: str = ""
+
+
+@dataclasses.dataclass
 class AgentRunResult:
     """Output of an agentic retrieval and generation run."""
 
     answer: Answer
     iterations: int
     actions: list[AgentAction]
+    self_rag_decisions: list[SelfRAGStepDecision] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -57,6 +83,27 @@ class AgentRetrieveResult:
     chunks: list[Chunk]
     iterations: int
     actions: list[AgentAction]
+
+
+_NO_INFO_REPLY = "I don't have information about this."
+
+
+class _GenerationLLMAdapter(LLMRepository):
+    """Adapts GenerationService.call_llm to LLMRepository."""
+
+    def __init__(self, generation: GenerationService) -> None:
+        self._generation = generation
+
+    def generate(self, prompt: str, context: str, **kwargs: Any) -> str:
+        return self._generation.call_llm(prompt)
+
+    def generate_stream(
+        self, prompt: str, context: str, **kwargs: Any
+    ) -> AsyncIterator[str]:  # pragma: no cover
+        async def _stream() -> AsyncIterator[str]:
+            yield self._generation.call_llm(prompt)
+
+        return _stream()
 
 
 class AgentPipeline:
@@ -77,9 +124,12 @@ class AgentPipeline:
         self,
         pipeline: ChatPipeline,
         max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+        *,
+        self_rag_enabled: bool = False,
     ) -> None:
         self._pipeline = pipeline
         self._max_iterations = max_iterations
+        self._self_rag_enabled = self_rag_enabled
         self._decision_template: Template | None = None
 
     # ── Public ─────────────────────────────────────────────────────────────────
@@ -92,8 +142,11 @@ class AgentPipeline:
     ) -> AsyncIterator[str]:
         """Run the agentic loop and stream the final answer."""
         max_iter = max_iterations if max_iterations is not None else self._max_iterations
-        result = await self._agentic_retrieve(question, max_iterations=max_iter)
-        context = self._build_context(result.chunks)
+        if self._self_rag_enabled:
+            result = await self._self_rag_loop(question, max_iterations=max_iter)
+            return self._stream_answer_text(result.answer.text)
+        run = await self._agentic_retrieve(question, max_iterations=max_iter)
+        context = self._build_context(run.chunks)
         return self._pipeline.generation.stream(question, context)
 
     async def chat_full(
@@ -107,6 +160,22 @@ class AgentPipeline:
 
         max_iter = max_iterations if max_iterations is not None else self._max_iterations
         t0 = time.monotonic()
+        if self._self_rag_enabled:
+            result = await self._self_rag_loop(question, max_iterations=max_iter)
+            elapsed = (time.monotonic() - t0) * 1000
+            final_answer = result.answer.model_copy(
+                update={
+                    "query_id": Query(text=question).id,
+                    "latency_ms": elapsed,
+                    "token_count": len(result.answer.text.split()),
+                }
+            )
+            return AgentRunResult(
+                answer=final_answer,
+                iterations=result.iterations,
+                actions=result.actions,
+                self_rag_decisions=result.self_rag_decisions,
+            )
         run = await self._agentic_retrieve(question, max_iterations=max_iter)
         context = self._build_context(run.chunks)
         sources = [chunk_id for c in run.chunks for chunk_id in chunk_source_ids(c)]
@@ -136,9 +205,155 @@ class AgentPipeline:
         return cls(
             pipeline=ChatPipeline.from_settings(bm25_index=bm25_index),
             max_iterations=max_iterations,
+            self_rag_enabled=settings.quality.self_rag.enabled,
         )
 
     # ── Internals ──────────────────────────────────────────────────────────────
+
+    async def _self_rag_loop(
+        self,
+        question: str,
+        *,
+        max_iterations: int | None = None,
+    ) -> AgentRunResult:
+        """Self-RAG gates: retrieval decision → retrieve → draft → support → utility."""
+        max_iter = max_iterations if max_iterations is not None else self._max_iterations
+        llm = _GenerationLLMAdapter(self._pipeline.generation)
+        decisions: list[SelfRAGStepDecision] = []
+        actions: list[AgentAction] = []
+        search_query = question
+
+        for iteration in range(max_iter):
+            step = SelfRAGStepDecision(iteration=iteration + 1)
+
+            ret_dec = decide_retrieval(search_query, llm)
+            step.need_retrieval = ret_dec.need_retrieval
+            step.retrieval_reasoning = ret_dec.reasoning
+
+            if not ret_dec.need_retrieval:
+                draft = self._pipeline.generation.generate_direct(search_query)
+                util = score_utility(search_query, draft.text, "", llm)
+                result, search_query = self._self_rag_handle_scored_utility(
+                    step, util, draft, search_query, iteration, actions, decisions
+                )
+                if result is not None:
+                    return result
+                continue
+
+            query = Query(text=search_query)
+            retrieval = await self._pipeline.retrieval.retrieve(query)
+            context = retrieval.context
+            sources = [chunk_id for c in retrieval.chunks for chunk_id in chunk_source_ids(c)]
+
+            if not context.strip():
+                util = score_utility(search_query, "", "", llm)
+                _record_utility_on_step(step, util)
+                decisions.append(step)
+                if iteration == max_iter - 1:
+                    actions.append(AgentAction.RETRIEVE_MORE)
+                    return self._self_rag_no_info_result(
+                        search_query, iteration + 1, actions, decisions
+                    )
+                actions.append(AgentAction.RETRIEVE_MORE)
+                if util.refined_query:
+                    search_query = util.refined_query
+                continue
+
+            draft = self._pipeline.generation.generate(search_query, context, sources)
+
+            support = check_support(search_query, draft.text, context, llm)
+            step.supported = support.supported
+            step.support_reasoning = support.reasoning
+
+            if not support.supported:
+                util = score_utility(search_query, draft.text, context, llm)
+                _record_utility_on_step(step, util)
+                decisions.append(step)
+                if iteration == max_iter - 1:
+                    actions.append(AgentAction.RETRIEVE_MORE)
+                    return self._self_rag_no_info_result(
+                        search_query, iteration + 1, actions, decisions
+                    )
+                if util.action == UtilityAction.REFUSE:
+                    actions.append(AgentAction.CLARIFY)
+                    return self._self_rag_no_info_result(
+                        search_query, iteration + 1, actions, decisions
+                    )
+                actions.append(AgentAction.RETRIEVE_MORE)
+                if util.refined_query:
+                    search_query = util.refined_query
+                continue
+
+            util = score_utility(search_query, draft.text, context, llm)
+            result, search_query = self._self_rag_handle_scored_utility(
+                step, util, draft, search_query, iteration, actions, decisions
+            )
+            if result is not None:
+                return result
+
+        return self._self_rag_no_info_result(
+            question,
+            max_iter,
+            actions or [AgentAction.RETRIEVE_MORE],
+            decisions,
+        )
+
+    def _self_rag_handle_scored_utility(
+        self,
+        step: SelfRAGStepDecision,
+        util: UtilityScore,
+        draft: Answer,
+        search_query: str,
+        iteration: int,
+        actions: list[AgentAction],
+        decisions: list[SelfRAGStepDecision],
+    ) -> tuple[AgentRunResult | None, str]:
+        """Record utility, finish on accept/refuse, or advance search_query for reretrieve."""
+        _record_utility_on_step(step, util)
+        decisions.append(step)
+        if finished := self._self_rag_finish_from_utility(
+            util, draft, search_query, iteration, actions, decisions
+        ):
+            return finished, search_query
+        actions.append(AgentAction.RETRIEVE_MORE)
+        next_query = util.refined_query or search_query
+        return None, next_query
+
+    def _self_rag_finish_from_utility(
+        self,
+        util: UtilityScore,
+        draft: Answer,
+        search_query: str,
+        iteration: int,
+        actions: list[AgentAction],
+        decisions: list[SelfRAGStepDecision],
+    ) -> AgentRunResult | None:
+        if util.action == UtilityAction.ACCEPT:
+            actions.append(AgentAction.ANSWER)
+            return AgentRunResult(
+                answer=draft,
+                iterations=iteration + 1,
+                actions=actions,
+                self_rag_decisions=decisions,
+            )
+        if util.action == UtilityAction.REFUSE:
+            actions.append(AgentAction.CLARIFY)
+            return self._self_rag_no_info_result(search_query, iteration + 1, actions, decisions)
+        return None
+
+    def _self_rag_no_info_result(
+        self,
+        query: str,
+        iterations: int,
+        actions: list[AgentAction],
+        decisions: list[SelfRAGStepDecision],
+    ) -> AgentRunResult:
+        return AgentRunResult(
+            answer=self._no_info_answer(query),
+            iterations=iterations,
+            actions=actions,
+            self_rag_decisions=decisions,
+        )
 
     async def _agentic_retrieve(
         self,
@@ -245,8 +460,32 @@ class AgentPipeline:
         self._decision_template = tpl
         return tpl
 
+    @staticmethod
+    def _no_info_answer(question: str) -> Answer:
+        return Answer(
+            query_id=Query(text=question).id,
+            text=_NO_INFO_REPLY,
+            sources=[],
+        )
+
+    @staticmethod
+    async def _stream_answer_text(text: str) -> AsyncIterator[str]:
+        words = text.split()
+        for index, word in enumerate(words):
+            if index < len(words) - 1:
+                yield word + " "
+            else:
+                yield word
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────
+
+
+def _record_utility_on_step(step: SelfRAGStepDecision, util: UtilityScore) -> None:
+    step.utility_score = util.score
+    step.utility_action = util.action.value
+    step.utility_reasoning = util.reasoning
+    step.refined_query = util.refined_query
 
 
 def parse_decision(text: str) -> AgentDecision:

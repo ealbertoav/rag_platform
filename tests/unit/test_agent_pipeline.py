@@ -117,6 +117,29 @@ class TestParseDecision:
         d = parse_decision('{"action":"UNKNOWN","reasoning":"x"}')
         assert d.action == AgentAction.ANSWER
 
+    def test_non_dict_json_falls_back(self):
+        d = parse_decision("[1, 2, 3]")
+        assert d.action == AgentAction.ANSWER
+        assert "fallback" in d.reasoning
+
+
+class TestAgentPipelineFactory:
+    def test_from_settings_reads_self_rag_flag(self):
+        from unittest.mock import patch
+
+        from src.core.settings import settings
+
+        with (
+            patch(
+                "src.rag.pipelines.agent_pipeline.ChatPipeline.from_settings",
+                return_value=MagicMock(),
+            ) as from_settings,
+            patch.object(settings.quality.self_rag, "enabled", True),
+        ):
+            pipeline = AgentPipeline.from_settings()
+        from_settings.assert_called_once()
+        assert pipeline._self_rag_enabled is True
+
 
 # ── AgentPipeline ──────────────────────────────────────────────────────────────
 
@@ -224,3 +247,51 @@ class TestAgentPipelineChat:
         p = AgentPipeline(pipeline=chat)
         await p.chat_full("EKS IAM question")
         graph_mock.search.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_graph_lookup_without_retriever_returns_empty(self):
+        chat = _chat_mock(decision_response=_GRAPH_LOOKUP)
+        chat.retrieval.service.hybrid.graph = None
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("EKS IAM question")
+        assert result.actions == [AgentAction.GRAPH_LOOKUP]
+
+    @pytest.mark.asyncio
+    async def test_graph_lookup_exception_is_swallowed(self):
+        chat = _chat_mock(decision_response=_GRAPH_LOOKUP)
+        graph_mock = MagicMock()
+        graph_mock.search.side_effect = RuntimeError("graph down")
+        chat.retrieval.service.hybrid.graph = graph_mock
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("EKS IAM question")
+        assert result.actions == [AgentAction.GRAPH_LOOKUP]
+
+    @pytest.mark.asyncio
+    async def test_empty_initial_chunks_skips_decision_loop(self):
+        from src.domain.entities.query import Query
+        from src.domain.services.retrieval_service import RetrievalResult
+
+        chat = _chat_mock()
+        chat.retrieval.retrieve = AsyncMock(
+            return_value=RetrievalResult(query=Query(text="q"), chunks=[], context="")
+        )
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q")
+        assert result.actions == []
+        chat.generation.call_llm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_decision_template_is_cached(self):
+        p = _pipeline()
+        first = p._get_decision_template()
+        second = p._get_decision_template()
+        assert first is second
+        assert p._decision_template is first
+
+    @pytest.mark.asyncio
+    async def test_clarify_action_returns_empty_chunks_in_retrieve(self):
+        chat = _chat_mock(decision_response=_CLARIFY)
+        p = AgentPipeline(pipeline=chat)
+        run = await p._agentic_retrieve("ambiguous question")
+        assert run.chunks == []
+        assert run.actions == [AgentAction.CLARIFY]

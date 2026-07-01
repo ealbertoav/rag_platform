@@ -100,6 +100,19 @@ class TestGenerationService:
         _service(llm).generate("q", "", [])
         llm.generate.assert_not_called()
 
+    def test_generate_direct_calls_llm(self):
+        llm = _llm_mock("Hello there!")
+        result = _service(llm).generate_direct("hello")
+        assert result.text == "Hello there!"
+        assert result.sources == []
+        llm.generate.assert_called_once_with(prompt="hello", context="")
+
+    def test_generate_direct_does_not_use_rag_prompt(self):
+        llm = _llm_mock("Hi!")
+        _service(llm).generate_direct("hello")
+        prompt_arg = llm.generate.call_args.kwargs["prompt"]
+        assert "Context:" not in prompt_arg
+
     def test_generate_passes_question_as_context_arg(self):
         llm = _llm_mock()
         _service(llm).generate("my question", "ctx", [])

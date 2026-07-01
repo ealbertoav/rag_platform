@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import json
 import logging
-import re
 from pathlib import Path
 from string import Template
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from src.core.constants import CHUNK_PARENT_ID_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
 from src.rag.chunking.contextual_headers import chunk_context_text
+from src.rag.structured_output import parse_structured_output
 
 logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "quality" / "relevance_grading.txt"
-_JSON_OBJECT = re.compile(r"\{.*}", re.DOTALL)
 
 
 class ChunkRelevance(BaseModel):
@@ -38,7 +36,7 @@ def _load_prompt() -> Template:
 
 
 def _grading_passage_key(chunk: Chunk) -> str:
-    """Group chunks that share the same LLM-facing passage (e.g. parent context siblings)."""
+    """Group chunks that share the same LLM-facing passage (e.g., parent context siblings)."""
     parent_id = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
     parent_context = chunk.metadata.get(PARENT_CONTEXT_TEXT_KEY)
     if (
@@ -74,29 +72,7 @@ def _format_passages(chunks: list[Chunk]) -> str:
 
 def parse_relevance_grading(text: str) -> RelevanceGradingOutput:
     """Parse and validate structured relevance JSON from an LLM response."""
-    candidates = [text.strip()]
-    if match := _JSON_OBJECT.search(text):
-        candidates.append(match.group())
-
-    last_error: Exception | None = None
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            return RelevanceGradingOutput.model_validate_json(candidate)
-        except (ValidationError, json.JSONDecodeError, ValueError) as exc:
-            last_error = exc
-            try:
-                data = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            try:
-                return RelevanceGradingOutput.model_validate(data)
-            except ValidationError as nested:
-                last_error = nested
-
-    msg = "Could not parse relevance grading from LLM response"
-    raise ValueError(msg) from last_error
+    return parse_structured_output(text, RelevanceGradingOutput, label="relevance grading")
 
 
 def grade_relevance(
@@ -108,9 +84,9 @@ def grade_relevance(
 ) -> tuple[list[Chunk], int, int]:
     """Grade chunks and return those meeting *min_score*.
 
-    Returns ``(filtered_chunks, pass_count, fail_count)``. On LLM or parse
-    failure, returns all input chunks with ``pass_count=len(chunks)`` and
-    ``fail_count=0`` so retrieval degrades gracefully.
+    Returns "(filtered_chunks, pass_count, fail_count)". On LLM or parse
+    failure, returns all input chunks with "pass_count=len(chunks)" and
+    "fail_count=0" so retrieval degrades gracefully.
     """
     if not chunks:
         return [], 0, 0

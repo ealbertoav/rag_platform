@@ -8,6 +8,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Reliable RAG relevancy grading (T-140):** Optional LLM quality gate after RSE and parent-context expansion grades each passage against the query (using the same `chunk_context_text` sent to compression/generation) and drops chunks below `quality.reliable_rag.min_score`. When all passages fail, generation returns *"I don't have information about this."* Configure via `quality.reliable_rag` in `configs/retrieval.yaml` (`enabled: false` by default). See [Reliable RAG — Document Relevancy Grading (T-140)](#reliable-rag--document-relevancy-grading-t-140).
 
+> **Self-RAG decision loop (T-141):** Optional agent-side quality gates on `/chat/agent` and `/chat/agent/full` — decide whether to retrieve, check draft-answer support against context, and score utility before accepting, re-retrieving, or refusing. Replaces the standard agent decision loop when `quality.self_rag.enabled=true` (`false` by default). Pairs well with Reliable RAG (T-140) inside the retrieval path. See [Self-RAG Decision Loop (T-141)](#self-rag-decision-loop-t-141).
+
 ---
 
 ## Table of Contents
@@ -36,6 +38,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [EKS Setup](#eks-setup)
 - [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag)
 - [Agentic RAG](#agentic-rag)
+  - [Self-RAG decision loop (T-141)](#self-rag-decision-loop-t-141)
 - [Embedding Providers](#embedding-providers)
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
@@ -247,6 +250,7 @@ RETRIEVAL__DIVERSITY__ENABLED=false        # MMR diversity re-ranking after cros
 RETRIEVAL__DIVERSITY__LAMBDA=0.7           # 1.0 = pure relevance, 0.0 = max diversity
 QUALITY__RELIABLE_RAG__ENABLED=false       # LLM relevancy grading after enrichment (T-140)
 QUALITY__RELIABLE_RAG__MIN_SCORE=0.5       # chunks below this score excluded from context
+QUALITY__SELF_RAG__ENABLED=false           # Self-RAG gates on agent endpoints (T-141)
 QUERY_EXPANSION__STEP_BACK__ENABLED=false # broader background query for multi-query RRF fusion (T-133)
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
@@ -554,7 +558,7 @@ curl -X POST http://localhost:8000/chat/agent/full \
   -d '{"question": "How do IAM roles work in EKS?", "max_iterations": 3}'
 ```
 
-Example response from `/chat/agent/full`:
+Example response from `/chat/agent/full` (standard agent loop — `quality.self_rag.enabled=false`):
 ```json
 {
   "answer": "...",
@@ -562,9 +566,12 @@ Example response from `/chat/agent/full`:
   "latency_ms": 4200.5,
   "token_count": 312,
   "iterations": 2,
-  "actions": ["RETRIEVE_MORE", "ANSWER"]
+  "actions": ["RETRIEVE_MORE", "ANSWER"],
+  "self_rag_decisions": []
 }
 ```
+
+With Self-RAG enabled (`quality.self_rag.enabled=true`), the same endpoint adds a populated `self_rag_decisions` array (one object per iteration) with `need_retrieval`, `supported`, `utility_score`, `utility_action`, and optional `refined_query`. See [Self-RAG Decision Loop (T-141)](#self-rag-decision-loop-t-141).
 
 See [Agentic RAG](#agentic-rag) for action types and when to use the agent endpoints vs standard chat.
 
@@ -942,9 +949,18 @@ hybrid = HybridRetriever(dense=dense, bm25=bm25, graph_retriever=graph_retriever
 
 ## Agentic RAG
 
-`AgentPipeline` adds an iterative reasoning loop on top of the existing retrieval + generation stack. After each retrieval, the LLM decides whether the context is sufficient or whether to take a follow-up action before answering.
+`AgentPipeline` adds an iterative reasoning loop on top of the existing retrieval + generation stack. Two modes are available:
 
-### Agent loop
+| Mode | Config | Loop |
+|---|---|---|
+| **Standard agent** (default) | `quality.self_rag.enabled=false` | LLM chooses `ANSWER` / `RETRIEVE_MORE` / `GRAPH_LOOKUP` / `CLARIFY` after each retrieval (`agent_decision.txt`) |
+| **Self-RAG** (T-141) | `quality.self_rag.enabled=true` | Structured gates: retrieval decision → draft → support check → utility score (`self_rag_*.txt`) |
+
+Both modes share the same HTTP endpoints and `max_iterations` cap (default 3, API max 5). Self-RAG replaces — not augments — the standard agent decision loop when enabled.
+
+### Standard agent loop
+
+When `quality.self_rag.enabled=false`, after each retrieval the LLM decides whether the context is sufficient or whether to take a follow-up action before answering.
 
 ```mermaid
 flowchart TD
@@ -965,6 +981,80 @@ flowchart TD
 ```
 
 > The loop is capped at `max_iterations` (default: 3) to prevent runaway LLM calls. Any decision parsing failure falls back to `ANSWER` immediately.
+
+### Self-RAG decision loop (T-141)
+
+When `quality.self_rag.enabled=true`, `AgentPipeline` runs Self-RAG gates instead of `agent_decision.txt`. Each iteration:
+
+1. **Retrieval decision** — LLM decides if document search is needed (`self_rag_decision.txt`). Greetings and chit-chat use `GenerationService.generate_direct()` (no RAG context wrapper).
+2. **Retrieve** — standard `RetrievalPipeline` (includes Reliable RAG T-140 when that flag is also enabled).
+3. **Draft** — generate a candidate answer from retrieved context.
+4. **Support check** — LLM verifies the draft is grounded in context (`self_rag_support.txt`).
+5. **Utility score** — LLM rates usefulness and returns `accept`, `reretrieve` (with optional `refined_query`), or `refuse` (`self_rag_utility.txt`).
+
+```mermaid
+flowchart TD
+    Q["User Question"] --> RD{"Need retrieval?<br/>self_rag_decision.txt"}
+
+    RD -->|no| GD["generate_direct()"]
+    GD --> U0{"Utility score"}
+    U0 -->|accept| ANS["✅ Return answer"]
+    U0 -->|reretrieve| RD
+    U0 -->|refuse| NO["❌ No-info reply"]
+
+    RD -->|yes| IR["Retrieve + enrich<br/>Reliable RAG if enabled"]
+    IR --> EC{Context empty?}
+    EC -->|yes| U1{"Utility score<br/>refined_query?"}
+    U1 -->|reretrieve| RD
+    U1 -->|last iteration| NO
+
+    EC -->|no| DR["Generate draft<br/>RAG prompt"]
+    DR --> SC{"Supported?<br/>self_rag_support.txt"}
+    SC -->|no| U2{"Utility score"}
+    U2 -->|refuse| NO
+    U2 -->|reretrieve| RD
+    U2 -->|max iterations| NO
+
+    SC -->|yes| U3{"Utility score<br/>self_rag_utility.txt"}
+    U3 -->|accept| ANS
+    U3 -->|reretrieve| RD
+    U3 -->|refuse| NO
+
+    style RD fill:#fff3cd,stroke:#856404
+    style SC fill:#fff3cd,stroke:#856404
+    style U3 fill:#fff3cd,stroke:#856404
+    style ANS fill:#d1ecf1,stroke:#0c5460
+    style NO fill:#ffeeee,stroke:#cc0000
+```
+
+```yaml
+# configs/retrieval.yaml
+quality:
+  self_rag:
+    enabled: false    # set true to enable Self-RAG on agent endpoints
+```
+
+**Structured LLM output** uses Pydantic models (`RetrievalDecision`, `SupportCheck`, `UtilityScore`) parsed via the shared helper `src/rag/structured_output.py` (also used by Reliable RAG grading and adaptive query classification).
+
+**Response metadata:** `/chat/agent/full` includes `self_rag_decisions[]` with per-iteration gate results:
+
+| Field | Meaning |
+|---|---|
+| `need_retrieval` | Whether document search was required |
+| `supported` | Whether the draft passed the support check |
+| `utility_score` | 0.0–1.0 usefulness rating |
+| `utility_action` | `accept`, `reretrieve`, or `refuse` |
+| `refined_query` | Improved search query when action is `reretrieve` |
+
+**When to use:** agent endpoints where hallucination risk is high; multi-hop questions that benefit from explicit re-retrieval; corpora where you already enable Reliable RAG (T-140) and want an additional generation-time critique.
+
+**Trade-offs:** several extra LLM calls per agent iteration when enabled. Unsupported drafts after `max_iterations` return *"I don't have information about this."* LLM or parse failures on individual gates degrade gracefully (fallback to retrieve, assume supported, or accept draft — see `src/rag/quality/self_rag.py`).
+
+```bash
+QUALITY__SELF_RAG__ENABLED=true
+# Optional: also enable passage filtering inside retrieval
+QUALITY__RELIABLE_RAG__ENABLED=true
+```
 
 ### Usage
 
@@ -995,14 +1085,19 @@ agent = AgentPipeline.from_settings(max_iterations=3)
 async for token in await agent.chat("How do IAM roles work in EKS?"):
     print(token, end="", flush=True)
 
-# Blocking
+# Blocking — standard agent loop (quality.self_rag.enabled=false)
 result = await agent.chat_full("How do IAM roles work in EKS?")
 print(result.answer.text)
 print("Sources:", result.answer.sources)
 print("Actions:", [a.value for a in result.actions])
+
+# Self-RAG — set QUALITY__SELF_RAG__ENABLED=true, then rebuild from settings
+agent_self_rag = AgentPipeline.from_settings(max_iterations=3)
+result = await agent_self_rag.chat_full("How do IAM roles work in EKS?")
+print("Self-RAG steps:", result.self_rag_decisions)
 ```
 
-### Agent actions
+### Agent actions (standard loop only)
 
 | Action | When triggered | What happens |
 |---|---|---|
@@ -1095,7 +1190,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 | `POST` | `/chat` | Stream answer as Server-Sent Events; optional `document_ids`, `metadata_filters`, `min_score` (T-134) |
 | `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat` |
 | `POST` | `/chat/agent` | Agentic RAG — multistep retrieval, streaming answer (`max_iterations` 1–5) |
-| `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations` and `actions` metadata |
+| `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
 | `POST` | `/ingest/upload` | Ingest an uploaded file (multipart) |
 | `POST` | `/evals/run` | Run E2E benchmark — returns `204` until QA dataset is populated, `200` with Recall@5 / Faithfulness / Relevance / Context Precision report |
@@ -1175,12 +1270,14 @@ rag_implementation/
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
 │   │   ├── ingestion/          # chunk_header_template · extract_propositions · generate_chunk_questions · generate_document_summary
-│   │   ├── quality/              # relevance_grading (T-140)
+│   │   ├── quality/              # relevance_grading (T-140) · self_rag_decision/support/utility (T-141)
 │   │   └── retrieval/          # query_expansion · step_back · query_classification · hyde_generate · entity_extraction · agent_decision
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
-│   │   ├── quality/            # Reliable RAG relevancy grading (T-140)
+│   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141)
+│   │   ├── structured_output.py # Shared Pydantic JSON parsing for LLM structured output
+│   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
@@ -1230,6 +1327,8 @@ RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false
 RETRIEVAL__DIVERSITY__ENABLED=false
 RETRIEVAL__DIVERSITY__LAMBDA=0.7
+QUALITY__RELIABLE_RAG__ENABLED=false
+QUALITY__SELF_RAG__ENABLED=false
 QUERY_EXPANSION__STEP_BACK__ENABLED=false
 CHUNKING__STRATEGY=recursive
 CHUNKING__PROPOSITION__QUALITY_THRESHOLD=7
@@ -1566,6 +1665,8 @@ quality:
   reliable_rag:
     enabled: false       # set true for LLM relevancy grading before compression
     min_score: 0.5       # passages below this score are dropped (0.0–1.0)
+  self_rag:
+    enabled: false       # Self-RAG agent gates on /chat/agent* (see Agentic RAG)
 ```
 
 **Structured LLM output** (per passage group):
@@ -1576,7 +1677,7 @@ quality:
 | `relevance_score` | float | 0.0 (irrelevant) – 1.0 (highly relevant) |
 | `supporting` | bool | Whether the passage directly supports answering the query |
 
-Passed chunks receive `metadata.relevance_score` and `metadata.relevance_supporting` for tracing and downstream use (T-141 Self-RAG, T-143 explainable retrieval).
+Passed chunks receive `metadata.relevance_score` and `metadata.relevance_supporting` for tracing and downstream use (Self-RAG agent loop T-141, T-143 explainable retrieval).
 
 **When to use:** production deployments where weak retrieval should not reach the generator; corpora with noisy hybrid recall; parent-child indexes where a precise child hit might expand to a broader parent passage that is only partially relevant.
 
@@ -1585,6 +1686,14 @@ Passed chunks receive `metadata.relevance_score` and `metadata.relevance_support
 ```bash
 QUALITY__RELIABLE_RAG__ENABLED=true
 QUALITY__RELIABLE_RAG__MIN_SCORE=0.5
+```
+
+##### Self-RAG and Reliable RAG together (T-141 + T-140)
+
+Self-RAG runs on **agent endpoints only** (`/chat/agent`, `/chat/agent/full`) and is configured separately from the standard chat pipeline. When both `quality.self_rag.enabled` and `quality.reliable_rag.enabled` are true, Reliable RAG filters passages inside each Self-RAG retrieval step before the agent drafts an answer. Full flow diagram, API response fields, and Python examples: [Self-RAG decision loop (T-141)](#self-rag-decision-loop-t-141).
+
+```bash
+QUALITY__SELF_RAG__ENABLED=true
 ```
 
 ##### Multi-Faceted Retrieval Filtering (T-134)

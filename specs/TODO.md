@@ -1614,7 +1614,7 @@
 ---
 
 ### T-141 · Self-RAG Decision Loop
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Extend `AgentPipeline` with Self-RAG gates: decide whether to retrieve, check answer support, and score utility — inspired by RAG_Techniques `self_rag.py`.
 - **Inputs:** T-071 (`AgentPipeline`), T-140 (relevance grading), T-114 (agent API)
 - **Outputs:** Agent loop with explicit retrieve/generate/critique steps and structured decision output.

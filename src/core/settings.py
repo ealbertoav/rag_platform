@@ -176,8 +176,13 @@ class ReliableRAGSettings(BaseModel):
     min_score: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class SelfRAGSettings(BaseModel):
+    enabled: bool = False
+
+
 class QualitySettings(BaseModel):
     reliable_rag: ReliableRAGSettings = Field(default_factory=ReliableRAGSettings)
+    self_rag: SelfRAGSettings = Field(default_factory=SelfRAGSettings)
 
 
 class RetrievalSettings(BaseModel):

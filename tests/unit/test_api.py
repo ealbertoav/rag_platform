@@ -71,6 +71,7 @@ def agent_pipeline_mock() -> MagicMock:
             ),
             iterations=2,
             actions=[AgentAction.ANSWER],
+            self_rag_decisions=[],
         )
     )
     return m
@@ -329,6 +330,7 @@ class TestChatAgent:
         assert data["answer"] == "Agent answer"
         assert data["iterations"] == 2
         assert data["actions"] == ["ANSWER"]
+        assert data["self_rag_decisions"] == []
 
 
 # ── /evals/run ─────────────────────────────────────────────────────────────────
