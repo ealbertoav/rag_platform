@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.infrastructure.vectordb.neo4j_graph import GraphRelation, Neo4jGraphRepository
 from src.rag.retrieval.graph_retriever import EntityExtractor, GraphRetriever
 
@@ -149,6 +150,45 @@ class TestGraphRetriever:
         bm25 = _bm25_mock()
         retriever = GraphRetriever(extractor=ex, graph=graph, bm25=bm25)
         assert retriever.search("AWS EKS", top_k=5) == []
+
+    def test_document_id_filter_excludes_out_of_scope_chunks(self):
+        chunk = Chunk(id="c0", document_id="doc-a", text="text 0")
+        r = self._retriever([("c0", 0.9)], chunk=chunk)
+        filt = RetrievalFilter(document_ids=["doc-b"])
+        assert r.search("AWS EKS IAM roles", top_k=3, filters=filt) == []
+
+    def test_document_id_filter_scoped_in_graph_before_limit(self):
+        """In-scope chunks must be considered even when globally out-ranked."""
+        chunk_in = Chunk(id="c-in", document_id="doc-a", text="text in")
+        ex = EntityExtractor(_llm_mock())
+        graph = _neo4j_mock([("c-in", 0.5)])
+        bm25 = MagicMock()
+        bm25.get_by_id.side_effect = lambda cid: chunk_in if cid == "c-in" else None
+        retriever = GraphRetriever(extractor=ex, graph=graph, bm25=bm25)
+        filt = RetrievalFilter(document_ids=["doc-a"])
+
+        results = retriever.search("AWS EKS IAM roles", top_k=1, filters=filt)
+
+        graph.search_by_entities.assert_called_once()
+        args, kwargs = graph.search_by_entities.call_args
+        assert args[1] == 1
+        assert kwargs["filters"] == filt
+        assert len(results) == 1
+        assert results[0][0].id == "c-in"
+
+    def test_metadata_filter_overfetches_before_limit(self):
+        chunk = Chunk(id="c0", document_id="doc", text="text 0", metadata={"lang": "en"})
+        ex = EntityExtractor(_llm_mock())
+        graph = _neo4j_mock([("c0", 0.9)])
+        bm25 = _bm25_mock(chunk)
+        retriever = GraphRetriever(extractor=ex, graph=graph, bm25=bm25)
+        filt = RetrievalFilter(metadata={"lang": "en"})
+
+        retriever.search("AWS EKS IAM roles", top_k=3, filters=filt)
+
+        args, kwargs = graph.search_by_entities.call_args
+        assert args[1] == 30  # top_k * _METADATA_OVERFETCH
+        assert kwargs["filters"] == filt
 
 
 # ── HybridRetriever with graph ────────────────────────────────────────────────
@@ -300,3 +340,13 @@ class TestNeo4jCypherHelpers:
         tx.run.return_value = [{"chunk_id": "c1", "score": 0.75}]
         results = _search_chunks(tx, ["A", "B"], top_k=5)
         assert results == [("c1", 0.75)]
+
+    def test_search_chunks_scopes_document_ids_in_cypher(self):
+        from src.infrastructure.vectordb.neo4j_graph import _search_chunks
+
+        tx = MagicMock()
+        tx.run.return_value = [{"chunk_id": "c1", "score": 1.0}]
+        _search_chunks(tx, ["A"], top_k=2, document_ids=["doc-a"])
+        cypher = tx.run.call_args[0][0]
+        assert "c.document_id IN $document_ids" in cypher
+        assert tx.run.call_args[1]["document_ids"] == ["doc-a"]

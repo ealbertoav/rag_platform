@@ -2,6 +2,8 @@
 
 A production-grade Retrieval-Augmented Generation platform built with Clean Architecture and Domain-Driven Design. Runs fully self-hosted on Apple Silicon (M-series) by default; API-based embedding providers (OpenAI, Voyage AI, Cohere, Gemini) can be enabled with a single config change.
 
+> **Multi-faceted retrieval filtering (T-134):** `POST /chat` and `POST /chat/full` accept optional `document_ids`, `metadata_filters`, and `min_score` to constrain retrieval at query time. Filters propagate through every hybrid leg — dense (Qdrant), BM25, graph, HyPE, HyDE, and hierarchical — before RRF fusion. `min_score` applies only to cosine-similarity sources (dense and Qdrant-backed retrievers), not BM25 or graph ranks. See [Multi-Faceted Retrieval Filtering (T-134)](#multi-faceted-retrieval-filtering-t-134).
+
 ---
 
 ## Table of Contents
@@ -17,6 +19,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Optional Chunk Enrichment](#optional-chunk-enrichment)
   - [Start the API Server](#start-the-api-server)
   - [Chat](#chat)
+    - [Scoped retrieval filters (T-134)](#scoped-retrieval-filters-t-134)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare Embedding Providers](#compare-embedding-providers)
@@ -54,14 +57,15 @@ flowchart LR
 
     subgraph RETRIEVE["🔍 Retrieval Pipeline"]
         direction TB
-        QX["User Query"] --> ADAPT["Adaptive Classification<br/>(optional · T-131)"]
+        QX["User Query"] --> FILT["Retrieval Filters<br/>doc scope · metadata · min_score<br/>(optional · T-134)"]
+        FILT --> ADAPT["Adaptive Classification<br/>(optional · T-131)"]
         ADAPT --> STRAT["Adaptive Strategy<br/>top_k · variants · hyde · compression<br/>(optional · T-132)"]
         STRAT --> EXP["Query Expansion<br/>3 variants + step-back<br/>(optional · T-133)"]
         EXP --> EM[BGE-M3 Embedding]
         EXP --> HYDE["HyDE · Hypothetical Doc<br/>(optional · T-130)"]
         HYDE --> DS2["Dense Search<br/>hypo passage embed"]
-        EM --> DS["Dense Search<br/>Qdrant HNSW"]
-        EM --> BS[BM25 Search]
+        EM --> DS["Dense Search<br/>Qdrant HNSW + filters"]
+        EM --> BS["BM25 Search<br/>scoped lexical"]
         DS --> RF["RRF Fusion<br/>Top 50"]
         DS2 --> RF
         BS --> RF
@@ -340,7 +344,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` / `query_expansion.*` and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
+Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` / `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -479,6 +483,38 @@ curl -X POST http://localhost:8000/chat/full \
   -H "Content-Type: application/json" \
   -d '{"question": "How do IAM roles work in EKS?"}'
 ```
+
+#### Scoped retrieval filters (T-134)
+
+Both `/chat` and `/chat/full` accept optional filter fields on the request body. Omit them for unchanged default behavior.
+
+| Field | Type | Effect |
+|---|---|---|
+| `document_ids` | `list[str]` | Restrict hits to chunks belonging to these documents |
+| `metadata_filters` | `dict[str, str]` | Exact-match filters on chunk metadata (e.g. `source`, `section`) |
+| `min_score` | `float` (0–1) | Drop dense/Qdrant hits below this cosine similarity threshold |
+
+```bash
+# Scope to two documents and require strong dense matches
+curl -X POST http://localhost:8000/chat/full \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What was Q3 revenue?",
+    "document_ids": ["annual-report-2023", "investor-deck-q3"],
+    "metadata_filters": {"section": "revenue"},
+    "min_score": 0.72
+  }'
+```
+
+Filters are applied consistently across hybrid retrieval:
+
+- **Dense / HyPE / HyDE / hierarchical** — Qdrant payload filters at search time; `min_score` applied post-search on cosine scores
+- **BM25** — document scope and metadata enforced during lexical ranking (`min_score` is not applied — BM25 scores use a different scale)
+- **Graph RAG** — out-of-scope chunks dropped after entity→chunk lookup
+
+Synthetic-question hits (T-121) are resolved to source chunks first; filters are re-checked on the resolved chunk so scoped queries cannot leak via augmentation.
+
+> Agent endpoints (`/chat/agent`, `/chat/agent/full`) do not yet accept filter fields — use standard chat for scoped retrieval.
 
 **Python client:**
 ```python
@@ -839,7 +875,8 @@ flowchart LR
     subgraph RETRIEVE["Retrieval (with Graph RAG)"]
         Q["Query"] --> EN["Extract entity names<br/>(capitalised token heuristic)"]
         EN --> N4J2[("Neo4j<br/>entity → chunk lookup")]
-        N4J2 -->|graph-matched chunks| RRF["RRF Fusion<br/>(dense + BM25 + graph)"]
+        N4J2 --> GF["Scope filter<br/>(optional · T-134)"]
+        GF -->|graph-matched chunks| RRF["RRF Fusion<br/>(dense + BM25 + graph)"]
     end
 ```
 
@@ -1043,8 +1080,8 @@ Legacy collections without metadata fall back to the first tagged point payload;
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/health` | Server status and model load state |
-| `POST` | `/chat` | Stream answer as Server-Sent Events |
-| `POST` | `/chat/full` | Non-streaming chat, returns complete answer |
+| `POST` | `/chat` | Stream answer as Server-Sent Events; optional `document_ids`, `metadata_filters`, `min_score` (T-134) |
+| `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat` |
 | `POST` | `/chat/agent` | Agentic RAG — multistep retrieval, streaming answer (`max_iterations` 1–5) |
 | `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations` and `actions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
@@ -1130,7 +1167,7 @@ rag_implementation/
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
-│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back
+│   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
@@ -1238,18 +1275,19 @@ Integration tests auto-skip when models or Qdrant are absent (CI runs them but d
 
 ```mermaid
 flowchart TD
-    Q["🔎 User Question"] --> ADAPT["Adaptive Classification<br/>factual · analytical · opinion · contextual<br/>(optional · T-131)"]
+    Q["🔎 User Question"] --> FILT["Retrieval Filters<br/>document_ids · metadata · min_score<br/>(optional · T-134)"]
+    FILT --> ADAPT["Adaptive Classification<br/>factual · analytical · opinion · contextual<br/>(optional · T-131)"]
     ADAPT --> STRAT["Adaptive Strategy<br/>top_k · n_variants · hyde · compression<br/>(optional · T-132)"]
     STRAT --> QE["Query Expander<br/>LLM variants + step-back<br/>(optional · T-133)"]
     QE --> EMB["BGE-M3 Encoder<br/>1024-dim dense + sparse"]
     QE --> HYDE["HyDE · Hypothetical Doc<br/>LLM → embed passage<br/>(optional · T-130)"]
 
-    EMB --> DS["Dense Search<br/>Qdrant HNSW cosine<br/>(excludes hype_question + summary)"]
-    HYDE --> DS2["Dense Search<br/>hypothetical passage embed"]
-    EMB --> BS["BM25 Search<br/>In-memory lexical"]
-    EMB --> HS["HyPE Search<br/>question→question dense<br/>(optional · T-122)"]
-    EMB --> HRS["Hierarchical Search<br/>summary → detail<br/>(optional · T-125)"]
-    QE --> GS["Graph Search<br/>Neo4j entity traversal<br/>(optional)"]
+    EMB --> DS["Dense Search<br/>Qdrant HNSW cosine<br/>payload filters · min_score"]
+    HYDE --> DS2["Dense Search<br/>hypothetical passage embed<br/>payload filters · min_score"]
+    EMB --> BS["BM25 Search<br/>scoped lexical ranking<br/>(no min_score)"]
+    EMB --> HS["HyPE Search<br/>question→question dense<br/>payload filters · min_score<br/>(optional · T-122)"]
+    EMB --> HRS["Hierarchical Search<br/>summary → detail<br/>payload filters · min_score<br/>(optional · T-125)"]
+    QE --> GS["Graph Search<br/>Neo4j entity traversal<br/>scope filter post-lookup<br/>(optional)"]
 
     DS -->|Top 50 candidates| RRF["RRF Fusion<br/>score = Σ 1/(k+rank)"]
     DS2 -->|Top 50 candidates| RRF
@@ -1265,11 +1303,12 @@ flowchart TD
     CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
     GEN --> ANS["💬 Streamed Answer<br/>+ source chunk IDs"]
 
+    style FILT fill:#fff8e6,stroke:#cc9900
     style RRF fill:#f0f0ff,stroke:#6666cc
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. When **multi-faceted filters** (T-134) are set on the chat request, they attach to the `Query` entity at the start of the pipeline and constrain every hybrid leg before RRF — document scope and metadata on all retrievers; `min_score` on cosine-similarity legs only (dense, HyPE, HyDE, hierarchical), not BM25 or graph ranks. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
@@ -1463,6 +1502,41 @@ When a parent chunk cannot be found (e.g. index rebuilt without parents), the pi
 CHUNKING__STRATEGY=parent_child
 RETRIEVAL__PARENT_CONTEXT__ENABLED=true
 ```
+
+##### Multi-Faceted Retrieval Filtering (T-134)
+
+Per-request retrieval constraints for scoped Q&A — inspired by multi-faceted filtering patterns in advanced RAG pipelines. Filters travel on the `Query` entity (`Query.filters: RetrievalFilter | None`) and are built from API fields via `filters_from_request()`.
+
+**Filter types:**
+
+| Filter | Applied at | Notes |
+|---|---|---|
+| `document_ids` | Qdrant payload + BM25 ranking + graph post-filter | Intersects with hierarchical stage-2 scope when both are set |
+| `metadata` (exact match) | Qdrant `metadata.{key}` + BM25 + graph post-filter | Values must match `Chunk.metadata` strings exactly |
+| `min_score` | Dense, HyPE, HyDE, hierarchical only | Cosine similarity in `[0, 1]`; applied after search, before RRF fusion |
+
+```yaml
+# No config required — filters are per-request on POST /chat and POST /chat/full
+# Example request body:
+# {
+#   "question": "...",
+#   "document_ids": ["doc-a"],
+#   "metadata_filters": {"source": "policy.pdf"},
+#   "min_score": 0.65
+# }
+```
+
+**Implementation (`src/rag/retrieval/filters.py`):**
+
+- `build_qdrant_filter()` — translates `RetrievalFilter` into Qdrant `Filter` conditions for dense search
+- `chunk_matches_filter()` / `apply_chunk_filters()` — document scope and metadata checks on in-memory result lists (BM25, graph, post–synthetic-question resolution)
+- `apply_min_score()` — cosine threshold for Qdrant-backed retrievers only
+
+**Hybrid retriever behavior:** `HybridRetriever` passes `query.filters` into BM25 and graph search, applies chunk filters on every RRF input list, and applies `min_score` only where scores are cosine similarities. This prevents out-of-scope BM25 or graph hits from entering fusion when the chat API scopes a query.
+
+**When to use:** multi-tenant deployments, folder-level isolation, compliance boundaries (search only approved documents), or quality gates that discard weak dense matches.
+
+**Trade-offs:** stricter filters reduce recall — combine with query expansion (T-133) or HyDE (T-130) when scoped corpora are small. Metadata filters require the keys to exist on indexed chunks (set at ingest via loaders or chunking). Re-ingest does not change filter behavior; filters are purely query-time.
 
 **Why Hybrid Search?** BM25 finds exact keyword matches (error codes, proper nouns) that dense embeddings miss. RRF fusion consistently outperforms either method alone.
 

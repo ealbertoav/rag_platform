@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.domain.repositories.embedding_repository import DenseVector, SparseVector
 
 # A retrieved result pairs a Chunk with the score assigned by the search.
@@ -29,12 +30,14 @@ class VectorStoreRepository(ABC):
         type_equals: str | None = None,
         exclude_types: frozenset[str] | None = None,
         document_ids: frozenset[str] | None = None,
+        filters: RetrievalFilter | None = None,
     ) -> list[SearchResult]:
         """Approximate nearest-neighbor search on the dense index.
 
         Optional payload filters restrict results by chunk metadata "type":
         *type_equals* keeps only matching types; *exclude_types* drops them.
         *document_ids* scopes results to the given document IDs.
+        *filters* adds document scope, metadata exact-match, and related constraints.
         """
 
     @abstractmethod

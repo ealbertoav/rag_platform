@@ -35,6 +35,7 @@ class HyPERetriever:
             embedding,
             top_k=top_k,
             type_equals=CHUNK_TYPE_HYPE,
+            filters=query.filters,
         )
         resolved = resolve_synthetic_questions(
             hype_hits,

@@ -7,12 +7,19 @@ from pathlib import Path
 from string import Template
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.domain.repositories.llm_repository import LLMRepository
 from src.domain.repositories.vector_store_repository import SearchResult
 from src.infrastructure.vectordb.neo4j_graph import GraphRelation, Neo4jGraphRepository
 from src.rag.retrieval.bm25_retriever import BM25Retriever
+from src.rag.retrieval.filters import apply_chunk_filters
 
 logger = logging.getLogger(__name__)
+
+# Metadata lives only in BM25/Qdrant payloads, so graph search must over-fetch
+# before post-filtering (same pattern as hybrid candidate expansion).
+_METADATA_OVERFETCH = 10
+_MAX_GRAPH_FETCH = 500
 
 _EXTRACT_PROMPT = Path(__file__).parents[2] / "prompts" / "retrieval" / "entity_extraction.txt"
 _ENTITY_SPLIT = re.compile(r"[,;.!?\s]+")
@@ -82,14 +89,25 @@ class GraphRetriever:
         self._graph = graph
         self._bm25 = bm25
 
-    def search(self, query: str, top_k: int) -> list[SearchResult]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        filters: RetrievalFilter | None = None,
+    ) -> list[SearchResult]:
         """Return up to *top_k* (Chunk, score) pairs from the knowledge graph."""
         entity_names = self._extractor.extract_entity_names(query)
         if not entity_names:
             return []
 
+        fetch_k = _graph_fetch_limit(top_k, filters)
         try:
-            id_score_pairs = self._graph.search_by_entities(entity_names, top_k)
+            id_score_pairs = self._graph.search_by_entities(
+                entity_names,
+                fetch_k,
+                filters=filters,
+            )
         except Exception as exc:
             logger.warning("Graph retrieval failed (continuing without it): %s", exc)
             return []
@@ -100,8 +118,15 @@ class GraphRetriever:
             if isinstance(chunk, Chunk):
                 results.append((chunk, score))
 
-        logger.debug("Graph retrieval: %d entities → %d chunks", len(entity_names), len(results))
-        return results
+        filtered = apply_chunk_filters(results, filters)
+        logger.debug(
+            "Graph retrieval: %d entities → %d chunks (%d after filters, fetch_k=%d)",
+            len(entity_names),
+            len(results),
+            len(filtered),
+            fetch_k,
+        )
+        return filtered[:top_k]
 
     @classmethod
     def from_settings(
@@ -117,6 +142,13 @@ class GraphRetriever:
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
+
+
+def _graph_fetch_limit(top_k: int, filters: RetrievalFilter | None) -> int:
+    """Size the Neo4j candidate pool so post-filters can still fill *top_k* slots."""
+    if filters and filters.metadata:
+        return min(top_k * _METADATA_OVERFETCH, _MAX_GRAPH_FETCH)
+    return top_k
 
 
 def _parse_relations(text: str) -> list[GraphRelation]:

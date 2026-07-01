@@ -5,6 +5,7 @@ import logging
 from typing import Any, cast
 
 from src.core.exceptions import RetrievalError
+from src.domain.entities.retrieval_filter import RetrievalFilter
 
 logger = logging.getLogger(__name__)
 
@@ -75,17 +76,26 @@ class Neo4jGraphRepository:
         except Exception as exc:
             raise RetrievalError("Neo4j upsert failed", cause=exc) from exc
 
-    def search_by_entities(self, entity_names: list[str], top_k: int) -> list[tuple[str, float]]:
+    def search_by_entities(
+        self,
+        entity_names: list[str],
+        top_k: int,
+        *,
+        filters: RetrievalFilter | None = None,
+    ) -> list[tuple[str, float]]:
         """Return (chunk_id, score) pairs for chunks mentioning *entity_names*.
 
         Score = number of query entities found in the chunk (normalized).
+        When *filters* include document IDs, scope is applied in Cypher before
+        ranking and "LIMIT" so in-scope chunks are not dropped by a global cutoff.
         """
         if not entity_names:
             return []
+        document_ids = list(filters.document_ids) if filters and filters.document_ids else None
         driver = self._get_driver()
         try:
             with driver.session() as session:  # type: ignore[attr-defined]
-                result = session.execute_read(_search_chunks, entity_names, top_k)
+                result = session.execute_read(_search_chunks, entity_names, top_k, document_ids)
             return cast(list[tuple[str, float]], result)
         except Exception as exc:
             raise RetrievalError("Neo4j search failed", cause=exc) from exc
@@ -138,18 +148,39 @@ def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: st
     )
 
 
-def _search_chunks(tx: Any, entity_names: list[str], top_k: int) -> list[tuple[str, float]]:
-    result = tx.run(
-        """
-        MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
-        WHERE e.name IN $names
-        WITH c.id AS chunk_id, count(DISTINCT e) AS hits
-        RETURN chunk_id, toFloat(hits) / $n_entities AS score
-        ORDER BY score DESC
-        LIMIT $top_k
-        """,
-        names=entity_names,
-        n_entities=len(entity_names),
-        top_k=top_k,
-    )
+def _search_chunks(
+    tx: Any,
+    entity_names: list[str],
+    top_k: int,
+    document_ids: list[str] | None = None,
+) -> list[tuple[str, float]]:
+    if document_ids:
+        result = tx.run(
+            """
+            MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
+            WHERE e.name IN $names AND c.document_id IN $document_ids
+            WITH c.id AS chunk_id, count(DISTINCT e) AS hits
+            RETURN chunk_id, toFloat(hits) / $n_entities AS score
+            ORDER BY score DESC
+            LIMIT $top_k
+            """,
+            names=entity_names,
+            n_entities=len(entity_names),
+            top_k=top_k,
+            document_ids=document_ids,
+        )
+    else:
+        result = tx.run(
+            """
+            MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
+            WHERE e.name IN $names
+            WITH c.id AS chunk_id, count(DISTINCT e) AS hits
+            RETURN chunk_id, toFloat(hits) / $n_entities AS score
+            ORDER BY score DESC
+            LIMIT $top_k
+            """,
+            names=entity_names,
+            n_entities=len(entity_names),
+            top_k=top_k,
+        )
     return [(row["chunk_id"], float(row["score"])) for row in result]

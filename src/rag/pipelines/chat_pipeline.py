@@ -44,28 +44,28 @@ class ChatPipeline:
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
-    async def chat(self, question: str) -> AsyncIterator[str]:
+    async def chat(self, question: str | Query) -> AsyncIterator[str]:
         """Return a token stream for *question*.
 
         Callers iterate with:
             async for token in await pipeline.chat(question):
                 yield token
         """
-        query = Query(text=question)
+        query = question if isinstance(question, Query) else Query(text=question)
         result = await self._retrieval.retrieve(query)
-        return self._generation.stream(question, result.context)
+        return self._generation.stream(query.text, result.context)
 
-    async def chat_full(self, question: str) -> Answer:
+    async def chat_full(self, question: str | Query) -> Answer:
         """Run the full pipeline and return a complete "Answer".
 
         Useful for non-streaming contexts (tests, scripts).
         """
+        query = question if isinstance(question, Query) else Query(text=question)
         t0 = time.monotonic()
-        query = Query(text=question)
         result = await self._retrieval.retrieve(query)
 
         sources = [chunk_id for c in result.chunks for chunk_id in chunk_source_ids(c)]
-        answer = self._generation.generate(question, result.context, sources)
+        answer = self._generation.generate(query.text, result.context, sources)
 
         elapsed = (time.monotonic() - t0) * 1000
         token_count = len(answer.text.split())

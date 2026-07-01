@@ -4,12 +4,14 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.domain.repositories.vector_store_repository import SearchResult
 from src.rag.enrichment.document_augmentation import resolve_synthetic_questions
 from src.rag.ranking.score_fusion import rrf_fuse, weighted_linear_fuse
 from src.rag.retrieval.bm25_retriever import BM25Retriever
 from src.rag.retrieval.dense_retriever import DenseRetriever
+from src.rag.retrieval.filters import apply_chunk_filters, apply_min_score
 
 if TYPE_CHECKING:
     from src.rag.retrieval.graph_retriever import GraphRetriever
@@ -72,10 +74,17 @@ class HybridRetriever:
 
         tasks = [
             asyncio.to_thread(self._dense.retrieve, query, expansion),
-            asyncio.to_thread(self._bm25.search, query.text, expansion),
+            asyncio.to_thread(self._bm25.search, query.text, expansion, filters=query.filters),
         ]
         if self._graph is not None:
-            tasks.append(asyncio.to_thread(self._graph.search, query.text, expansion))
+            tasks.append(
+                asyncio.to_thread(
+                    self._graph.search,
+                    query.text,
+                    expansion,
+                    filters=query.filters,
+                )
+            )
         if self._hype is not None:
             tasks.append(asyncio.to_thread(self._hype.retrieve, query, expansion))
         if self._hyde is not None and use_hyde:
@@ -84,36 +93,50 @@ class HybridRetriever:
             tasks.append(asyncio.to_thread(self._hierarchical.retrieve, query, expansion))
 
         gathered = await asyncio.gather(*tasks)
-        dense_results = resolve_synthetic_questions(
-            gathered[0],
-            lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+
+        def lookup(chunk_id: str) -> Chunk | None:
+            chunk = self._bm25.get_by_id(chunk_id)
+            return chunk if isinstance(chunk, Chunk) else None
+
+        dense_results = apply_min_score(
+            apply_chunk_filters(resolve_synthetic_questions(gathered[0], lookup), query.filters),
+            query.filters,
         )
-        bm25_results = resolve_synthetic_questions(
-            gathered[1],
-            lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+        bm25_results = apply_chunk_filters(
+            resolve_synthetic_questions(gathered[1], lookup),
+            query.filters,
         )
         graph_idx = 2
         graph_results: list[SearchResult] = []
         if self._graph is not None:
-            graph_results = resolve_synthetic_questions(
-                gathered[graph_idx],
-                lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+            graph_results = apply_chunk_filters(
+                resolve_synthetic_questions(gathered[graph_idx], lookup),
+                query.filters,
             )
             graph_idx += 1
         hype_results: list[SearchResult] = []
         if self._hype is not None:
-            hype_results = gathered[graph_idx]
+            hype_results = apply_min_score(
+                apply_chunk_filters(gathered[graph_idx], query.filters),
+                query.filters,
+            )
             graph_idx += 1
         hyde_results: list[SearchResult] = []
         if self._hyde is not None and use_hyde:
-            hyde_results = resolve_synthetic_questions(
-                gathered[graph_idx],
-                lambda chunk_id: self._bm25.get_by_id(chunk_id),  # type: ignore[arg-type, return-value]
+            hyde_results = apply_min_score(
+                apply_chunk_filters(
+                    resolve_synthetic_questions(gathered[graph_idx], lookup),
+                    query.filters,
+                ),
+                query.filters,
             )
             graph_idx += 1
         hierarchical_results: list[SearchResult] = []
         if self._hierarchical is not None:
-            hierarchical_results = gathered[graph_idx]
+            hierarchical_results = apply_min_score(
+                apply_chunk_filters(gathered[graph_idx], query.filters),
+                query.filters,
+            )
 
         hyde_active = self._hyde is not None and use_hyde
         if (
