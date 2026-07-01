@@ -226,11 +226,17 @@ class AgentPipeline:
         for iteration in range(max_iter):
             step = SelfRAGStepDecision(iteration=iteration + 1)
 
-            ret_dec = decide_retrieval(search_query, llm)
-            step.need_retrieval = ret_dec.need_retrieval
-            step.retrieval_reasoning = ret_dec.reasoning
+            skip_retrieval_gate = bool(actions) and actions[-1] == AgentAction.RETRIEVE_MORE
 
-            if not ret_dec.need_retrieval:
+            if skip_retrieval_gate:
+                step.need_retrieval = True
+                step.retrieval_reasoning = "utility gate requested reretrieve"
+            else:
+                ret_dec = decide_retrieval(search_query, llm)
+                step.need_retrieval = ret_dec.need_retrieval
+                step.retrieval_reasoning = ret_dec.reasoning
+
+            if not step.need_retrieval:
                 draft = self._pipeline.generation.generate_direct(question)
                 util = score_utility(question, draft.text, "", llm)
                 result, search_query = self._self_rag_handle_scored_utility(
