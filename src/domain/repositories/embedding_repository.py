@@ -30,6 +30,16 @@ class EmbeddingRepository(ABC):
         """
         return self.embed(texts)
 
+    def embed_passage(self, texts: list[str]) -> list[DenseVector]:
+        """Return one dense vector per passage text for passage-to-passage similarity.
+
+        Used by MMR diversity ranking and other steps that compare chunk texts
+        in document embedding space.  Providers with separate query/document
+        modes (Cohere, Voyage, Gemini) must keep this on the document path —
+        the default delegates to embed().
+        """
+        return self.embed(texts)
+
     def embed_both(self, texts: list[str]) -> tuple[list[DenseVector], list[SparseVector]]:
         """Return (dense, sparse) vectors for each text in a single call.
 

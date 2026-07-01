@@ -155,6 +155,11 @@ class TestEmbeddingRepository:
         assert len(emb.embed(texts)) == 3
         assert len(emb.embed_sparse(texts)) == 3
 
+    def test_embed_passage_delegates_to_embed(self):
+        emb = _Embedder()
+        texts = ["passage one", "passage two"]
+        assert emb.embed_passage(texts) == emb.embed(texts)
+
 
 # ── RerankerRepository ─────────────────────────────────────────────────────────
 

@@ -56,6 +56,9 @@ retrieval:
     max_segment_tokens: 1500
   parent_context:
     enabled: false               # expand child chunks to parent text for LLM context (T-124)
+  diversity:
+    enabled: false               # MMR diversity re-ranking after cross-encoder (T-135)
+    lambda: 0.7                  # 1.0 = pure relevance, 0.0 = max diversity
 
 reranker:
   provider: bge_reranker

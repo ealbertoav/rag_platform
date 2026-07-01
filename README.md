@@ -4,6 +4,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Multi-faceted retrieval filtering (T-134):** `POST /chat` and `POST /chat/full` accept optional `document_ids`, `metadata_filters`, and `min_score` to constrain retrieval at query time. Filters propagate through every hybrid leg — dense (Qdrant), BM25, graph, HyPE, HyDE, and hierarchical — before RRF fusion. `min_score` applies only to cosine-similarity sources (dense and Qdrant-backed retrievers), not BM25 or graph ranks. See [Multi-Faceted Retrieval Filtering (T-134)](#multi-faceted-retrieval-filtering-t-134).
 
+> **Diversity retrieval (T-135):** Optional MMR re-ranking after the cross-encoder reduces near-duplicate chunks in the final context by balancing relevance and pairwise passage similarity. Configure via `retrieval.diversity` in `configs/retrieval.yaml` (`enabled: false` by default). See [Diversity Retrieval — MMR (T-135)](#diversity-retrieval--mmr-t-135).
+
 ---
 
 ## Table of Contents
@@ -70,7 +72,8 @@ flowchart LR
         DS2 --> RF
         BS --> RF
         RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
-        RR --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
+        RR --> DIV["MMR Diversity<br/>(optional · T-135)"]
+        DIV --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
         RSE --> PC["Parent Context<br/>(optional · T-124)"]
         PC --> CC["Contextual Compression<br/>≤ 1500 tokens"]
     end
@@ -237,6 +240,8 @@ RETRIEVAL__ADAPTIVE__ENABLED=false        # LLM query classification + per-categ
 RETRIEVAL__RSE__ENABLED=false             # merge adjacent retrieved chunks (T-123)
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false  # expand child chunks to parent text (T-124; requires parent_child)
+RETRIEVAL__DIVERSITY__ENABLED=false        # MMR diversity re-ranking after cross-encoder (T-135)
+RETRIEVAL__DIVERSITY__LAMBDA=0.7           # 1.0 = pure relevance, 0.0 = max diversity
 QUERY_EXPANSION__STEP_BACK__ENABLED=false # broader background query for multi-query RRF fusion (T-133)
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
@@ -272,7 +277,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -344,7 +349,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` / `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
+Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` / `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -1030,6 +1035,8 @@ Seven providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER
 
 All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`; changing dimensions after indexing requires `--recreate-collection`.
 
+When [MMR diversity (T-135)](#diversity-retrieval--mmr-t-135) is enabled and reranked chunks lack stored vectors, the pipeline calls `embed_passage()` to embed chunk text for pairwise similarity. Cohere (`search_document`), Voyage (`document`), and Gemini (`RETRIEVAL_DOCUMENT`) use their document embedding modes; self-hosted providers and OpenAI delegate to `embed()`.
+
 ```bash
 # Switch to Voyage AI
 EMBEDDINGS__PROVIDER=voyage
@@ -1167,6 +1174,7 @@ rag_implementation/
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
+│   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
@@ -1213,6 +1221,8 @@ RETRIEVAL__ADAPTIVE__ENABLED=false
 RETRIEVAL__RSE__ENABLED=false
 RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false
+RETRIEVAL__DIVERSITY__ENABLED=false
+RETRIEVAL__DIVERSITY__LAMBDA=0.7
 QUERY_EXPANSION__STEP_BACK__ENABLED=false
 CHUNKING__STRATEGY=recursive
 CHUNKING__PROPOSITION__QUALITY_THRESHOLD=7
@@ -1297,7 +1307,8 @@ flowchart TD
     GS -->|entity-matched chunks| RRF
 
     RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
-    RR --> RSE["RSE · Merge Adjacent<br/>consecutive chunk_index<br/>(optional · T-123)"]
+    RR --> MMR["MMR Diversity<br/>relevance − similarity<br/>(optional · T-135)"]
+    MMR --> RSE["RSE · Merge Adjacent<br/>consecutive chunk_index<br/>(optional · T-123)"]
     RSE --> PC["Parent Context<br/>child → parent text<br/>(optional · T-124)"]
     PC --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
     CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
@@ -1308,7 +1319,7 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. When **multi-faceted filters** (T-134) are set on the chat request, they attach to the `Query` entity at the start of the pipeline and constrain every hybrid leg before RRF — document scope and metadata on all retrievers; `min_score` on cosine-similarity legs only (dense, HyPE, HyDE, hierarchical), not BM25 or graph ranks. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional RSE, optional parent context, and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. When **multi-faceted filters** (T-134) are set on the chat request, they attach to the `Query` entity at the start of the pipeline and constrain every hybrid leg before RRF — document scope and metadata on all retrievers; `min_score` on cosine-similarity legs only (dense, HyPE, HyDE, hierarchical), not BM25 or graph ranks. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional MMR diversity (T-135), optional RSE, optional parent context, and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
@@ -1453,6 +1464,37 @@ RETRIEVAL__ADAPTIVE__STRATEGIES__ANALYTICAL__TOP_K=50
 RETRIEVAL__ADAPTIVE__STRATEGIES__ANALYTICAL__HYDE=true
 ```
 
+##### Diversity Retrieval — MMR (T-135)
+
+MMR (Maximal Marginal Relevance) is an optional **query-time** step that runs **after cross-encoder reranking** and **before** RSE, parent context, and compression. It reorders the reranker’s top candidates to reduce near-duplicate passages while preserving high relevance — inspired by lightweight MMR / “dartboard” patterns in advanced RAG pipelines (not full RIG optimization).
+
+Greedy selection maximizes:
+
+```
+λ × relevance − (1 − λ) × max_similarity_to_already_selected
+```
+
+- **Relevance** is derived from reranker order (first chunk = highest).
+- **Similarity** uses cosine distance between passage embeddings (chunk vectors from Qdrant/BM25 when available, otherwise on-the-fly `embed_passage()`).
+- **`lambda: 1.0`** skips the diversity penalty and keeps pure reranker order.
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  diversity:
+    enabled: false       # set true for MMR re-ranking after cross-encoder
+    lambda: 0.7          # 1.0 = pure relevance, 0.0 = max diversity
+```
+
+**When to use:** corpora where reranking often returns several overlapping chunks from the same section (policy manuals, long technical docs, duplicated boilerplate). Pairs well with RSE (T-123): MMR spreads results across distinct topics first; RSE then merges adjacent siblings within each topic.
+
+**Trade-offs:** does not replace the cross-encoder — it reorders its output only. When chunk embeddings are unavailable and no embedder is wired, the step is skipped with a warning (reranker order preserved). API providers with separate query/document modes (Cohere, Voyage, Gemini) embed missing passages via `embed_passage()` on the document path. OTel span `retrieval.diversity` records `chunk_count` and `diversity.lambda`.
+
+```bash
+RETRIEVAL__DIVERSITY__ENABLED=true
+RETRIEVAL__DIVERSITY__LAMBDA=0.7
+```
+
 ##### Relevant Segment Extraction (T-123)
 
 RSE is a **query-time** post-reranking step (not ingest-time). When enabled, adjacent retrieved chunks from the same document — those with consecutive `metadata.chunk_index` values — are merged into longer coherent segments before contextual compression. Parent-level chunks and child chunks are merged separately (siblings sharing the same `parent_id` only). Merged segments respect `max_segment_tokens` and never combine chunks from different documents. Overlapping sibling text from recursive/parent-child chunking is deduplicated at merge boundaries.
@@ -1467,7 +1509,7 @@ retrieval:
     max_segment_tokens: 1500
 ```
 
-**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (passage slices with `chunk_index`). Not for `proposition` strategy — propositions are independent atomic facts and pass through unchanged. Complements parent-child chunking: RSE stitches adjacent sibling children into segments; for expanding a single child hit to its full parent passage, enable [Parent Context (T-124)](#parent-context-on-retrieve-t-124).
+**When to use:** corpora chunked with `recursive`, `semantic`, or `parent_child` strategies (passage slices with `chunk_index`). Not for `proposition` strategy — propositions are independent atomic facts and pass through unchanged. Runs after optional [MMR diversity (T-135)](#diversity-retrieval--mmr-t-135). Complements parent-child chunking: RSE stitches adjacent sibling children into segments; for expanding a single child hit to its full parent passage, enable [Parent Context (T-124)](#parent-context-on-retrieve-t-124).
 
 **Behavior:** merged segments keep the lowest-index chunk's ID as anchor; `metadata.merged_chunk_ids` lists all contributing chunk IDs (also expanded in `Answer.sources` via `chunk_source_ids`). Chunks without `chunk_index` pass through unchanged. Contextual headers (T-120): merged `raw_text` includes all source bodies. OTel span `retrieval.rse` records `merge_count`.
 
@@ -1602,12 +1644,13 @@ gantt
     retrieval.embedding    :420, 620
     retrieval.hybrid       :620, 1020
     retrieval.reranking    :1020, 1320
-    retrieval.rse          :1320, 1370
-    retrieval.parent_context :1370, 1400
-    retrieval.compression  :1400, 1550
+    retrieval.diversity    :1320, 1360
+    retrieval.rse          :1360, 1410
+    retrieval.parent_context :1410, 1440
+    retrieval.compression  :1440, 1590
 
     section generation
-    generation.llm         :1550, 2540
+    generation.llm         :1590, 2540
 ```
 
 Configure the collector endpoint:
@@ -1615,7 +1658,9 @@ Configure the collector endpoint:
 LOGGING__OTEL_ENDPOINT=http://localhost:4317
 ```
 
-When RSE is enabled, span `retrieval.rse` appears between `retrieval.reranking` and `retrieval.parent_context` (or `retrieval.compression` when parent context is off), with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
+When MMR diversity is enabled (`retrieval.diversity.enabled=true`), span `retrieval.diversity` appears between `retrieval.reranking` and `retrieval.rse` (or `retrieval.parent_context` / `retrieval.compression` when downstream steps are off), with attributes `chunk_count` and `diversity.lambda`.
+
+When RSE is enabled, span `retrieval.rse` appears after `retrieval.diversity` (or `retrieval.reranking` when diversity is off) and before `retrieval.parent_context` (or `retrieval.compression` when parent context is off), with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
 
 When adaptive classification is enabled (`retrieval.adaptive.enabled=true`), span `retrieval.adaptive.classification` appears before `retrieval.expansion`, with attribute `query.category` (`factual`, `analytical`, `opinion`, or `contextual`). Span `retrieval.adaptive.strategy` follows immediately with resolved parameters: `retrieval.strategy.top_k`, `retrieval.strategy.n_variants`, `retrieval.strategy.hyde`, and `retrieval.strategy.compression`.
 

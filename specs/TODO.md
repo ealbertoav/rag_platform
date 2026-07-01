@@ -1555,7 +1555,7 @@
 ---
 
 ### T-135 · Diversity Retrieval (MMR / Dartboard-lite)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Reduce redundant chunks in final results by optimizing relevance + diversity — inspired by RAG_Techniques `dartboard.ipynb` (lightweight MMR implementation, not full RIG optimization).
 - **Inputs:** T-023 (reranker output), T-025 (retrieval service)
 - **Outputs:** Optional diversity re-ranking step after cross-encoder, before compression.

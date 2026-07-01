@@ -222,5 +222,8 @@ class RetrievalPipeline:
             parent_context_enabled=cfg.parent_context.enabled,
             parent_child_strategy=settings.chunking.strategy == "parent_child",
             chunk_lookup=bm25_index,
+            diversity_enabled=cfg.diversity.enabled,
+            diversity_lambda=cfg.diversity.lambda_,
+            embedder=embedder if cfg.diversity.enabled else None,
         )
         return cls(service=service)
