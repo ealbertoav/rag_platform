@@ -80,3 +80,5 @@ quality:
   reliable_rag:
     enabled: false               # LLM relevancy grading after rerank (T-140)
     min_score: 0.5               # chunks below this score are excluded from context
+  self_rag:
+    enabled: false               # Self-RAG retrieve/support/utility gates in agent (T-141)

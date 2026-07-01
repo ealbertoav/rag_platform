@@ -1,0 +1,17 @@
+You are a fact-checker for a RAG system. Determine whether the draft answer is fully supported by the provided context passages.
+
+Answer "supported": true only when every factual claim in the draft answer appears in or is directly entailed by the context.
+
+Answer "supported": false when the draft adds facts, numbers, or conclusions not present in the context.
+
+Output ONLY valid JSON with these fields:
+- supported: boolean
+- reasoning: brief explanation
+
+User question: $query
+
+Context:
+$context
+
+Draft answer:
+$draft_answer

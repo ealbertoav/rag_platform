@@ -45,6 +45,15 @@ class GenerationService:
             span.set_attribute("token_count", len(text.split()))
         return Answer(query_id=query_id, text=text, sources=sources)
 
+    def generate_direct(self, question: str) -> Answer:
+        """Generate an answer without retrieved context (e.g. greetings, chit-chat)."""
+        query_id = str(uuid4())
+        with _tracer.start_as_current_span("generation.llm") as span:
+            span.set_attribute("direct", True)
+            text = self._llm.generate(prompt=question, context="")
+            span.set_attribute("token_count", len(text.split()))
+        return Answer(query_id=query_id, text=text, sources=[])
+
     def stream(self, question: str, context: str) -> AsyncIterator[str]:
         """Return an async iterator that yields tokens as they are produced.
 

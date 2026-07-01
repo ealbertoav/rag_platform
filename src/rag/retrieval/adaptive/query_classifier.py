@@ -1,23 +1,21 @@
 from __future__ import annotations
 
-import json
 import logging
-import re
 from enum import StrEnum
 from pathlib import Path
 from string import Template
 
 from opentelemetry import trace
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from src.domain.entities.query import Query
 from src.domain.repositories.llm_repository import LLMRepository
+from src.rag.structured_output import parse_structured_output
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
 
 _PROMPT_PATH = Path(__file__).parents[3] / "prompts" / "retrieval" / "query_classification.txt"
-_JSON_OBJECT = re.compile(r"\{.*}", re.DOTALL)
 
 
 class QueryCategory(StrEnum):
@@ -40,29 +38,7 @@ def _load_prompt() -> Template:
 
 def parse_classification(text: str) -> ClassificationOutput:
     """Parse and validate structured classification JSON from an LLM response."""
-    candidates = [text.strip()]
-    if match := _JSON_OBJECT.search(text):
-        candidates.append(match.group())
-
-    last_error: Exception | None = None
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            return ClassificationOutput.model_validate_json(candidate)
-        except (ValidationError, json.JSONDecodeError, ValueError) as exc:
-            last_error = exc
-            try:
-                data = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            try:
-                return ClassificationOutput.model_validate(data)
-            except ValidationError as nested:
-                last_error = nested
-
-    msg = "Could not parse classification from LLM response"
-    raise ValueError(msg) from last_error
+    return parse_structured_output(text, ClassificationOutput, label="classification")
 
 
 class QueryClassifier:

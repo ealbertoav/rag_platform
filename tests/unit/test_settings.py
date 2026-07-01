@@ -125,6 +125,9 @@ class TestYamlDefaults:
         assert settings.quality.reliable_rag.enabled is False
         assert settings.quality.reliable_rag.min_score == pytest.approx(0.5)
 
+    def test_self_rag_defaults_from_yaml(self):
+        assert settings.quality.self_rag.enabled is False
+
     def test_hierarchical_defaults_from_yaml(self):
         assert settings.chunking.hierarchical.enabled is False
         assert settings.chunking.hierarchical.summary_top_k == 3
