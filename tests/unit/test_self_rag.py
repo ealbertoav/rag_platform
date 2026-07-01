@@ -571,7 +571,7 @@ class TestAgentPipelineSelfRAG:
         assert result.actions == [AgentAction.CLARIFY]
 
     @pytest.mark.asyncio
-    async def test_supported_reretrieve_exhausts_iterations(self):
+    async def test_supported_reretrieve_exhausts_iterations_returns_last_grounded_draft(self):
         chat = _chat_mock()
         side_effect = [
             json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
@@ -597,9 +597,32 @@ class TestAgentPipelineSelfRAG:
         chat.generation.call_llm.side_effect = side_effect
         pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=2)
         result = await pipeline.chat_full("kubernetes")
-        assert result.answer.text == "I don't have information about this."
-        assert result.actions == [AgentAction.RETRIEVE_MORE, AgentAction.RETRIEVE_MORE]
+        assert result.answer.text == "supported draft answer"
+        assert result.actions == [AgentAction.RETRIEVE_MORE, AgentAction.ANSWER]
+        assert result.self_rag_decisions[-1].utility_action == "reretrieve"
         assert chat.retrieval.retrieve.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retrieval_reretrieve_exhausts_iterations_returns_no_info(self):
+        """Direct drafts skip support check — no grounded draft to fall back to."""
+        chat = _chat_mock(direct_answer="partial guess")
+        side_effect = [
+            json.dumps({"need_retrieval": False, "reasoning": "maybe greeting"}),
+            json.dumps(
+                {
+                    "score": 0.4,
+                    "action": "reretrieve",
+                    "reasoning": "needs docs",
+                    "refined_query": "kubernetes docs",
+                }
+            ),
+        ]
+        chat.generation.call_llm.side_effect = side_effect
+        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=1)
+        result = await pipeline.chat_full("hello")
+        assert result.answer.text == "I don't have information about this."
+        assert result.actions == [AgentAction.RETRIEVE_MORE]
+        chat.retrieval.retrieve.assert_not_called()
 
 
 class TestAgentChatResponseSelfRAG:

@@ -240,7 +240,15 @@ class AgentPipeline:
                 draft = self._pipeline.generation.generate_direct(question)
                 util = score_utility(question, draft.text, "", llm)
                 result, search_query = self._self_rag_handle_scored_utility(
-                    step, util, draft, search_query, question, iteration, actions, decisions
+                    step,
+                    util,
+                    draft,
+                    search_query,
+                    question,
+                    iteration,
+                    max_iter,
+                    actions,
+                    decisions,
                 )
                 if result is not None:
                     return result
@@ -292,7 +300,15 @@ class AgentPipeline:
 
             util = score_utility(question, draft.text, context, llm)
             result, search_query = self._self_rag_handle_scored_utility(
-                step, util, draft, search_query, question, iteration, actions, decisions
+                step,
+                util,
+                draft,
+                search_query,
+                question,
+                iteration,
+                max_iter,
+                actions,
+                decisions,
             )
             if result is not None:
                 return result
@@ -312,6 +328,7 @@ class AgentPipeline:
         search_query: str,
         question: str,
         iteration: int,
+        max_iterations: int,
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
     ) -> tuple[AgentRunResult | None, str]:
@@ -322,6 +339,17 @@ class AgentPipeline:
             util, draft, question, iteration, actions, decisions
         ):
             return finished, search_query
+        if iteration == max_iterations - 1 and step.supported is True:
+            actions.append(AgentAction.ANSWER)
+            return (
+                AgentRunResult(
+                    answer=draft,
+                    iterations=iteration + 1,
+                    actions=actions,
+                    self_rag_decisions=decisions,
+                ),
+                search_query,
+            )
         actions.append(AgentAction.RETRIEVE_MORE)
         next_query = util.refined_query or search_query
         return None, next_query
