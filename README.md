@@ -6,6 +6,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Diversity retrieval (T-135):** Optional MMR re-ranking after the cross-encoder reduces near-duplicate chunks in the final context by balancing relevance and pairwise passage similarity. Configure via `retrieval.diversity` in `configs/retrieval.yaml` (`enabled: false` by default). See [Diversity Retrieval — MMR (T-135)](#diversity-retrieval--mmr-t-135).
 
+> **Reliable RAG relevancy grading (T-140):** Optional LLM quality gate after RSE and parent-context expansion grades each passage against the query (using the same `chunk_context_text` sent to compression/generation) and drops chunks below `quality.reliable_rag.min_score`. When all passages fail, generation returns *"I don't have information about this."* Configure via `quality.reliable_rag` in `configs/retrieval.yaml` (`enabled: false` by default). See [Reliable RAG — Document Relevancy Grading (T-140)](#reliable-rag--document-relevancy-grading-t-140).
+
 ---
 
 ## Table of Contents
@@ -75,7 +77,8 @@ flowchart LR
         RR --> DIV["MMR Diversity<br/>(optional · T-135)"]
         DIV --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
         RSE --> PC["Parent Context<br/>(optional · T-124)"]
-        PC --> CC["Contextual Compression<br/>≤ 1500 tokens"]
+        PC --> RRAG["Reliable RAG<br/>LLM relevancy grade<br/>(optional · T-140)"]
+        RRAG --> CC["Contextual Compression<br/>≤ 1500 tokens"]
     end
 
     subgraph GENERATE["💬 Generation Pipeline"]
@@ -242,6 +245,8 @@ RETRIEVAL__RSE__MAX_SEGMENT_TOKENS=1500
 RETRIEVAL__PARENT_CONTEXT__ENABLED=false  # expand child chunks to parent text (T-124; requires parent_child)
 RETRIEVAL__DIVERSITY__ENABLED=false        # MMR diversity re-ranking after cross-encoder (T-135)
 RETRIEVAL__DIVERSITY__LAMBDA=0.7           # 1.0 = pure relevance, 0.0 = max diversity
+QUALITY__RELIABLE_RAG__ENABLED=false       # LLM relevancy grading after enrichment (T-140)
+QUALITY__RELIABLE_RAG__MIN_SCORE=0.5       # chunks below this score excluded from context
 QUERY_EXPANSION__STEP_BACK__ENABLED=false # broader background query for multi-query RRF fusion (T-133)
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
@@ -277,7 +282,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, hybrid fusion, reranker |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -349,7 +354,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124) are configured under `retrieval.*` / `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
+Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -1170,10 +1175,12 @@ rag_implementation/
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
 │   │   ├── ingestion/          # chunk_header_template · extract_propositions · generate_chunk_questions · generate_document_summary
+│   │   ├── quality/              # relevance_grading (T-140)
 │   │   └── retrieval/          # query_expansion · step_back · query_classification · hyde_generate · entity_extraction · agent_decision
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
+│   │   ├── quality/            # Reliable RAG relevancy grading (T-140)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
@@ -1310,16 +1317,18 @@ flowchart TD
     RR --> MMR["MMR Diversity<br/>relevance − similarity<br/>(optional · T-135)"]
     MMR --> RSE["RSE · Merge Adjacent<br/>consecutive chunk_index<br/>(optional · T-123)"]
     RSE --> PC["Parent Context<br/>child → parent text<br/>(optional · T-124)"]
-    PC --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
+    PC --> RRAG["Reliable RAG<br/>LLM relevancy grade<br/>filter by min_score<br/>(optional · T-140)"]
+    RRAG --> CTX["Contextual Compression<br/>LLM extracts relevant sentences<br/>≤ 1500 tokens"]
     CTX --> GEN["🤖 Generation<br/>llama.cpp · Qwen3-30B"]
     GEN --> ANS["💬 Streamed Answer<br/>+ source chunk IDs"]
 
     style FILT fill:#fff8e6,stroke:#cc9900
+    style RRAG fill:#fff8e6,stroke:#cc9900
     style RRF fill:#f0f0ff,stroke:#6666cc
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. When **multi-faceted filters** (T-134) are set on the chat request, they attach to the `Query` entity at the start of the pipeline and constrain every hybrid leg before RRF — document scope and metadata on all retrievers; `min_score` on cosine-similarity legs only (dense, HyPE, HyDE, hierarchical), not BM25 or graph ranks. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional MMR diversity (T-135), optional RSE, optional parent context, and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. When **multi-faceted filters** (T-134) are set on the chat request, they attach to the `Query` entity at the start of the pipeline and constrain every hybrid leg before RRF — document scope and metadata on all retrievers; `min_score` on cosine-similarity legs only (dense, HyPE, HyDE, hierarchical), not BM25 or graph ranks. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional MMR diversity (T-135), optional RSE, optional parent context, optional Reliable RAG relevancy grading (T-140), and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
@@ -1466,7 +1475,7 @@ RETRIEVAL__ADAPTIVE__STRATEGIES__ANALYTICAL__HYDE=true
 
 ##### Diversity Retrieval — MMR (T-135)
 
-MMR (Maximal Marginal Relevance) is an optional **query-time** step that runs **after cross-encoder reranking** and **before** RSE, parent context, and compression. It reorders the reranker’s top candidates to reduce near-duplicate passages while preserving high relevance — inspired by lightweight MMR / “dartboard” patterns in advanced RAG pipelines (not full RIG optimization).
+MMR (Maximal Marginal Relevance) is an optional **query-time** step that runs **after cross-encoder reranking** and **before** RSE, parent context, Reliable RAG grading, and compression. It reorders the reranker’s top candidates to reduce near-duplicate passages while preserving high relevance — inspired by lightweight MMR / “dartboard” patterns in advanced RAG pipelines (not full RIG optimization).
 
 Greedy selection maximizes:
 
@@ -1497,7 +1506,7 @@ RETRIEVAL__DIVERSITY__LAMBDA=0.7
 
 ##### Relevant Segment Extraction (T-123)
 
-RSE is a **query-time** post-reranking step (not ingest-time). When enabled, adjacent retrieved chunks from the same document — those with consecutive `metadata.chunk_index` values — are merged into longer coherent segments before contextual compression. Parent-level chunks and child chunks are merged separately (siblings sharing the same `parent_id` only). Merged segments respect `max_segment_tokens` and never combine chunks from different documents. Overlapping sibling text from recursive/parent-child chunking is deduplicated at merge boundaries.
+RSE is a **query-time** post-reranking step (not ingest-time). When enabled, adjacent retrieved chunks from the same document — those with consecutive `metadata.chunk_index` values — are merged into longer coherent segments before parent context expansion and downstream quality gates. Parent-level chunks and child chunks are merged separately (siblings sharing the same `parent_id` only). Merged segments respect `max_segment_tokens` and never combine chunks from different documents. Overlapping sibling text from recursive/parent-child chunking is deduplicated at merge boundaries.
 
 RSE adds no extra LLM or API calls at query time. It is especially useful when reranking returns several neighboring chunks from the same passage.
 
@@ -1538,11 +1547,44 @@ When a parent chunk cannot be found (e.g. index rebuilt without parents), the pi
 
 **When to use:** corpora indexed with `chunking.strategy: parent_child`, where child chunks improve retrieval precision but parent passages provide better generation context. Complements RSE (T-123): RSE merges adjacent sibling children; parent context expands a single child hit to its parent window.
 
-**Behavior:** parent text is stored in `metadata.parent_context_text` and takes priority in `chunk_context_text()` for LLM prompts. Contextual headers (T-120) on the parent are respected (uses `raw_text` when present). OTel span `retrieval.parent_context` records `resolved_count` (children expanded) and `chunk_count`.
+**Behavior:** parent text is stored in `metadata.parent_context_text` and takes priority in `chunk_context_text()` for LLM prompts. Contextual headers (T-120) on the parent are respected (uses `raw_text` when present). When [Reliable RAG relevancy grading (T-140)](#reliable-rag--document-relevancy-grading-t-140) is enabled, grading runs **after** parent expansion and scores the parent passage (not the child slice). OTel span `retrieval.parent_context` records `resolved_count` (children expanded) and `chunk_count`.
 
 ```bash
 CHUNKING__STRATEGY=parent_child
 RETRIEVAL__PARENT_CONTEXT__ENABLED=true
+```
+
+##### Reliable RAG — Document Relevancy Grading (T-140)
+
+Reliable RAG is an optional **query-time quality gate** inspired by [Reliable RAG](https://github.com/NirDiamant/RAG_Techniques) patterns. After cross-encoder reranking and optional enrichment (MMR diversity, RSE, parent context), an LLM grades each surviving passage for relevancy to the query. Chunks below `min_score` are excluded before contextual compression and generation.
+
+**Pipeline position:** runs **after** RSE (T-123) and parent context (T-124), **before** contextual compression — so grading evaluates the same text the generator will see (`chunk_context_text()`), including expanded parent bodies, RSE-merged segments, and CCH `raw_text` (not header-prefixed embed text). Sibling children sharing the same parent context are graded once as a group (matching `join_chunk_context` deduplication).
+
+```yaml
+# configs/retrieval.yaml
+quality:
+  reliable_rag:
+    enabled: false       # set true for LLM relevancy grading before compression
+    min_score: 0.5       # passages below this score are dropped (0.0–1.0)
+```
+
+**Structured LLM output** (per passage group):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `chunk_id` | string | Representative chunk ID (citation anchor preserved) |
+| `relevance_score` | float | 0.0 (irrelevant) – 1.0 (highly relevant) |
+| `supporting` | bool | Whether the passage directly supports answering the query |
+
+Passed chunks receive `metadata.relevance_score` and `metadata.relevance_supporting` for tracing and downstream use (T-141 Self-RAG, T-143 explainable retrieval).
+
+**When to use:** production deployments where weak retrieval should not reach the generator; corpora with noisy hybrid recall; parent-child indexes where a precise child hit might expand to a broader parent passage that is only partially relevant.
+
+**Trade-offs:** one extra LLM call per query when enabled (batched over all passage groups in a single prompt). LLM or parse failures degrade gracefully — all input chunks are kept and a warning is logged. When every passage is filtered, `join_chunk_context` returns empty text and `GenerationService` responds with exactly *"I don't have information about this."* (no hallucination). OTel span `retrieval.relevance_grading` records `relevance.pass_count`, `relevance.fail_count`, `relevance.min_score`, and `chunk_count`.
+
+```bash
+QUALITY__RELIABLE_RAG__ENABLED=true
+QUALITY__RELIABLE_RAG__MIN_SCORE=0.5
 ```
 
 ##### Multi-Faceted Retrieval Filtering (T-134)
@@ -1632,7 +1674,7 @@ flowchart LR
 
 ```mermaid
 gantt
-    title Request Trace (example · 2.3 s total)
+    title Request Trace (example · 2.4 s total)
     dateFormat  x
     axisFormat  %L ms
 
@@ -1647,10 +1689,11 @@ gantt
     retrieval.diversity    :1320, 1360
     retrieval.rse          :1360, 1410
     retrieval.parent_context :1410, 1440
-    retrieval.compression  :1440, 1590
+    retrieval.relevance_grading :1440, 1520
+    retrieval.compression  :1520, 1670
 
     section generation
-    generation.llm         :1590, 2540
+    generation.llm         :1670, 2620
 ```
 
 Configure the collector endpoint:
@@ -1658,9 +1701,9 @@ Configure the collector endpoint:
 LOGGING__OTEL_ENDPOINT=http://localhost:4317
 ```
 
-When MMR diversity is enabled (`retrieval.diversity.enabled=true`), span `retrieval.diversity` appears between `retrieval.reranking` and `retrieval.rse` (or `retrieval.parent_context` / `retrieval.compression` when downstream steps are off), with attributes `chunk_count` and `diversity.lambda`.
+When MMR diversity is enabled (`retrieval.diversity.enabled=true`), span `retrieval.diversity` appears between `retrieval.reranking` and `retrieval.rse` (or `retrieval.parent_context` / `retrieval.relevance_grading` / `retrieval.compression` when downstream steps are off), with attributes `chunk_count` and `diversity.lambda`.
 
-When RSE is enabled, span `retrieval.rse` appears after `retrieval.diversity` (or `retrieval.reranking` when diversity is off) and before `retrieval.parent_context` (or `retrieval.compression` when parent context is off), with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
+When RSE is enabled, span `retrieval.rse` appears after `retrieval.diversity` (or `retrieval.reranking` when diversity is off) and before `retrieval.parent_context` (or `retrieval.relevance_grading` / `retrieval.compression` when parent context is off), with attributes `merge_count` (chunk boundaries eliminated) and `chunk_count` (segments after merging).
 
 When adaptive classification is enabled (`retrieval.adaptive.enabled=true`), span `retrieval.adaptive.classification` appears before `retrieval.expansion`, with attribute `query.category` (`factual`, `analytical`, `opinion`, or `contextual`). Span `retrieval.adaptive.strategy` follows immediately with resolved parameters: `retrieval.strategy.top_k`, `retrieval.strategy.n_variants`, `retrieval.strategy.hyde`, and `retrieval.strategy.compression`.
 
@@ -1668,7 +1711,9 @@ When step-back is enabled (`query_expansion.step_back.enabled=true`), the step-b
 
 When HyDE is enabled globally (`retrieval.hyde.enabled=true`) or per-category via adaptive strategies, span `retrieval.hyde` appears during hybrid retrieval (inside the per-variant search path), with attribute `hypothetical_doc_length` (characters in the LLM-generated passage). On failure the span still records `hypothetical_doc_length=0`.
 
-When parent context is enabled (`chunking.strategy=parent_child` and `retrieval.parent_context.enabled=true`), span `retrieval.parent_context` appears between `retrieval.rse` (or `retrieval.reranking` when RSE is off) and `retrieval.compression`, with attributes `resolved_count` (child chunks expanded to parent text) and `chunk_count`.
+When parent context is enabled (`chunking.strategy=parent_child` and `retrieval.parent_context.enabled=true`), span `retrieval.parent_context` appears between `retrieval.rse` (or `retrieval.reranking` when RSE is off) and `retrieval.relevance_grading` (or `retrieval.compression` when Reliable RAG is off), with attributes `resolved_count` (child chunks expanded to parent text) and `chunk_count`.
+
+When Reliable RAG relevancy grading is enabled (`quality.reliable_rag.enabled=true`), span `retrieval.relevance_grading` appears between `retrieval.parent_context` (or `retrieval.rse` / `retrieval.reranking` when upstream enrichment is off) and `retrieval.compression`, with attributes `relevance.pass_count`, `relevance.fail_count`, `relevance.min_score`, and `chunk_count`.
 
 ### Prometheus Metrics
 

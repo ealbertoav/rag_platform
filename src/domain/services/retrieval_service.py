@@ -27,6 +27,7 @@ from src.rag.retrieval.query_expansion import QueryExpander
 
 if TYPE_CHECKING:
     from src.domain.repositories.embedding_repository import EmbeddingRepository
+    from src.domain.repositories.llm_repository import LLMRepository
     from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
     from src.rag.retrieval.adaptive.strategies import (
         AdaptiveStrategyRegistry,
@@ -54,6 +55,7 @@ class RetrievalService:
     - no "query_expander" → single-query retrieval
     - no "reranker"       → hybrid results passed directly to compression
     - no "compressor"     → raw reranked chunks used as context
+    - no "reliable_rag"   → all reranked/enriched chunks reach compression
     """
 
     def __init__(
@@ -76,6 +78,9 @@ class RetrievalService:
         diversity_enabled: bool = False,
         diversity_lambda: float = 0.7,
         embedder: EmbeddingRepository | None = None,
+        reliable_rag_enabled: bool = False,
+        reliable_rag_min_score: float = 0.5,
+        llm: LLMRepository | None = None,
     ) -> None:
         self._dense = dense_retriever
         self._hybrid = hybrid_retriever
@@ -94,6 +99,9 @@ class RetrievalService:
         self._diversity_enabled = diversity_enabled
         self._diversity_lambda = diversity_lambda
         self._embedder = embedder
+        self._reliable_rag_enabled = reliable_rag_enabled
+        self._reliable_rag_min_score = reliable_rag_min_score
+        self._llm = llm
 
     @property
     def hybrid(self) -> HybridRetriever:
@@ -151,6 +159,15 @@ class RetrievalService:
                 chunks = drop_redundant_parent_hits(chunks)
                 span.set_attribute("resolved_count", resolved_count)
                 span.set_attribute("chunk_count", len(chunks))
+
+        # 5b. Reliable RAG relevance grading (optional, after enrichment, before compression)
+        if self._reliable_rag_enabled:
+            with _tracer.start_as_current_span("retrieval.relevance_grading") as span:
+                chunks, pass_count, fail_count = self._apply_relevance_grading(query.text, chunks)
+                span.set_attribute("chunk_count", len(chunks))
+                span.set_attribute("relevance.pass_count", pass_count)
+                span.set_attribute("relevance.fail_count", fail_count)
+                span.set_attribute("relevance.min_score", self._reliable_rag_min_score)
 
         # 6. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
@@ -240,6 +257,28 @@ class RetrievalService:
         if self._reranker is None or not chunks:
             return chunks
         return self._reranker.rerank(query_text, chunks, top_k=self._top_k_rerank)
+
+    def _apply_relevance_grading(
+        self,
+        query_text: str,
+        chunks: list[Chunk],
+    ) -> tuple[list[Chunk], int, int]:
+        if not chunks:
+            return [], 0, 0
+        if self._llm is None:
+            logger.warning(
+                "Reliable RAG enabled but no LLM configured — skipping relevance grading"
+            )
+            return chunks, len(chunks), 0
+
+        from src.rag.quality.reliable_rag import grade_relevance
+
+        return grade_relevance(
+            query_text,
+            chunks,
+            self._llm,
+            min_score=self._reliable_rag_min_score,
+        )
 
     def _apply_diversity(self, chunks: list[Chunk]) -> list[Chunk]:
         if not chunks:

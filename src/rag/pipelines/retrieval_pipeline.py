@@ -225,5 +225,8 @@ class RetrievalPipeline:
             diversity_enabled=cfg.diversity.enabled,
             diversity_lambda=cfg.diversity.lambda_,
             embedder=embedder if cfg.diversity.enabled else None,
+            reliable_rag_enabled=settings.quality.reliable_rag.enabled,
+            reliable_rag_min_score=settings.quality.reliable_rag.min_score,
+            llm=llm if settings.quality.reliable_rag.enabled else None,
         )
         return cls(service=service)

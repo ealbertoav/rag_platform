@@ -1588,7 +1588,7 @@
 ---
 
 ### T-140 · Reliable RAG — Document Relevancy Grading
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** After reranking, grade each chunk's relevancy to the query using structured LLM output. Filter irrelevant chunks before compression/generation — inspired by RAG_Techniques `reliable_rag.ipynb`.
 - **Inputs:** T-023 (reranker output), T-030 (LLM), T-025 (retrieval service)
 - **Outputs:** Chunks below relevancy threshold discarded; empty context triggers "insufficient information" response.
