@@ -180,9 +180,33 @@ class SelfRAGSettings(BaseModel):
     enabled: bool = False
 
 
+class CRAGSettings(BaseModel):
+    enabled: bool = False
+    lower_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    upper_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def thresholds_ordered(self) -> CRAGSettings:
+        if self.lower_threshold > self.upper_threshold:
+            msg = "quality.crag.lower_threshold must be <= upper_threshold"
+            raise ValueError(msg)
+        return self
+
+
+class TavilySearchConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+
+
+class WebSearchSettings(BaseModel):
+    provider: Literal["none", "duckduckgo", "tavily"] = "none"
+    max_results: int = Field(default=5, ge=1, le=20)
+    tavily: TavilySearchConfig = Field(default_factory=TavilySearchConfig)
+
+
 class QualitySettings(BaseModel):
     reliable_rag: ReliableRAGSettings = Field(default_factory=ReliableRAGSettings)
     self_rag: SelfRAGSettings = Field(default_factory=SelfRAGSettings)
+    crag: CRAGSettings = Field(default_factory=CRAGSettings)
 
 
 class RetrievalSettings(BaseModel):
@@ -319,6 +343,7 @@ class Settings(BaseSettings):
     query_expansion: QueryExpansionSettings = Field(default_factory=QueryExpansionSettings)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
     quality: QualitySettings = Field(default_factory=QualitySettings)
+    web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
     api: APISettings = Field(default_factory=APISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
