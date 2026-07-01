@@ -231,10 +231,10 @@ class AgentPipeline:
             step.retrieval_reasoning = ret_dec.reasoning
 
             if not ret_dec.need_retrieval:
-                draft = self._pipeline.generation.generate_direct(search_query)
-                util = score_utility(search_query, draft.text, "", llm)
+                draft = self._pipeline.generation.generate_direct(question)
+                util = score_utility(question, draft.text, "", llm)
                 result, search_query = self._self_rag_handle_scored_utility(
-                    step, util, draft, search_query, iteration, actions, decisions
+                    step, util, draft, search_query, question, iteration, actions, decisions
                 )
                 if result is not None:
                     return result
@@ -246,47 +246,47 @@ class AgentPipeline:
             sources = [chunk_id for c in retrieval.chunks for chunk_id in chunk_source_ids(c)]
 
             if not context.strip():
-                util = score_utility(search_query, "", "", llm)
+                util = score_utility(question, "", "", llm)
                 _record_utility_on_step(step, util)
                 decisions.append(step)
                 if iteration == max_iter - 1:
                     actions.append(AgentAction.RETRIEVE_MORE)
                     return self._self_rag_no_info_result(
-                        search_query, iteration + 1, actions, decisions
+                        question, iteration + 1, actions, decisions
                     )
                 actions.append(AgentAction.RETRIEVE_MORE)
                 if util.refined_query:
                     search_query = util.refined_query
                 continue
 
-            draft = self._pipeline.generation.generate(search_query, context, sources)
+            draft = self._pipeline.generation.generate(question, context, sources)
 
-            support = check_support(search_query, draft.text, context, llm)
+            support = check_support(question, draft.text, context, llm)
             step.supported = support.supported
             step.support_reasoning = support.reasoning
 
             if not support.supported:
-                util = score_utility(search_query, draft.text, context, llm)
+                util = score_utility(question, draft.text, context, llm)
                 _record_utility_on_step(step, util)
                 decisions.append(step)
                 if iteration == max_iter - 1:
                     actions.append(AgentAction.RETRIEVE_MORE)
                     return self._self_rag_no_info_result(
-                        search_query, iteration + 1, actions, decisions
+                        question, iteration + 1, actions, decisions
                     )
                 if util.action == UtilityAction.REFUSE:
                     actions.append(AgentAction.CLARIFY)
                     return self._self_rag_no_info_result(
-                        search_query, iteration + 1, actions, decisions
+                        question, iteration + 1, actions, decisions
                     )
                 actions.append(AgentAction.RETRIEVE_MORE)
                 if util.refined_query:
                     search_query = util.refined_query
                 continue
 
-            util = score_utility(search_query, draft.text, context, llm)
+            util = score_utility(question, draft.text, context, llm)
             result, search_query = self._self_rag_handle_scored_utility(
-                step, util, draft, search_query, iteration, actions, decisions
+                step, util, draft, search_query, question, iteration, actions, decisions
             )
             if result is not None:
                 return result
@@ -304,6 +304,7 @@ class AgentPipeline:
         util: UtilityScore,
         draft: Answer,
         search_query: str,
+        question: str,
         iteration: int,
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
@@ -312,7 +313,7 @@ class AgentPipeline:
         _record_utility_on_step(step, util)
         decisions.append(step)
         if finished := self._self_rag_finish_from_utility(
-            util, draft, search_query, iteration, actions, decisions
+            util, draft, question, iteration, actions, decisions
         ):
             return finished, search_query
         actions.append(AgentAction.RETRIEVE_MORE)
@@ -323,7 +324,7 @@ class AgentPipeline:
         self,
         util: UtilityScore,
         draft: Answer,
-        search_query: str,
+        question: str,
         iteration: int,
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
@@ -338,7 +339,7 @@ class AgentPipeline:
             )
         if util.action == UtilityAction.REFUSE:
             actions.append(AgentAction.CLARIFY)
-            return self._self_rag_no_info_result(search_query, iteration + 1, actions, decisions)
+            return self._self_rag_no_info_result(question, iteration + 1, actions, decisions)
         return None
 
     def _self_rag_no_info_result(
@@ -470,12 +471,9 @@ class AgentPipeline:
 
     @staticmethod
     async def _stream_answer_text(text: str) -> AsyncIterator[str]:
-        words = text.split()
-        for index, word in enumerate(words):
-            if index < len(words) - 1:
-                yield word + " "
-            else:
-                yield word
+        """Stream a pre-generated answer without altering its whitespace."""
+        if text:
+            yield text
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────

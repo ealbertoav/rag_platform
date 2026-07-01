@@ -337,6 +337,54 @@ class TestAgentPipelineSelfRAG:
         assert "".join(tokens) == "supported draft answer"
 
     @pytest.mark.asyncio
+    async def test_chat_stream_preserves_whitespace(self):
+        formatted = "Line one\n\n  - bullet\n  - item"
+        chat = _chat_mock(draft_answer=formatted)
+        chat.generation.call_llm.side_effect = _self_rag_responses()
+        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True)
+        stream = await pipeline.chat("kubernetes question")
+        tokens = [token async for token in stream]
+        assert "".join(tokens) == formatted
+
+    @pytest.mark.asyncio
+    async def test_generate_uses_original_question_after_reretrieve(self):
+        original = "tell me about k8s"
+        chat = _chat_mock()
+        side_effect = [
+            json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
+            json.dumps({"supported": False, "reasoning": "not grounded"}),
+            json.dumps(
+                {
+                    "score": 0.2,
+                    "action": "reretrieve",
+                    "reasoning": "try better query",
+                    "refined_query": "kubernetes deployment steps",
+                }
+            ),
+            json.dumps({"need_retrieval": True, "reasoning": "retry"}),
+            json.dumps({"supported": True, "reasoning": "grounded"}),
+            json.dumps(
+                {
+                    "score": 0.9,
+                    "action": "accept",
+                    "reasoning": "good",
+                    "refined_query": "",
+                }
+            ),
+        ]
+        chat.generation.call_llm.side_effect = side_effect
+        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=3)
+        await pipeline.chat_full(original)
+
+        assert chat.generation.generate.call_count == 2  # type: ignore[attr-defined]
+        for call in chat.generation.generate.call_args_list:  # type: ignore[attr-defined]
+            assert call.args[0] == original
+
+        second_query = chat.retrieval.retrieve.await_args_list[1].args[0].text
+        assert second_query == "kubernetes deployment steps"
+        assert second_query != original
+
+    @pytest.mark.asyncio
     async def test_empty_context_retries_with_refined_query(self):
         chat = _chat_mock()
         chat.retrieval.retrieve = AsyncMock(
