@@ -261,16 +261,18 @@ class AgentPipeline:
 
             if not context.strip():
                 util = score_utility(question, "", "", llm)
-                _record_utility_on_step(step, util)
-                decisions.append(step)
-                if iteration == max_iter - 1:
-                    actions.append(AgentAction.RETRIEVE_MORE)
-                    return self._self_rag_no_info_result(
-                        question, iteration + 1, actions, decisions
-                    )
-                actions.append(AgentAction.RETRIEVE_MORE)
-                if util.refined_query:
-                    search_query = util.refined_query
+                result, search_query = self._self_rag_continue_on_utility_retry(
+                    step,
+                    util,
+                    search_query,
+                    question,
+                    iteration,
+                    max_iter,
+                    actions,
+                    decisions,
+                )
+                if result is not None:
+                    return result
                 continue
 
             draft = self._pipeline.generation.generate(question, context, sources)
@@ -281,21 +283,18 @@ class AgentPipeline:
 
             if not support.supported:
                 util = score_utility(question, draft.text, context, llm)
-                _record_utility_on_step(step, util)
-                decisions.append(step)
-                if iteration == max_iter - 1:
-                    actions.append(AgentAction.RETRIEVE_MORE)
-                    return self._self_rag_no_info_result(
-                        question, iteration + 1, actions, decisions
-                    )
-                if util.action == UtilityAction.REFUSE:
-                    actions.append(AgentAction.CLARIFY)
-                    return self._self_rag_no_info_result(
-                        question, iteration + 1, actions, decisions
-                    )
-                actions.append(AgentAction.RETRIEVE_MORE)
-                if util.refined_query:
-                    search_query = util.refined_query
+                result, search_query = self._self_rag_continue_on_utility_retry(
+                    step,
+                    util,
+                    search_query,
+                    question,
+                    iteration,
+                    max_iter,
+                    actions,
+                    decisions,
+                )
+                if result is not None:
+                    return result
                 continue
 
             util = score_utility(question, draft.text, context, llm)
@@ -319,6 +318,35 @@ class AgentPipeline:
             actions or [AgentAction.RETRIEVE_MORE],
             decisions,
         )
+
+    def _self_rag_continue_on_utility_retry(
+        self,
+        step: SelfRAGStepDecision,
+        util: UtilityScore,
+        search_query: str,
+        question: str,
+        iteration: int,
+        max_iterations: int,
+        actions: list[AgentAction],
+        decisions: list[SelfRAGStepDecision],
+    ) -> tuple[AgentRunResult | None, str]:
+        """Finish on refuse or last iteration; otherwise reretrieve with a refined query."""
+        _record_utility_on_step(step, util)
+        decisions.append(step)
+        if iteration == max_iterations - 1:
+            actions.append(AgentAction.RETRIEVE_MORE)
+            return (
+                self._self_rag_no_info_result(question, iteration + 1, actions, decisions),
+                search_query,
+            )
+        if util.action == UtilityAction.REFUSE:
+            actions.append(AgentAction.CLARIFY)
+            return (
+                self._self_rag_no_info_result(question, iteration + 1, actions, decisions),
+                search_query,
+            )
+        actions.append(AgentAction.RETRIEVE_MORE)
+        return None, util.refined_query or search_query
 
     def _self_rag_handle_scored_utility(
         self,

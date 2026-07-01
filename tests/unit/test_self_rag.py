@@ -550,6 +550,28 @@ class TestAgentPipelineSelfRAG:
         assert result.actions == [AgentAction.RETRIEVE_MORE]
 
     @pytest.mark.asyncio
+    async def test_empty_context_with_utility_refuse_returns_no_info(self):
+        chat = _chat_mock()
+        chat.retrieval.retrieve = AsyncMock(return_value=_retrieval_result([], context=""))
+        side_effect = [
+            json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
+            json.dumps(
+                {
+                    "score": 0.0,
+                    "action": "refuse",
+                    "reasoning": "no relevant documents",
+                    "refined_query": "",
+                }
+            ),
+        ]
+        chat.generation.call_llm.side_effect = side_effect
+        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=3)
+        result = await pipeline.chat_full("kubernetes")
+        assert result.answer.text == "I don't have information about this."
+        assert result.actions == [AgentAction.CLARIFY]
+        assert chat.retrieval.retrieve.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_unsupported_with_utility_refuse_returns_no_info(self):
         chat = _chat_mock()
         side_effect = [
