@@ -54,6 +54,37 @@ def _match_value(condition: FieldCondition) -> MatchValue:
     return match
 
 
+_MIN_SCORE_FILTER = RetrievalFilter(min_score=0.5)
+
+
+def _hybrid_retriever(
+    *,
+    dense_results: list | None = None,
+    bm25_results: list | None = None,
+    graph: MagicMock | None = None,
+) -> tuple[HybridRetriever, MagicMock, MagicMock, MagicMock | None]:
+    dense = MagicMock()
+    dense.retrieve.return_value = dense_results if dense_results is not None else []
+    bm25 = MagicMock()
+    bm25.search.return_value = bm25_results if bm25_results is not None else []
+    bm25.get_by_id.return_value = None
+    kwargs: dict[str, object] = {"dense": dense, "bm25": bm25}
+    if graph is not None:
+        kwargs["graph_retriever"] = graph
+    hybrid = HybridRetriever(**kwargs)  # type: ignore[arg-type]
+    return hybrid, dense, bm25, graph
+
+
+async def _retrieve_hybrid(
+    hybrid: HybridRetriever,
+    *,
+    filters: RetrievalFilter | None = None,
+    top_k: int = 5,
+    text: str = "q",
+):
+    return await hybrid.retrieve(Query(text=text, filters=filters), top_k=top_k)
+
+
 # ── RetrievalFilter ────────────────────────────────────────────────────────────
 
 
@@ -144,6 +175,13 @@ class TestEffectiveDocumentIds:
         filt = RetrievalFilter(document_ids=["b", "c"])
         assert effective_document_ids(frozenset({"a", "b"}), filt) == frozenset({"b"})
 
+    def test_empty_explicit_does_not_fallback_to_filter(self):
+        filt = RetrievalFilter(document_ids=["a", "b"])
+        assert effective_document_ids(frozenset(), filt) == frozenset()
+
+    def test_empty_explicit_without_filter(self):
+        assert effective_document_ids(frozenset(), None) == frozenset()
+
 
 # ── chunk_matches_filter / apply_chunk_filters ────────────────────────────────
 
@@ -223,15 +261,10 @@ class TestDenseRetrieverFilters:
 class TestHybridRetrieverMinScore:
     @pytest.mark.asyncio
     async def test_min_score_applied_before_fusion(self):
-        dense = MagicMock()
-        dense.retrieve.return_value = [(_CHUNK_A, 0.9), (_CHUNK_B, 0.3)]
-        bm25 = MagicMock()
-        bm25.search.return_value = []
-        bm25.get_by_id.return_value = None
-
-        hybrid = HybridRetriever(dense=dense, bm25=bm25)
-        query = Query(text="q", filters=RetrievalFilter(min_score=0.5))
-        results = await hybrid.retrieve(query, top_k=5)
+        hybrid, _, _, _ = _hybrid_retriever(
+            dense_results=[(_CHUNK_A, 0.9), (_CHUNK_B, 0.3)],
+        )
+        results = await _retrieve_hybrid(hybrid, filters=_MIN_SCORE_FILTER)
 
         assert len(results) == 1
         assert results[0][0].id == _CHUNK_A.id
@@ -239,48 +272,28 @@ class TestHybridRetrieverMinScore:
     @pytest.mark.asyncio
     async def test_min_score_not_applied_to_bm25_leg(self):
         """BM25 scores are not cosine similarity; min_score must not drop them."""
-        dense = MagicMock()
-        dense.retrieve.return_value = []
-        bm25 = MagicMock()
-        bm25.search.return_value = [(_CHUNK_B, 0.2)]
-        bm25.get_by_id.return_value = None
-
-        hybrid = HybridRetriever(dense=dense, bm25=bm25)
-        query = Query(text="q", filters=RetrievalFilter(min_score=0.5))
-        results = await hybrid.retrieve(query, top_k=5)
+        hybrid, _, _, _ = _hybrid_retriever(bm25_results=[(_CHUNK_B, 0.2)])
+        results = await _retrieve_hybrid(hybrid, filters=_MIN_SCORE_FILTER)
 
         assert len(results) == 1
         assert results[0][0].id == _CHUNK_B.id
 
     @pytest.mark.asyncio
     async def test_passes_filters_to_bm25_and_graph(self):
-        dense = MagicMock()
-        dense.retrieve.return_value = []
-        bm25 = MagicMock()
-        bm25.search.return_value = []
-        bm25.get_by_id.return_value = None
         graph = MagicMock()
         graph.search.return_value = []
+        hybrid, _, bm25, _ = _hybrid_retriever(graph=graph)
         filt = RetrievalFilter(document_ids=["doc-a"])
 
-        hybrid = HybridRetriever(dense=dense, bm25=bm25, graph_retriever=graph)
-        query = Query(text="q", filters=filt)
-        await hybrid.retrieve(query, top_k=5)
+        await _retrieve_hybrid(hybrid, filters=filt)
 
         bm25.search.assert_called_once_with("q", 15, filters=filt)
         graph.search.assert_called_once_with("q", 15, filters=filt)
 
     @pytest.mark.asyncio
     async def test_document_scope_excludes_out_of_scope_bm25_hits(self):
-        dense = MagicMock()
-        dense.retrieve.return_value = []
-        bm25 = MagicMock()
-        bm25.search.return_value = [(_CHUNK_A, 1.0)]
-        bm25.get_by_id.return_value = None
-
-        hybrid = HybridRetriever(dense=dense, bm25=bm25)
-        query = Query(text="q", filters=RetrievalFilter(document_ids=["doc-b"]))
-        results = await hybrid.retrieve(query, top_k=5)
+        hybrid, _, _, _ = _hybrid_retriever(bm25_results=[(_CHUNK_A, 1.0)])
+        results = await _retrieve_hybrid(hybrid, filters=RetrievalFilter(document_ids=["doc-b"]))
 
         assert results == []
 

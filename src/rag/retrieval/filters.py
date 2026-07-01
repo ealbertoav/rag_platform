@@ -12,11 +12,18 @@ def effective_document_ids(
     explicit: frozenset[str] | None,
     filters: RetrievalFilter | None,
 ) -> frozenset[str] | None:
-    """Merge an explicit document scope with filter document IDs (intersection when both set)."""
+    """Merge an explicit document scope with filter document IDs (intersection when both set).
+
+    "None" explicitly means no caller-provided scope (use filter IDs when present).
+    An empty "frozenset()" means the caller explicitly found no documents — it must
+    not fall back to filter IDs (e.g. hierarchical stage 1 with zero summary hits).
+    """
     from_filter = frozenset(filters.document_ids) if filters and filters.document_ids else None
-    if explicit and from_filter:
+    if explicit is not None and from_filter is not None:
         return explicit & from_filter
-    return explicit or from_filter
+    if explicit is not None:
+        return explicit
+    return from_filter
 
 
 def build_qdrant_filter(

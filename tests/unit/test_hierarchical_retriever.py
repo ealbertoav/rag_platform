@@ -11,6 +11,7 @@ from src.core.constants import CHUNK_TYPE_DETAIL, CHUNK_TYPE_KEY, CHUNK_TYPE_SUM
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.entities.query import Query
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.rag.enrichment.hierarchical_indexer import (
     HierarchicalIndexer,
     is_detail_chunk,
@@ -28,6 +29,41 @@ def _document(text: str = "Revenue grew 12%. Costs fell 3%.") -> Document:
 
 def _detail_chunk(text: str = "Revenue grew 12%.") -> Chunk:
     return Chunk(id="detail-1", document_id="doc-1", text=text, metadata={"section": "Revenue"})
+
+
+def _revenue_summary() -> Chunk:
+    return make_summary_chunk(_document(), "Revenue and cost overview.")
+
+
+def _costs_detail_chunk() -> Chunk:
+    return Chunk(
+        id="detail-2",
+        document_id="doc-1",
+        text="Costs fell 3%.",
+        metadata={CHUNK_TYPE_KEY: CHUNK_TYPE_DETAIL},
+    )
+
+
+def _hierarchical_retriever_with_search(
+    *,
+    side_effect: list[list[tuple[Chunk, float]]] | None = None,
+    return_value: list[tuple[Chunk, float]] | None = None,
+    embed_query_return: list[list[float]] | None = None,
+) -> tuple[HierarchicalRetriever, MagicMock, MagicMock]:
+    embedder = MagicMock()
+    embedder.embed_query.return_value = embed_query_return or [[0.5, 0.6]]
+    vector_store = MagicMock()
+    if side_effect is not None:
+        vector_store.search_dense.side_effect = side_effect
+    else:
+        vector_store.search_dense.return_value = return_value or []
+    retriever = HierarchicalRetriever(embedder=embedder, vector_store=vector_store, summary_top_k=3)
+    return retriever, embedder, vector_store
+
+
+def _default_two_stage_hits() -> tuple[list[tuple[Chunk, float]], list[tuple[Chunk, float]], Chunk]:
+    detail = _costs_detail_chunk()
+    return [(_revenue_summary(), 0.91)], [(detail, 0.82)], detail
 
 
 class TestChunkMetadata:
@@ -89,23 +125,9 @@ class TestHierarchicalIndexer:
 
 class TestHierarchicalRetriever:
     def test_two_stage_search_returns_detail_chunks_only(self):
-        summary = make_summary_chunk(_document(), "Revenue and cost overview.")
-        detail = Chunk(
-            id="detail-2",
-            document_id="doc-1",
-            text="Costs fell 3%.",
-            metadata={CHUNK_TYPE_KEY: CHUNK_TYPE_DETAIL},
-        )
-        embedder = MagicMock()
-        embedder.embed_query.return_value = [[0.5, 0.6]]
-        vector_store = MagicMock()
-        vector_store.search_dense.side_effect = [
-            [(summary, 0.91)],
-            [(detail, 0.82)],
-        ]
-
-        retriever = HierarchicalRetriever(
-            embedder=embedder, vector_store=vector_store, summary_top_k=3
+        summary_hits, detail_hits, detail = _default_two_stage_hits()
+        retriever, _, vector_store = _hierarchical_retriever_with_search(
+            side_effect=[summary_hits, detail_hits]
         )
         results = retriever.retrieve(Query(text="revenue trends"), top_k=5)
 
@@ -119,21 +141,45 @@ class TestHierarchicalRetriever:
         assert second_call.kwargs["document_ids"] == frozenset({"doc-1"})
 
     def test_no_summary_matches_returns_empty(self):
-        embedder = MagicMock()
-        embedder.embed_query.return_value = [[0.1]]
-        vector_store = MagicMock()
-        vector_store.search_dense.return_value = []
-
-        retriever = HierarchicalRetriever(embedder=embedder, vector_store=vector_store)
+        retriever, _, vector_store = _hierarchical_retriever_with_search(
+            return_value=[], embed_query_return=[[0.1]]
+        )
         assert retriever.retrieve(Query(text="q"), top_k=5) == []
         vector_store.search_dense.assert_called_once()
 
-    def test_uses_precomputed_query_embedding(self):
-        embedder = MagicMock()
-        vector_store = MagicMock()
-        vector_store.search_dense.return_value = []
+    def test_no_summary_matches_with_document_filter_skips_detail_search(self):
+        retriever, _, vector_store = _hierarchical_retriever_with_search(
+            return_value=[], embed_query_return=[[0.1]]
+        )
+        filt = RetrievalFilter(document_ids=["doc-a"])
+        assert retriever.retrieve(Query(text="q", filters=filt), top_k=5) == []
+        vector_store.search_dense.assert_called_once()
 
-        retriever = HierarchicalRetriever(embedder=embedder, vector_store=vector_store)
+    def test_summary_scope_intersects_document_filter(self):
+        summary_hits, detail_hits, detail = _default_two_stage_hits()
+        retriever, _, vector_store = _hierarchical_retriever_with_search(
+            side_effect=[summary_hits, detail_hits]
+        )
+        filt = RetrievalFilter(document_ids=["doc-1", "doc-other"])
+
+        results = retriever.retrieve(Query(text="revenue trends", filters=filt), top_k=5)
+
+        assert len(results) == 1
+        assert results[0][0].id == detail.id
+        second_call = vector_store.search_dense.call_args_list[1]
+        assert second_call.kwargs["document_ids"] == frozenset({"doc-1"})
+
+    def test_summary_mismatch_with_document_filter_skips_detail_search(self):
+        retriever, _, vector_store = _hierarchical_retriever_with_search(
+            return_value=[(_revenue_summary(), 0.91)]
+        )
+        filt = RetrievalFilter(document_ids=["doc-other"])
+
+        assert retriever.retrieve(Query(text="revenue trends", filters=filt), top_k=5) == []
+        vector_store.search_dense.assert_called_once()
+
+    def test_uses_precomputed_query_embedding(self):
+        retriever, embedder, _ = _hierarchical_retriever_with_search(return_value=[])
         retriever.retrieve(Query(text="q", embedding=[0.1, 0.2]), top_k=5)
         embedder.embed_query.assert_not_called()
 

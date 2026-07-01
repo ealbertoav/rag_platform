@@ -40,12 +40,14 @@ class HierarchicalRetriever:
             type_equals=CHUNK_TYPE_SUMMARY,
             filters=query.filters,
         )
-        document_ids = effective_document_ids(
-            _document_ids_from_summaries(summary_hits),
-            query.filters,
-        )
-        if not document_ids:
+        summary_doc_ids = _document_ids_from_summaries(summary_hits)
+        if not summary_doc_ids:
             logger.debug("Hierarchical retrieval: no summary matches")
+            return []
+
+        document_ids = effective_document_ids(summary_doc_ids, query.filters)
+        if not document_ids:
+            logger.debug("Hierarchical retrieval: no documents after scope intersection")
             return []
 
         detail_hits = self._vector_store.search_dense(
