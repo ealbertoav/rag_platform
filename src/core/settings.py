@@ -171,6 +171,15 @@ class DiversitySettings(BaseModel):
     lambda_: float = Field(default=0.7, ge=0.0, le=1.0, alias="lambda")
 
 
+class ReliableRAGSettings(BaseModel):
+    enabled: bool = False
+    min_score: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class QualitySettings(BaseModel):
+    reliable_rag: ReliableRAGSettings = Field(default_factory=ReliableRAGSettings)
+
+
 class RetrievalSettings(BaseModel):
     top_k_dense: int = 50
     top_k_final: int = 5
@@ -304,6 +313,7 @@ class Settings(BaseSettings):
     metadata: MetadataSettings = Field(default_factory=MetadataSettings)
     query_expansion: QueryExpansionSettings = Field(default_factory=QueryExpansionSettings)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
+    quality: QualitySettings = Field(default_factory=QualitySettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
     api: APISettings = Field(default_factory=APISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)

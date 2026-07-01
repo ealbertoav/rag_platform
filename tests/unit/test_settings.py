@@ -121,6 +121,10 @@ class TestYamlDefaults:
         assert settings.retrieval.diversity.enabled is False
         assert settings.retrieval.diversity.lambda_ == pytest.approx(0.7)
 
+    def test_reliable_rag_defaults_from_yaml(self):
+        assert settings.quality.reliable_rag.enabled is False
+        assert settings.quality.reliable_rag.min_score == pytest.approx(0.5)
+
     def test_hierarchical_defaults_from_yaml(self):
         assert settings.chunking.hierarchical.enabled is False
         assert settings.chunking.hierarchical.summary_top_k == 3
