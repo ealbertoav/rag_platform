@@ -128,6 +128,15 @@ class TestYamlDefaults:
     def test_self_rag_defaults_from_yaml(self):
         assert settings.quality.self_rag.enabled is False
 
+    def test_crag_defaults_from_yaml(self):
+        assert settings.quality.crag.enabled is False
+        assert settings.quality.crag.lower_threshold == pytest.approx(0.3)
+        assert settings.quality.crag.upper_threshold == pytest.approx(0.7)
+
+    def test_web_search_defaults_from_yaml(self):
+        assert settings.web_search.provider == "none"
+        assert settings.web_search.max_results == 5
+
     def test_hierarchical_defaults_from_yaml(self):
         assert settings.chunking.hierarchical.enabled is False
         assert settings.chunking.hierarchical.summary_top_k == 3

@@ -1,0 +1,5 @@
+web_search:
+  provider: none                 # none | duckduckgo | tavily (T-142)
+  max_results: 5
+  tavily:
+    api_key: ""                  # required when provider=tavily (WEB_SEARCH__TAVILY__API_KEY)

@@ -82,3 +82,7 @@ quality:
     min_score: 0.5               # chunks below this score are excluded from context
   self_rag:
     enabled: false               # Self-RAG retrieve/support/utility gates in agent (T-141)
+  crag:
+    enabled: false               # Corrective RAG web search fallback in chat pipeline (T-142)
+    lower_threshold: 0.3         # below → discard retrieval, web search only
+    upper_threshold: 0.7         # above → use retrieved context as-is

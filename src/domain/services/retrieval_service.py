@@ -46,6 +46,8 @@ class RetrievalResult:
     chunks: list[Chunk]  # final, compressed chunks ready for the LLM
     context: str  # chunks joined for direct injection into the prompt
     latency_ms: float = 0.0
+    relevance_scores: list[float] = dataclasses.field(default_factory=list)
+    """All Reliable RAG grades (pass + fail) for CRAG quality scoring."""
 
 
 class RetrievalService:
@@ -112,6 +114,7 @@ class RetrievalService:
     async def retrieve(self, query: Query) -> RetrievalResult:
         """Execute the full retrieval flow and return a "RetrievalResult"."""
         t0 = time.monotonic()
+        relevance_scores: list[float] = []
 
         # 0. Adaptive query classification (optional)
         query = self._classify(query)
@@ -163,7 +166,9 @@ class RetrievalService:
         # 5b. Reliable RAG relevance grading (optional, after enrichment, before compression)
         if self._reliable_rag_enabled:
             with _tracer.start_as_current_span("retrieval.relevance_grading") as span:
-                chunks, pass_count, fail_count = self._apply_relevance_grading(query.text, chunks)
+                chunks, pass_count, fail_count, relevance_scores = self._apply_relevance_grading(
+                    query.text, chunks
+                )
                 span.set_attribute("chunk_count", len(chunks))
                 span.set_attribute("relevance.pass_count", pass_count)
                 span.set_attribute("relevance.fail_count", fail_count)
@@ -185,7 +190,13 @@ class RetrievalService:
             len(context),
             elapsed,
         )
-        return RetrievalResult(query=query, chunks=chunks, context=context, latency_ms=elapsed)
+        return RetrievalResult(
+            query=query,
+            chunks=chunks,
+            context=context,
+            latency_ms=elapsed,
+            relevance_scores=relevance_scores,
+        )
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
@@ -262,14 +273,14 @@ class RetrievalService:
         self,
         query_text: str,
         chunks: list[Chunk],
-    ) -> tuple[list[Chunk], int, int]:
+    ) -> tuple[list[Chunk], int, int, list[float]]:
         if not chunks:
-            return [], 0, 0
+            return [], 0, 0, []
         if self._llm is None:
             logger.warning(
                 "Reliable RAG enabled but no LLM configured — skipping relevance grading"
             )
-            return chunks, len(chunks), 0
+            return chunks, len(chunks), 0, []
 
         from src.rag.quality.reliable_rag import grade_relevance
 
