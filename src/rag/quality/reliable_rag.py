@@ -81,15 +81,16 @@ def grade_relevance(
     llm: LLMRepository,
     *,
     min_score: float = 0.5,
-) -> tuple[list[Chunk], int, int]:
+) -> tuple[list[Chunk], int, int, list[float]]:
     """Grade chunks and return those meeting *min_score*.
 
-    Returns "(filtered_chunks, pass_count, fail_count)". On LLM or parse
-    failure, returns all input chunks with "pass_count=len(chunks)" and
-    "fail_count=0" so retrieval degrades gracefully.
+    Returns "(filtered_chunks, pass_count, fail_count, all_graded_scores)".
+    *all_graded_scores* includes every LLM-assigned score (pass and fail) for
+    downstream CRAG thresholding. On LLM or parse failure, returns all input
+    chunks with "pass_count=len(chunks)", "fail_count=0", and an empty score list.
     """
     if not chunks:
-        return [], 0, 0
+        return [], 0, 0, []
 
     template = _load_prompt()
     prompt = template.substitute(
@@ -102,12 +103,13 @@ def grade_relevance(
         output = parse_relevance_grading(response)
     except Exception as exc:
         logger.warning("Relevance grading failed for %r: %s", query[:60], exc)
-        return chunks, len(chunks), 0
+        return chunks, len(chunks), 0, []
 
     grade_by_id = {grade.chunk_id: grade for grade in output.grades}
     kept: list[Chunk] = []
     pass_count = 0
     fail_count = 0
+    all_graded_scores: list[float] = []
 
     for representative, group in _group_chunks_for_grading(chunks):
         grade = grade_by_id.get(representative.id)
@@ -119,6 +121,7 @@ def grade_relevance(
             )
             fail_count += len(group)
             continue
+        all_graded_scores.append(grade.relevance_score)
         if grade.relevance_score < min_score:
             logger.debug(
                 "Passage group led by %s below min_score (%.2f < %.2f)",
@@ -137,4 +140,4 @@ def grade_relevance(
             }
             kept.append(chunk.model_copy(update={"metadata": metadata}))
 
-    return kept, pass_count, fail_count
+    return kept, pass_count, fail_count, all_graded_scores

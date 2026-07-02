@@ -10,6 +10,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Self-RAG decision loop (T-141):** Optional agent-side quality gates on `/chat/agent` and `/chat/agent/full` — decide whether to retrieve, check draft-answer support against context, and score utility before accepting, re-retrieving, or refusing. Replaces the standard agent decision loop when `quality.self_rag.enabled=true` (`false` by default). Pairs well with Reliable RAG (T-140) inside the retrieval path. See [Self-RAG Decision Loop (T-141)](#self-rag-decision-loop-t-141).
 
+> **Corrective RAG web fallback (T-142):** Optional post-retrieval quality gate on `/chat` and `/chat/full` — scores aggregate retrieval quality from Reliable RAG `relevance_score` metadata, then uses retrieved context as-is, combines retrieval with web search and LLM refinement, or discards retrieval for web-only correction. Configure via `quality.crag` in `configs/retrieval.yaml` and `web_search` in `configs/web_search.yaml` (both off/`provider: none` by default). Requires Reliable RAG (T-140) for graded scores. See [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142).
+
 ---
 
 ## Table of Contents
@@ -26,6 +28,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Start the API Server](#start-the-api-server)
   - [Chat](#chat)
     - [Scoped retrieval filters (T-134)](#scoped-retrieval-filters-t-134)
+    - [Corrective RAG in standard chat (T-142)](#corrective-rag-in-standard-chat-t-142)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare Embedding Providers](#compare-embedding-providers)
@@ -86,7 +89,8 @@ flowchart LR
 
     subgraph GENERATE["💬 Generation Pipeline"]
         direction TB
-        CC --> PR["System Prompt<br/>+ Context"]
+        CC --> CRAG["Corrective RAG<br/>web fallback · refine<br/>(optional · T-142)"]
+        CRAG --> PR["System Prompt<br/>+ Context"]
         PR --> LLM["llama.cpp<br/>Qwen3-30B on Metal"]
         LLM --> SSE["Streaming Response<br/>SSE tokens"]
     end
@@ -251,6 +255,12 @@ RETRIEVAL__DIVERSITY__LAMBDA=0.7           # 1.0 = pure relevance, 0.0 = max div
 QUALITY__RELIABLE_RAG__ENABLED=false       # LLM relevancy grading after enrichment (T-140)
 QUALITY__RELIABLE_RAG__MIN_SCORE=0.5       # chunks below this score excluded from context
 QUALITY__SELF_RAG__ENABLED=false           # Self-RAG gates on agent endpoints (T-141)
+QUALITY__CRAG__ENABLED=false               # Corrective RAG web fallback on /chat* (T-142)
+QUALITY__CRAG__LOWER_THRESHOLD=0.3         # below → web-only correction
+QUALITY__CRAG__UPPER_THRESHOLD=0.7         # above → use retrieval as-is
+WEB_SEARCH__PROVIDER=none                  # none | duckduckgo | tavily (T-142)
+WEB_SEARCH__MAX_RESULTS=5
+WEB_SEARCH__TAVILY__API_KEY=               # required when provider=tavily
 QUERY_EXPANSION__STEP_BACK__ENABLED=false # broader background query for multi-query RRF fusion (T-133)
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
@@ -286,7 +296,8 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, hybrid fusion, reranker |
+| `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
@@ -358,7 +369,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details).
+Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details). **Corrective RAG** (T-142) runs in the chat pipeline after retrieval returns and is documented in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -530,6 +541,20 @@ Synthetic-question hits (T-121) are resolved to source chunks first; filters are
 
 > Agent endpoints (`/chat/agent`, `/chat/agent/full`) do not yet accept filter fields — use standard chat for scoped retrieval.
 
+#### Corrective RAG in standard chat (T-142)
+
+When `quality.crag.enabled=true`, standard chat (`/chat`, `/chat/full`) and the E2E benchmark run an optional **Corrective RAG** step after retrieval and before generation. The step uses mean `relevance_score` from Reliable RAG (T-140) metadata on retrieved chunks to choose a branch — so **enable Reliable RAG first** or CRAG skips correction and passes retrieval context through unchanged.
+
+| Branch | When | Generation context |
+|---|---|---|
+| `use_retrieval` | Mean score **>** `upper_threshold` | Retrieved context as-is |
+| `combine_and_refine` | Score between thresholds | LLM merges retrieval + web results |
+| `web_only` | Mean score **<** `lower_threshold` | LLM refines web results only (sources cleared) |
+
+Configure thresholds in `configs/retrieval.yaml` and a web provider in `configs/web_search.yaml`. See the full flow, providers, fallbacks, and benchmark behavior in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142).
+
+> Agent endpoints (`/chat/agent`, `/chat/agent/full`) do not run CRAG — use Self-RAG (T-141) for agent-side quality gates.
+
 **Python client:**
 ```python
 import httpx, json
@@ -691,6 +716,8 @@ uv run python scripts/compare_models.py \
 ```
 
 The winning model is determined by real evaluation data — Faithfulness + Relevance + Recall@5 + Context Precision on **your** documents, not generic benchmarks.
+
+When Corrective RAG (T-142) is enabled, benchmark faithfulness and context precision score against the **same context generation used** — raw chunk texts for standard retrieval, a single refined passage after web correction, or an empty context list when CRAG could not supply usable information (matching the *"I don't have information about this."* no-info reply).
 
 ---
 
@@ -1212,6 +1239,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
+│   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG + SQLite metadata store settings
 │   ├── evals.yaml
 │   ├── logging.yaml
@@ -1265,17 +1293,18 @@ rag_implementation/
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · BenchmarkReport
-│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, Neo4j, SQLite metadata, llama.cpp
-│   │   └── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
+│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, Neo4j, SQLite metadata, llama.cpp, web search
+│   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
+│   │   └── search/             # DuckDuckGo · Tavily · Null web search providers (T-142)
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
 │   │   ├── ingestion/          # chunk_header_template · extract_propositions · generate_chunk_questions · generate_document_summary
-│   │   ├── quality/              # relevance_grading (T-140) · self_rag_decision/support/utility (T-141)
+│   │   ├── quality/              # relevance_grading (T-140) · self_rag_* (T-141) · crag_knowledge_refinement (T-142)
 │   │   └── retrieval/          # query_expansion · step_back · query_classification · hyde_generate · entity_extraction · agent_decision
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
-│   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141)
+│   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141) · CRAG (T-142)
 │   │   ├── structured_output.py # Shared Pydantic JSON parsing for LLM structured output
 │   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
@@ -1667,6 +1696,19 @@ quality:
     min_score: 0.5       # passages below this score are dropped (0.0–1.0)
   self_rag:
     enabled: false       # Self-RAG agent gates on /chat/agent* (see Agentic RAG)
+  crag:
+    enabled: false       # Corrective RAG web fallback on /chat* (see T-142)
+    lower_threshold: 0.3 # below → discard retrieval, web search only
+    upper_threshold: 0.7 # above → use retrieved context as-is
+```
+
+```yaml
+# configs/web_search.yaml  (required when quality.crag.enabled=true)
+web_search:
+  provider: none         # none | duckduckgo | tavily
+  max_results: 5
+  tavily:
+    api_key: ""          # or WEB_SEARCH__TAVILY__API_KEY
 ```
 
 **Structured LLM output** (per passage group):
@@ -1686,6 +1728,81 @@ Passed chunks receive `metadata.relevance_score` and `metadata.relevance_support
 ```bash
 QUALITY__RELIABLE_RAG__ENABLED=true
 QUALITY__RELIABLE_RAG__MIN_SCORE=0.5
+```
+
+##### Corrective RAG — Web Search Fallback (T-142)
+
+Corrective RAG (CRAG) is an optional **post-retrieval quality gate** in `ChatPipeline` inspired by [Corrective RAG](https://github.com/NirDiamant/RAG_Techniques) patterns. It runs **after** the full retrieval pipeline (including Reliable RAG T-140 and compression) and **before** generation on `/chat`, `/chat/full`, and the E2E benchmark — not on agent endpoints.
+
+**Pipeline position:** retrieval returns compressed context + chunks → CRAG scores aggregate quality → optional web search + LLM knowledge refinement → generation.
+
+**Prerequisite:** CRAG reads mean `metadata.relevance_score` from Reliable RAG (T-140). When chunks lack those grades, correction is **skipped** (`crag.skipped=true` in traces) and retrieval context passes through unchanged. Enable both flags for the full corrective flow:
+
+```bash
+QUALITY__RELIABLE_RAG__ENABLED=true
+QUALITY__CRAG__ENABLED=true
+WEB_SEARCH__PROVIDER=duckduckgo   # or tavily
+```
+
+```mermaid
+flowchart TD
+    RT["Retrieval complete<br/>context + chunks"] --> SC["Score retrieval quality<br/>mean relevance_score"]
+    SC --> G{graded?}
+    G -->|no| SKIP["Skip CRAG<br/>use retrieval context"]
+    G -->|yes| ACT{mean score vs thresholds}
+    ACT -->|"> upper"| USE["USE_RETRIEVAL<br/>keep context + sources"]
+    ACT -->|"< lower"| WO["WEB_ONLY<br/>discard retrieval for refine"]
+    ACT -->|between| CB["COMBINE_AND_REFINE<br/>retrieval + web"]
+    WO --> WS{"Web search<br/>available?"}
+    CB --> WS
+    WS -->|no| FB["Fallback<br/>COMBINE → retrieval<br/>WEB_ONLY → no info"]
+    WS -->|yes| SR["Search web<br/>duckduckgo or tavily"]
+    SR --> NR{results?}
+    NR -->|no| FB
+    NR -->|yes| RF["Knowledge refinement<br/>crag_knowledge_refinement.txt"]
+    RF --> OK{refined context?}
+    OK -->|yes| GEN["Generate answer"]
+    OK -->|no| FB
+    USE --> GEN
+    SKIP --> GEN
+    FB --> GEN
+
+    style SC fill:#fff8e6,stroke:#cc9900
+    style RF fill:#fff8e6,stroke:#cc9900
+    style FB fill:#ffeeee,stroke:#cc0000
+```
+
+**Branch behavior:**
+
+| Action | Trigger | Web search input | Sources in answer | On failure |
+|---|---|---|---|---|
+| `use_retrieval` | Score > `upper_threshold` | Skipped | Retrieved chunk IDs | — |
+| `combine_and_refine` | `lower` ≤ score ≤ `upper` | Retrieval + web snippets | Retrieved chunk IDs | Falls back to retrieval context if web/refine unavailable |
+| `web_only` | Score < `lower_threshold` | Web snippets only | Empty (`[]`) | Returns *"I don't have information about this."* |
+
+**Web search providers** (`configs/web_search.yaml`):
+
+| Provider | API key | Notes |
+|---|---|---|
+| `none` | — | CRAG enabled but no corrective search; `COMBINE` falls back to retrieval, `WEB_ONLY` returns no-info |
+| `duckduckgo` | None | DuckDuckGo Lite HTML scrape — good for local dev |
+| `tavily` | `WEB_SEARCH__TAVILY__API_KEY` | REST API — higher quality for production |
+
+**Knowledge refinement:** when web search runs, an LLM call (`src/prompts/quality/crag_knowledge_refinement.txt`) merges retrieval passages (if any) and web snippets into a single factual context block. Output `INSUFFICIENT_INFORMATION` or LLM failure triggers the fallback row above.
+
+**Benchmark alignment:** `ChatPipeline.benchmark()` returns eval passages that mirror generation context — chunk texts for unrefined retrieval, `[refined_context]` after successful CRAG refinement, or `[]` when CRAG clears context. Faithfulness and context precision therefore score against what the model actually saw, not discarded retrieval passages.
+
+**When to use:** corpora with frequent weak retrieval where external web evidence can rescue answers; production chat where low-confidence retrieval should not reach the generator unchanged.
+
+**Trade-offs:** requires Reliable RAG (extra LLM call in retrieval) plus up to one web request and one refinement LLM call per query on corrective branches. DuckDuckGo scraping may be rate-limited; Tavily adds cost. `WEB_ONLY` clears citation sources even when retrieval found related chunks.
+
+```bash
+QUALITY__CRAG__ENABLED=true
+QUALITY__CRAG__LOWER_THRESHOLD=0.3
+QUALITY__CRAG__UPPER_THRESHOLD=0.7
+WEB_SEARCH__PROVIDER=duckduckgo
+WEB_SEARCH__MAX_RESULTS=5
+WEB_SEARCH__TAVILY__API_KEY=tvly-...   # when provider=tavily
 ```
 
 ##### Self-RAG and Reliable RAG together (T-141 + T-140)
@@ -1762,7 +1879,7 @@ flowchart LR
     end
 
     subgraph E2E["🏁 E2E Benchmark (T-043 / T-044)"]
-        QA4[("QA Dataset")] --> PIPE["Full RAG Pipeline<br/>Retrieval + Generation"]
+        QA4[("QA Dataset")] --> PIPE["Full RAG Pipeline<br/>Retrieval + CRAG + Generation"]
         PIPE --> MET["Recall@5 · Faithfulness<br/>Relevance · Context Precision"]
         MET --> RPT[("data/exports<br/>benchmark_{ts}.json")]
         RPT --> EXIT{All ≥ threshold?}
@@ -1802,8 +1919,11 @@ gantt
     retrieval.compression  :1520, 1670
 
     section generation
-    generation.llm         :1670, 2620
+    chat.crag              :1670, 1870
+    generation.llm         :1870, 2820
 ```
+
+When Corrective RAG is enabled (`quality.crag.enabled=true`), span `chat.crag` appears between retrieval completion and `generation.llm`, with attributes `crag.quality_score`, `crag.action` (`use_retrieval` | `combine_and_refine` | `web_only`), `crag.quality_graded`, `crag.web_search_used`, `crag.web_result_count`, `crag.refined`, `crag.fallback_to_retrieval`, and `crag.skipped`.
 
 Configure the collector endpoint:
 ```bash
