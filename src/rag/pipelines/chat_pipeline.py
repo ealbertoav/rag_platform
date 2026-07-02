@@ -20,6 +20,7 @@ from src.rag.quality.crag import (
     crag_fallback_without_web,
     determine_crag_action,
     eval_contexts_for_resolution,
+    explainable_chunks_for_resolution,
     record_crag_span,
     refine_knowledge,
     score_retrieval_quality,
@@ -103,18 +104,26 @@ class ChatPipeline:
 
         answer = self._generation.generate(query.text, resolution.context, resolution.sources)
 
-        elapsed = (time.monotonic() - t0) * 1000
-        token_count = len(answer.text.split())
-        record_generation(token_count, elapsed / 1000)
-        record_request("chat", elapsed / 1000, success=True)
-
         explanations = None
-        if explain and answer.sources and self._llm is not None:
-            source_chunks = resolve_chunks_for_sources(answer.sources, result.chunks)
+        if (
+            explain
+            and answer.sources
+            and self._llm is not None
+            and resolution.chunks_for_explanation is not None
+        ):
+            source_chunks = resolve_chunks_for_sources(
+                answer.sources,
+                resolution.chunks_for_explanation,
+            )
             if source_chunks:
                 explanations = explain_chunks(query.text, source_chunks, self._llm)
                 if not explanations:
                     explanations = None
+
+        elapsed = (time.monotonic() - t0) * 1000
+        token_count = len(answer.text.split())
+        record_generation(token_count, elapsed / 1000)
+        record_request("chat", elapsed / 1000, success=True)
 
         return answer.model_copy(
             update={
@@ -207,6 +216,7 @@ class ChatPipeline:
                 context=retrieval_result.context,
                 sources=sources,
                 eval_contexts=[chunk.text for chunk in retrieval_result.chunks],
+                chunks_for_explanation=retrieval_result.chunks,
             )
 
         with _tracer.start_as_current_span("chat.crag") as span:
@@ -222,6 +232,11 @@ class ChatPipeline:
                 context=context,
                 sources=resolved_sources,
                 eval_contexts=eval_contexts,
+                chunks_for_explanation=explainable_chunks_for_resolution(
+                    chunks=retrieval_result.chunks,
+                    refined=decision.refined,
+                    fallback_to_retrieval=decision.fallback_to_retrieval,
+                ),
             )
 
     async def _apply_crag(

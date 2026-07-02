@@ -8,6 +8,7 @@ from src.rag.quality.crag import (
     crag_fallback_without_web,
     determine_crag_action,
     eval_contexts_for_resolution,
+    explainable_chunks_for_resolution,
     refine_knowledge,
     score_retrieval_quality,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "determine_crag_action",
     "eval_contexts_for_resolution",
     "explain_chunks",
+    "explainable_chunks_for_resolution",
     "grade_relevance",
     "refine_knowledge",
     "score_retrieval_quality",

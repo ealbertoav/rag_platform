@@ -259,6 +259,27 @@ class TestChatPipelineFull:
         result = await _pipeline(llm=llm).chat_full("q", explain=True)
         assert result.explanations is None
 
+    @pytest.mark.asyncio
+    @patch("src.rag.pipelines.chat_pipeline.time.monotonic")
+    async def test_chat_full_latency_includes_explain(self, mock_monotonic):
+        import json
+
+        mock_monotonic.side_effect = [0.0, 0.5]
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = [
+            "answer text",
+            json.dumps(
+                {
+                    "explanations": [
+                        {"chunk_id": "c0", "reason": "Mentions the topic."},
+                        {"chunk_id": "c1", "reason": "Adds supporting detail."},
+                    ]
+                }
+            ),
+        ]
+        result = await _pipeline(llm=llm).chat_full("q", explain=True)
+        assert result.latency_ms == pytest.approx(500.0)
+
 
 class TestChatPipelineProperties:
     def test_retrieval_property(self):
