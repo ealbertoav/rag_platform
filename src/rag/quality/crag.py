@@ -60,6 +60,8 @@ class ContextResolution:
     context: str
     sources: list[str]
     eval_contexts: list[str]
+    chunks_for_explanation: list[Chunk] | None = None
+    """Chunks whose text matches generation context; None when CRAG refined away chunk text."""
 
 
 def score_retrieval_quality(
@@ -195,6 +197,22 @@ def eval_contexts_for_resolution(
     if refined:
         return [resolved_context]
     return [chunk.text for chunk in chunks]
+
+
+def explainable_chunks_for_resolution(
+    *,
+    chunks: list[Chunk],
+    refined: bool,
+    fallback_to_retrieval: bool,
+) -> list[Chunk] | None:
+    """Return chunks safe for per-source explanations, or None when context was CRAG-refined.
+
+    When CRAG replaces chunk text with a refined web passage, explaining individual
+    retrieved chunks would misrepresent what the answer generator actually saw.
+    """
+    if refined and not fallback_to_retrieval:
+        return None
+    return chunks
 
 
 def record_crag_span(span: Span, decision: CRAGDecision) -> None:

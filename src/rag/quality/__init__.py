@@ -8,9 +8,11 @@ from src.rag.quality.crag import (
     crag_fallback_without_web,
     determine_crag_action,
     eval_contexts_for_resolution,
+    explainable_chunks_for_resolution,
     refine_knowledge,
     score_retrieval_quality,
 )
+from src.rag.quality.explainable_retrieval import ChunkExplanation, explain_chunks
 from src.rag.quality.reliable_rag import ChunkRelevance, grade_relevance
 from src.rag.quality.self_rag import (
     RetrievalDecision,
@@ -25,6 +27,7 @@ from src.rag.quality.self_rag import (
 __all__ = [
     "CRAGAction",
     "CRAGDecision",
+    "ChunkExplanation",
     "ChunkRelevance",
     "ContextResolution",
     "RetrievalDecision",
@@ -37,6 +40,8 @@ __all__ = [
     "decide_retrieval",
     "determine_crag_action",
     "eval_contexts_for_resolution",
+    "explain_chunks",
+    "explainable_chunks_for_resolution",
     "grade_relevance",
     "refine_knowledge",
     "score_retrieval_quality",

@@ -6,10 +6,14 @@ from string import Template
 
 from pydantic import BaseModel, Field
 
-from src.core.constants import CHUNK_PARENT_ID_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
-from src.rag.chunking.contextual_headers import chunk_context_text
+from src.rag.chunking.contextual_headers import (
+    chunk_context_text,
+)
+from src.rag.chunking.contextual_headers import (
+    group_chunks_by_passage as _group_chunks_for_grading,
+)
 from src.rag.structured_output import parse_structured_output
 
 logger = logging.getLogger(__name__)
@@ -33,33 +37,6 @@ class RelevanceGradingOutput(BaseModel):
 
 def _load_prompt() -> Template:
     return Template(_PROMPT_PATH.read_text(encoding="utf-8"))
-
-
-def _grading_passage_key(chunk: Chunk) -> str:
-    """Group chunks that share the same LLM-facing passage (e.g., parent context siblings)."""
-    parent_id = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
-    parent_context = chunk.metadata.get(PARENT_CONTEXT_TEXT_KEY)
-    if (
-        isinstance(parent_id, str)
-        and parent_id
-        and isinstance(parent_context, str)
-        and parent_context
-    ):
-        return parent_id
-    return chunk.id
-
-
-def _group_chunks_for_grading(chunks: list[Chunk]) -> list[tuple[Chunk, list[Chunk]]]:
-    """Return representative chunks and the chunk groups they stand for."""
-    groups: dict[str, list[Chunk]] = {}
-    order: list[str] = []
-    for chunk in chunks:
-        key = _grading_passage_key(chunk)
-        if key not in groups:
-            order.append(key)
-            groups[key] = []
-        groups[key].append(chunk)
-    return [(groups[key][0], groups[key]) for key in order]
 
 
 def _format_passages(chunks: list[Chunk]) -> str:

@@ -1640,7 +1640,7 @@
 ---
 
 ### T-142 · Corrective RAG (CRAG) — Web Search Fallback
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Score overall retrieval quality; when context is weak, fall back to web search and refine knowledge before generation — inspired by RAG_Techniques `crag.py`.
 - **Inputs:** T-140 (relevance grading), T-031 (`ChatPipeline`), T-030 (LLM)
 - **Outputs:** Optional CRAG pipeline branch with web search fallback and knowledge refinement.
@@ -1665,7 +1665,7 @@
 ---
 
 ### T-143 · Explainable Retrieval API
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Return human-readable explanations for why each chunk was retrieved and how it relates to the query — inspired by RAG_Techniques `explainable_retrieval.py`.
 - **Inputs:** T-025 (retrieval result), T-030 (LLM), T-032 (API)
 - **Outputs:** Optional `explanations` field in chat response with per-chunk reasoning.

@@ -10,7 +10,9 @@ from src.rag.chunking.contextual_headers import (
     ContextualHeadersChunker,
     build_header_line,
     chunk_context_text,
+    group_chunks_by_passage,
     join_chunk_context,
+    passage_context_key,
     prepend_headers,
 )
 from src.rag.chunking.recursive_chunker import RecursiveChunker
@@ -264,3 +266,37 @@ class TestJoinChunkContext:
             ),
         ]
         assert join_chunk_context(chunks) == "child one slice.\n\nchild two slice."
+
+
+class TestPassageContextKey:
+    def test_merged_chunks_share_key(self):
+        from src.core.constants import MERGED_CHUNK_IDS_KEY
+
+        chunk = Chunk(
+            id="merged-1",
+            document_id="d1",
+            text="combined passage.",
+            metadata={MERGED_CHUNK_IDS_KEY: ["c1", "c0"]},
+        )
+        assert passage_context_key(chunk) == "merged:c0,c1"
+
+
+class TestGroupChunksByPassage:
+    def test_groups_merged_source_copies(self):
+        from src.core.constants import MERGED_CHUNK_IDS_KEY
+
+        chunk_a = Chunk(
+            id="c0",
+            document_id="d1",
+            text="combined passage.",
+            metadata={MERGED_CHUNK_IDS_KEY: ["c0", "c1"]},
+        )
+        chunk_b = Chunk(
+            id="c1",
+            document_id="d1",
+            text="combined passage.",
+            metadata={MERGED_CHUNK_IDS_KEY: ["c0", "c1"]},
+        )
+        groups = group_chunks_by_passage([chunk_a, chunk_b])
+        assert len(groups) == 1
+        assert {chunk.id for chunk in groups[0][1]} == {"c0", "c1"}

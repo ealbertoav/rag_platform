@@ -66,6 +66,7 @@ def _pipeline(
     return ChatPipeline(
         retrieval=_retrieval_mock(context, chunks),
         generation=_service(llm),
+        llm=llm,
     )
 
 
@@ -221,6 +222,63 @@ class TestChatPipelineFull:
     async def test_chat_full_query_id_set(self):
         result = await _pipeline().chat_full("q")
         assert result.query_id != ""
+
+    @pytest.mark.asyncio
+    async def test_chat_full_explain_false_skips_explanations(self):
+        llm = _llm_mock("answer text")
+        result = await _pipeline(llm=llm).chat_full("q", explain=False)
+        assert result.explanations is None
+        assert llm.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_full_explain_true_attaches_explanations(self):
+        import json
+
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = [
+            "answer text",
+            json.dumps(
+                {
+                    "explanations": [
+                        {"chunk_id": "c0", "reason": "Mentions the topic."},
+                        {"chunk_id": "c1", "reason": "Adds supporting detail."},
+                    ]
+                }
+            ),
+        ]
+        result = await _pipeline(llm=llm).chat_full("q", explain=True)
+        assert result.explanations is not None
+        assert len(result.explanations) == 2
+        assert result.explanations[0].chunk_id == "c0"
+        assert llm.generate.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_chat_full_explain_failure_omits_explanations(self):
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = ["answer text", "not json"]
+        result = await _pipeline(llm=llm).chat_full("q", explain=True)
+        assert result.explanations is None
+
+    @pytest.mark.asyncio
+    @patch("src.rag.pipelines.chat_pipeline.time.monotonic")
+    async def test_chat_full_latency_includes_explain(self, mock_monotonic):
+        import json
+
+        mock_monotonic.side_effect = [0.0, 0.5]
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = [
+            "answer text",
+            json.dumps(
+                {
+                    "explanations": [
+                        {"chunk_id": "c0", "reason": "Mentions the topic."},
+                        {"chunk_id": "c1", "reason": "Adds supporting detail."},
+                    ]
+                }
+            ),
+        ]
+        result = await _pipeline(llm=llm).chat_full("q", explain=True)
+        assert result.latency_ms == pytest.approx(500.0)
 
 
 class TestChatPipelineProperties:

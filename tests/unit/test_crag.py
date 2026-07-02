@@ -24,6 +24,7 @@ from src.rag.quality.crag import (
     CRAGAction,
     determine_crag_action,
     eval_contexts_for_resolution,
+    explainable_chunks_for_resolution,
     refine_knowledge,
     score_retrieval_quality,
 )
@@ -124,6 +125,41 @@ class TestEvalContextsForResolution:
                 refined=True,
             )
             == []
+        )
+
+
+class TestExplainableChunksForResolution:
+    def test_unrefined_returns_chunks(self):
+        chunks = [_chunk("c0", relevance_score=0.9)]
+        assert (
+            explainable_chunks_for_resolution(
+                chunks=chunks,
+                refined=False,
+                fallback_to_retrieval=False,
+            )
+            == chunks
+        )
+
+    def test_refined_without_fallback_returns_none(self):
+        chunks = [_chunk("c0", relevance_score=0.5)]
+        assert (
+            explainable_chunks_for_resolution(
+                chunks=chunks,
+                refined=True,
+                fallback_to_retrieval=False,
+            )
+            is None
+        )
+
+    def test_refined_with_fallback_returns_chunks(self):
+        chunks = [_chunk("c0", relevance_score=0.5)]
+        assert (
+            explainable_chunks_for_resolution(
+                chunks=chunks,
+                refined=True,
+                fallback_to_retrieval=True,
+            )
+            == chunks
         )
 
 
@@ -424,6 +460,41 @@ class TestChatPipelineCRAG:
         assert answer.text == "answer"
         assert set(answer.sources) == {"c0"}
         pipeline._web_search.search.assert_awaited_once()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_combine_and_refine_skips_explain_when_context_refined(self):
+        chunks = [_chunk("c0", relevance_score=0.5)]
+        web_results = [WebSearchResult(title="Hit", url="https://a.com", snippet="extra")]
+        crag_llm = MagicMock()
+        crag_llm.generate.return_value = "refined web context"
+        pipeline = _crag_pipeline(
+            retrieval_result=_retrieval_result(chunks=chunks, context="partial context"),
+            web_results=web_results,
+            crag_llm=crag_llm,
+        )
+        answer = await pipeline.chat_full("question", explain=True)
+        assert answer.explanations is None
+        assert crag_llm.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_crag_fallback_to_retrieval_still_explains(self):
+        import json
+
+        chunks = [_chunk("c0", relevance_score=0.5)]
+        web_search = MagicMock()
+        web_search.search = AsyncMock(side_effect=RuntimeError("network down"))
+        crag_llm = MagicMock()
+        crag_llm.generate.side_effect = [
+            json.dumps({"explanations": [{"chunk_id": "c0", "reason": "Relevant passage."}]}),
+        ]
+        pipeline = _crag_pipeline(
+            retrieval_result=_retrieval_result(chunks=chunks, context="partial context"),
+            web_search=web_search,
+            crag_llm=crag_llm,
+        )
+        answer = await pipeline.chat_full("question", explain=True)
+        assert answer.explanations is not None
+        assert answer.explanations[0].chunk_id == "c0"
 
     @pytest.mark.asyncio
     async def test_web_search_failure_returns_no_info(self):

@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends
+from fastapi import Query as QueryParam
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,7 @@ from src.api.security import require_api_key
 from src.domain.entities.query import Query
 from src.rag.pipelines.agent_pipeline import AgentPipeline
 from src.rag.pipelines.chat_pipeline import ChatPipeline
+from src.rag.quality.explainable_retrieval import ChunkExplanation
 from src.rag.retrieval.filters import filters_from_request
 
 router = APIRouter(
@@ -55,6 +57,7 @@ class ChatFullResponse(BaseModel):
     sources: list[str]
     latency_ms: float
     token_count: int
+    explanations: list[ChunkExplanation] | None = None
 
 
 @router.post("", response_class=StreamingResponse)
@@ -78,19 +81,21 @@ async def chat_stream(
     return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
-@router.post("/full", response_model=ChatFullResponse)
+@router.post("/full", response_model=ChatFullResponse, response_model_exclude_none=True)
 async def chat_full(
     body: ChatRequest,
+    explain: bool = QueryParam(False, description="Attach per-source retrieval explanations."),
     pipeline: ChatPipeline = Depends(get_chat_pipeline),
 ) -> ChatFullResponse:
     """Non-streaming endpoint — returns the complete answer once generated."""
     query = _query_from_request(body)
-    answer = await pipeline.chat_full(query)
+    answer = await pipeline.chat_full(query, explain=explain)
     return ChatFullResponse(
         answer=answer.text,
         sources=answer.sources,
         latency_ms=answer.latency_ms,
         token_count=answer.token_count,
+        explanations=answer.explanations,
     )
 
 

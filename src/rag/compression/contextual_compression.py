@@ -4,10 +4,10 @@ import logging
 from pathlib import Path
 from string import Template
 
-from src.core.constants import CHUNK_PARENT_ID_KEY, CHUNK_RAW_TEXT_KEY, PARENT_CONTEXT_TEXT_KEY
+from src.core.constants import CHUNK_RAW_TEXT_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
-from src.rag.chunking.contextual_headers import chunk_context_text
+from src.rag.chunking.contextual_headers import chunk_context_text, passage_context_key
 from src.rag.compression.token_reducer import count_tokens, truncate_to_tokens
 
 logger = logging.getLogger(__name__)
@@ -54,15 +54,7 @@ class ContextualCompressor:
         compressed_passages: dict[str, str] = {}
 
         for chunk in chunks:
-            parent_id_raw = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
-            if (
-                isinstance(parent_id_raw, str)
-                and parent_id_raw
-                and PARENT_CONTEXT_TEXT_KEY in chunk.metadata
-            ):
-                passage_key = parent_id_raw
-            else:
-                passage_key = chunk.id
+            passage_key = passage_context_key(chunk)
             cached_text = compressed_passages.get(passage_key)
             if cached_text is not None:
                 result.append(self._with_compressed_text(chunk, cached_text))
