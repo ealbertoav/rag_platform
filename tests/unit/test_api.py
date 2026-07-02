@@ -312,6 +312,19 @@ class TestChatFull:
             data = (await c.post("/chat/full", json={"question": "q"})).json()
         assert "latency_ms" in data
 
+    @pytest.mark.asyncio
+    async def test_explain_false_omits_explanations(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/full", json={"question": "q"})).json()
+        assert "explanations" not in data
+
+    @pytest.mark.asyncio
+    async def test_explain_true_passes_flag_to_pipeline(self, app_client, chat_pipeline_mock):
+        async with _client(app_client) as c:
+            await c.post("/chat/full?explain=true", json={"question": "q"})
+        chat_pipeline_mock.chat_full.assert_awaited_once()
+        assert chat_pipeline_mock.chat_full.await_args.kwargs["explain"] is True
+
 
 # ── /chat/agent ────────────────────────────────────────────────────────────────
 

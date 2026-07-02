@@ -24,6 +24,7 @@ from src.rag.quality.crag import (
     refine_knowledge,
     score_retrieval_quality,
 )
+from src.rag.quality.explainable_retrieval import explain_chunks, resolve_chunks_for_sources
 
 if TYPE_CHECKING:
     from src.domain.repositories.llm_repository import LLMRepository
@@ -89,10 +90,11 @@ class ChatPipeline:
         resolution = await self._resolve_context(query.text, result)
         return self._generation.stream(query.text, resolution.context)
 
-    async def chat_full(self, question: str | Query) -> Answer:
+    async def chat_full(self, question: str | Query, *, explain: bool = False) -> Answer:
         """Run the full pipeline and return a complete "Answer".
 
         Useful for non-streaming contexts (tests, scripts).
+        When *explain* is True, attaches per-source retrieval explanations.
         """
         query = question if isinstance(question, Query) else Query(text=question)
         t0 = time.monotonic()
@@ -105,11 +107,21 @@ class ChatPipeline:
         token_count = len(answer.text.split())
         record_generation(token_count, elapsed / 1000)
         record_request("chat", elapsed / 1000, success=True)
+
+        explanations = None
+        if explain and answer.sources and self._llm is not None:
+            source_chunks = resolve_chunks_for_sources(answer.sources, result.chunks)
+            if source_chunks:
+                explanations = explain_chunks(query.text, source_chunks, self._llm)
+                if not explanations:
+                    explanations = None
+
         return answer.model_copy(
             update={
                 "query_id": query.id,
                 "latency_ms": elapsed,
                 "token_count": token_count,
+                "explanations": explanations,
             }
         )
 
@@ -174,7 +186,7 @@ class ChatPipeline:
             crag_lower_threshold=crag_cfg.lower_threshold,
             crag_upper_threshold=crag_cfg.upper_threshold,
             web_search=web_search,
-            llm=llm if crag_cfg.enabled else None,
+            llm=llm,
             web_search_max_results=settings.web_search.max_results,
             web_search_available=web_search_available,
         )

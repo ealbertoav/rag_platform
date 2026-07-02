@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.rag.quality.explainable_retrieval import ChunkExplanation
+
 
 class Answer(BaseModel):
     """The RAG system's response to a Query."""
@@ -14,3 +16,4 @@ class Answer(BaseModel):
     sources: list[str] = Field(default_factory=list)
     latency_ms: float = 0.0
     token_count: int = 0
+    explanations: list[ChunkExplanation] | None = None
