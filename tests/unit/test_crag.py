@@ -152,7 +152,7 @@ class TestWebSearchProviders:
         assert "https://a.com" in text
         assert "Snippet" in text
 
-    def test_parse_duckduckgo_lite_html(self):
+    def test_parse_duckduckgo_lite_html_same_row(self):
         html = """
         <html><body><table>
         <tr>
@@ -162,6 +162,104 @@ class TestWebSearchProviders:
         </table></body></html>
         """
         results = parse_duckduckgo_lite(html, max_results=3)
+        assert len(results) == 1
+        assert results[0].title == "Example"
+        assert results[0].url == "https://example.com"
+        assert results[0].snippet == "Example snippet text."
+
+    def test_parse_duckduckgo_lite_html_split_rows(self):
+        html = """
+        <html><body><table>
+        <tr class="result-sponsored">
+          <td>1.&nbsp;</td>
+          <td><a class="result-link" href="https://ads.example">Sponsored Ad</a></td>
+        </tr>
+        <tr class="result-sponsored">
+          <td>&nbsp;&nbsp;&nbsp;</td>
+          <td class="result-snippet">Paid snippet.</td>
+        </tr>
+        <tr>
+          <td valign="top">2.&nbsp;</td>
+          <td>
+            <a class="result-link" href="https://www.python.org/">Welcome to Python.org</a>
+          </td>
+        </tr>
+        <tr>
+          <td>&nbsp;&nbsp;&nbsp;</td>
+          <td class="result-snippet">The official home of the Python Programming Language.</td>
+        </tr>
+        <tr>
+          <td>&nbsp;&nbsp;&nbsp;</td>
+          <td><span class="link-text">www.python.org</span></td>
+        </tr>
+        <tr>
+          <td valign="top">3.&nbsp;</td>
+          <td>
+            <a class="result-link" href="https://www.w3schools.com/python/">
+              Python Tutorial - W3Schools
+            </a>
+          </td>
+        </tr>
+        <tr>
+          <td>&nbsp;&nbsp;&nbsp;</td>
+          <td class="result-snippet">
+            Well organized and easy to understand Web building tutorials.
+          </td>
+        </tr>
+        </table></body></html>
+        """
+        results = parse_duckduckgo_lite(html, max_results=5)
+        assert len(results) == 2
+        assert results[0].title == "Welcome to Python.org"
+        assert results[0].url == "https://www.python.org/"
+        assert "official home" in results[0].snippet
+        assert results[1].title == "Python Tutorial - W3Schools"
+        assert "Web building tutorials" in results[1].snippet
+
+    def test_parse_duckduckgo_lite_link_without_snippet(self):
+        html = """
+        <html><body><table>
+        <tr>
+          <td><a class="result-link" href="https://example.com">Example</a></td>
+        </tr>
+        <tr>
+          <td><a class="result-link" href="https://other.com">Other</a></td>
+        </tr>
+        </table></body></html>
+        """
+        results = parse_duckduckgo_lite(html, max_results=3)
+        assert len(results) == 2
+        assert results[0].title == "Example"
+        assert results[0].snippet == ""
+        assert results[1].title == "Other"
+
+    @pytest.mark.asyncio
+    async def test_duckduckgo_provider_parses_split_row_html(self):
+        html = """
+        <html><body><table>
+        <tr>
+          <td><a class="result-link" href="https://example.com">Example</a></td>
+        </tr>
+        <tr>
+          <td class="result-snippet">Example snippet text.</td>
+        </tr>
+        </table></body></html>
+        """
+        provider = DuckDuckGoWebSearchProvider()
+        mock_response = MagicMock()
+        mock_response.text = html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "src.infrastructure.search.web_search.httpx.AsyncClient", return_value=mock_client
+        ):
+            results = await provider.search("example query", max_results=3)
+
         assert len(results) == 1
         assert results[0].title == "Example"
         assert results[0].snippet == "Example snippet text."

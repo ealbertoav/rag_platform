@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from src.core.settings import Settings
 from src.core.settings import settings as default_settings
@@ -78,22 +78,47 @@ class TavilyWebSearchProvider(WebSearchRepository):
         return results
 
 
+def _is_sponsored_row(row: Tag) -> bool:
+    return "result-sponsored" in (row.get("class") or [])
+
+
+def _find_following_snippet_row(rows: list[Tag], start_index: int) -> Tag | None:
+    """DuckDuckGo Lite puts title/link and snippet in consecutive table rows."""
+    for row in rows[start_index + 1 :]:
+        if _is_sponsored_row(row):
+            return None
+        if row.select_one("a.result-link"):
+            return None
+        snippet_cell = row.select_one("td.result-snippet")
+        if snippet_cell is not None:
+            return snippet_cell
+    return None
+
+
 def parse_duckduckgo_lite(html: str, *, max_results: int) -> list[WebSearchResult]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[WebSearchResult] = []
+    rows = soup.select("tr")
 
-    for row in soup.select("tr"):
-        link = row.select_one("a.result-link")
-        snippet_cell = row.select_one("td.result-snippet")
-        if link is None or snippet_cell is None:
-            continue
-        title = link.get_text(strip=True)
-        url = str(link.get("href", "")).strip()
-        snippet = snippet_cell.get_text(strip=True)
-        if title or snippet:
-            results.append(WebSearchResult(title=title, url=url, snippet=snippet))
+    for index, row in enumerate(rows):
         if len(results) >= max_results:
             break
+        if _is_sponsored_row(row):
+            continue
+
+        link = row.select_one("a.result-link")
+        if link is None:
+            continue
+
+        snippet_cell = row.select_one("td.result-snippet")
+        if snippet_cell is None:
+            snippet_cell = _find_following_snippet_row(rows, index)
+
+        title = link.get_text(strip=True)
+        url = str(link.get("href", "")).strip()
+        snippet = snippet_cell.get_text(strip=True) if snippet_cell is not None else ""
+        if title or snippet:
+            results.append(WebSearchResult(title=title, url=url, snippet=snippet))
 
     return results
 
