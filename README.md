@@ -12,6 +12,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Corrective RAG web fallback (T-142):** Optional post-retrieval quality gate on `/chat` and `/chat/full` — scores aggregate retrieval quality from Reliable RAG `relevance_score` metadata, then uses retrieved context as-is, combines retrieval with web search and LLM refinement, or discards retrieval for web-only correction. Configure via `quality.crag` in `configs/retrieval.yaml` and `web_search` in `configs/web_search.yaml` (both off/`provider: none` by default). Requires Reliable RAG (T-140) for graded scores. See [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142).
 
+> **Explainable retrieval (T-143):** Optional per-source explanations on `POST /chat/full?explain=true` — after generation, an LLM explains why each cited chunk was retrieved and how it relates to the question (using the same `chunk_context_text` the generator saw). Default `explain=false` adds no extra LLM calls. Omitted when CRAG refines context to a web-only passage, or when explanation generation fails. See [Explainable Retrieval (T-143)](#explainable-retrieval-t-143).
+
 ---
 
 ## Table of Contents
@@ -29,6 +31,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Chat](#chat)
     - [Scoped retrieval filters (T-134)](#scoped-retrieval-filters-t-134)
     - [Corrective RAG in standard chat (T-142)](#corrective-rag-in-standard-chat-t-142)
+    - [Explainable retrieval in standard chat (T-143)](#explainable-retrieval-in-standard-chat-t-143)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare Embedding Providers](#compare-embedding-providers)
@@ -93,6 +96,7 @@ flowchart LR
         CRAG --> PR["System Prompt<br/>+ Context"]
         PR --> LLM["llama.cpp<br/>Qwen3-30B on Metal"]
         LLM --> SSE["Streaming Response<br/>SSE tokens"]
+        LLM -.->|"/chat/full?explain=true"| XPL["Explain Retrieval<br/>per-source reasons<br/>(optional · T-143)"]
     end
 
     INGEST --> RETRIEVE
@@ -296,7 +300,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, hybrid fusion, reranker |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
@@ -369,7 +373,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details). **Corrective RAG** (T-142) runs in the chat pipeline after retrieval returns and is documented in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142).
+Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details). **Corrective RAG** (T-142) runs in the chat pipeline after retrieval returns and is documented in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142). **Explainable retrieval** (T-143) is opt-in via `?explain=true` on `/chat/full` and documented in [Explainable Retrieval (T-143)](#explainable-retrieval-t-143).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -509,6 +513,35 @@ curl -X POST http://localhost:8000/chat/full \
   -d '{"question": "How do IAM roles work in EKS?"}'
 ```
 
+**Non-streaming with retrieval explanations:**
+```bash
+curl -X POST "http://localhost:8000/chat/full?explain=true" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was Q3 revenue?"}'
+```
+
+Example response (excerpt):
+```json
+{
+  "answer": "Q3 revenue was $12.4M...",
+  "sources": ["chunk-abc", "chunk-def"],
+  "latency_ms": 3100.2,
+  "token_count": 48,
+  "explanations": [
+    {
+      "chunk_id": "chunk-abc",
+      "reason": "Contains the Q3 revenue figure and year-over-year comparison cited in the answer."
+    },
+    {
+      "chunk_id": "chunk-def",
+      "reason": "Provides regional breakdown that supports the total revenue claim."
+    }
+  ]
+}
+```
+
+> `explain` defaults to `false`. When disabled or when explanations cannot be generated, the `explanations` field is omitted (`response_model_exclude_none`). Streaming `/chat` and agent endpoints do not support explanations — use `/chat/full?explain=true`.
+
 #### Scoped retrieval filters (T-134)
 
 Both `/chat` and `/chat/full` accept optional filter fields on the request body. Omit them for unchanged default behavior.
@@ -554,6 +587,22 @@ When `quality.crag.enabled=true`, standard chat (`/chat`, `/chat/full`) and the 
 Configure thresholds in `configs/retrieval.yaml` and a web provider in `configs/web_search.yaml`. See the full flow, providers, fallbacks, and benchmark behavior in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142).
 
 > Agent endpoints (`/chat/agent`, `/chat/agent/full`) do not run CRAG — use Self-RAG (T-141) for agent-side quality gates.
+
+#### Explainable retrieval in standard chat (T-143)
+
+`POST /chat/full` accepts an optional query parameter `explain=true`. After the answer is generated, the pipeline runs one additional LLM call that returns a human-readable reason for each source chunk ID in `sources`.
+
+Explanations use the same passage text the generator saw — `chunk_context_text()` after optional enrichment (parent context, RSE merges, contextual headers `raw_text`). Sibling child chunks that share expanded parent context are grouped into one passage for the explain prompt; the returned reason is replicated for each citation ID in that group.
+
+| Condition | Behavior |
+|---|---|
+| `explain=false` (default) | No extra LLM call; `explanations` omitted |
+| `explain=true`, sources present | One batched LLM call → one reason per source chunk |
+| CRAG refines context (web merge, not fallback) | Explanations omitted — chunk text no longer matches what generation used |
+| CRAG falls back to retrieval context | Explanations still generated from retrieved chunks |
+| LLM or parse failure | `explanations` omitted; answer still returned |
+
+See [Explainable Retrieval (T-143)](#explainable-retrieval-t-143) in Retrieval Pipeline Details for the full flow diagram and implementation notes.
 
 **Python client:**
 ```python
@@ -1215,7 +1264,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 |---|---|---|
 | `GET` | `/health` | Server status and model load state |
 | `POST` | `/chat` | Stream answer as Server-Sent Events; optional `document_ids`, `metadata_filters`, `min_score` (T-134) |
-| `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat` |
+| `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat`; optional `?explain=true` for per-source retrieval explanations (T-143) |
 | `POST` | `/chat/agent` | Agentic RAG — multistep retrieval, streaming answer (`max_iterations` 1–5) |
 | `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
@@ -1299,12 +1348,12 @@ rag_implementation/
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
 │   │   ├── ingestion/          # chunk_header_template · extract_propositions · generate_chunk_questions · generate_document_summary
-│   │   ├── quality/              # relevance_grading (T-140) · self_rag_* (T-141) · crag_knowledge_refinement (T-142)
+│   │   ├── quality/              # relevance_grading (T-140) · self_rag_* (T-141) · crag_knowledge_refinement (T-142) · explain_retrieval (T-143)
 │   │   └── retrieval/          # query_expansion · step_back · query_classification · hyde_generate · entity_extraction · agent_decision
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
-│   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141) · CRAG (T-142)
+│   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141) · CRAG (T-142) · explainable retrieval (T-143)
 │   │   ├── structured_output.py # Shared Pydantic JSON parsing for LLM structured output
 │   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
@@ -1686,7 +1735,7 @@ RETRIEVAL__PARENT_CONTEXT__ENABLED=true
 
 Reliable RAG is an optional **query-time quality gate** inspired by [Reliable RAG](https://github.com/NirDiamant/RAG_Techniques) patterns. After cross-encoder reranking and optional enrichment (MMR diversity, RSE, parent context), an LLM grades each surviving passage for relevancy to the query. Chunks below `min_score` are excluded before contextual compression and generation.
 
-**Pipeline position:** runs **after** RSE (T-123) and parent context (T-124), **before** contextual compression — so grading evaluates the same text the generator will see (`chunk_context_text()`), including expanded parent bodies, RSE-merged segments, and CCH `raw_text` (not header-prefixed embed text). Sibling children sharing the same parent context are graded once as a group (matching `join_chunk_context` deduplication).
+**Pipeline position:** runs **after** RSE (T-123) and parent context (T-124), **before** contextual compression — so grading evaluates the same text the generator will see (`chunk_context_text()`), including expanded parent bodies, RSE-merged segments, and CCH `raw_text` (not header-prefixed embed text). Sibling children sharing the same parent context are graded once as a group via `group_chunks_by_passage()` (same grouping used by explainable retrieval T-143 and `join_chunk_context`).
 
 ```yaml
 # configs/retrieval.yaml
@@ -1803,6 +1852,55 @@ QUALITY__CRAG__UPPER_THRESHOLD=0.7
 WEB_SEARCH__PROVIDER=duckduckgo
 WEB_SEARCH__MAX_RESULTS=5
 WEB_SEARCH__TAVILY__API_KEY=tvly-...   # when provider=tavily
+```
+
+##### Explainable Retrieval (T-143)
+
+Explainable retrieval is an optional **post-generation** step on `POST /chat/full` only. When `explain=true`, after the answer and `sources` are produced, `explain_chunks()` runs a single structured LLM call (`src/prompts/quality/explain_retrieval.txt`) over the cited passages and attaches human-readable reasons to the response.
+
+**Pipeline position:** retrieval → optional CRAG → generation → optional explain (does not affect the answer text).
+
+```mermaid
+flowchart TD
+    RT["Retrieval complete<br/>context + chunks"] --> CRAG{"CRAG enabled?<br/>(optional · T-142)"}
+    CRAG -->|no| GEN["Generate answer<br/>+ source chunk IDs"]
+    CRAG -->|yes| CR2["Resolve context<br/>use_retrieval · combine · web_only"]
+    CR2 --> GEN
+    GEN --> EX{"explain=true<br/>on /chat/full?"}
+    EX -->|no| OUT["Return answer<br/>explanations omitted"]
+    EX -->|yes| CHK{chunks explainable?}
+    CHK -->|CRAG refined<br/>non-fallback| OUT
+    CHK -->|yes| RES["resolve_chunks_for_sources<br/>map citation IDs → chunks"]
+    RES --> EXP["explain_chunks<br/>LLM · one call per request"]
+    EXP --> OK{parsed?}
+    OK -->|yes| OUT2["Return answer<br/>+ explanations[]"]
+    OK -->|no| OUT
+    OUT --> DONE["Response"]
+    OUT2 --> DONE
+
+    style EXP fill:#fff8e6,stroke:#cc9900
+    style OUT fill:#f0fff0,stroke:#66aa66
+```
+
+**Structured LLM output** (batched over passage groups):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `chunk_id` | string | Citation chunk ID (must match `sources`) |
+| `reason` | string | One or two sentences on why the passage was retrieved |
+
+Passage groups mirror Reliable RAG (T-140) and `join_chunk_context` deduplication: `group_chunks_by_passage()` collapses sibling children with the same parent context into one explain prompt entry, then fans the reason out to every chunk ID in the group.
+
+**CRAG interaction:** `explainable_chunks_for_resolution()` returns `None` when CRAG successfully refines retrieval into a web-only passage (`refined=true` and not `fallback_to_retrieval`). Explaining individual retrieved chunks would misrepresent what the generator actually read. When CRAG falls back to raw retrieval context, explanations proceed normally.
+
+**When to use:** audit trails, support UI tooltips, debugging retrieval quality in production chat, or compliance workflows that require rationale alongside citations.
+
+**Trade-offs:** one extra LLM call per `/chat/full` request when enabled (included in `latency_ms`). No YAML config flag — opt in per request via `?explain=true`. Failures are logged and omitted from the response; the answer is never blocked. Not available on streaming `/chat` or agent endpoints.
+
+```bash
+curl -X POST "http://localhost:8000/chat/full?explain=true" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was Q3 revenue?"}'
 ```
 
 ##### Self-RAG and Reliable RAG together (T-141 + T-140)
