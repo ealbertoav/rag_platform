@@ -217,7 +217,10 @@ class ChatPipeline:
         query_text: str,
         retrieval_result: RetrievalResult,
     ) -> tuple[str, CRAGDecision]:
-        quality = score_retrieval_quality(retrieval_result.chunks)
+        quality = score_retrieval_quality(
+            retrieval_result.chunks,
+            relevance_scores=retrieval_result.relevance_scores or None,
+        )
 
         if not quality.graded:
             logger.debug("CRAG skipped — no relevance_score metadata; enable Reliable RAG (T-140)")

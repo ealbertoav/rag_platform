@@ -140,7 +140,9 @@ class TestGradeRelevanceFormatting:
             parent_id="parent-0",
             metadata={PARENT_CONTEXT_TEXT_KEY: parent_text},
         )
-        kept, passed, failed = grade_relevance("query", [child_a, child_b], llm, min_score=0.5)
+        kept, passed, failed, all_scores = grade_relevance(
+            "query", [child_a, child_b], llm, min_score=0.5
+        )
         assert {c.id for c in kept} == {"child-a", "child-b"}
         assert passed == 2
         assert failed == 0
@@ -149,7 +151,7 @@ class TestGradeRelevanceFormatting:
 class TestGradeRelevance:
     def test_empty_chunks(self):
         llm = MagicMock()
-        kept, passed, failed = grade_relevance("query", [], llm)
+        kept, passed, failed, all_scores = grade_relevance("query", [], llm)
         assert kept == []
         assert passed == 0
         assert failed == 0
@@ -164,10 +166,11 @@ class TestGradeRelevance:
             ]
         )
         chunks = [_chunk("c0", "relevant"), _chunk("c1", "irrelevant")]
-        kept, passed, failed = grade_relevance("query", chunks, llm, min_score=0.5)
+        kept, passed, failed, all_scores = grade_relevance("query", chunks, llm, min_score=0.5)
         assert [c.id for c in kept] == ["c0"]
         assert passed == 1
         assert failed == 1
+        assert all_scores == pytest.approx([0.9, 0.3])
         assert kept[0].metadata["relevance_score"] == pytest.approx(0.9)
         assert kept[0].metadata["relevance_supporting"] is True
 
@@ -177,28 +180,31 @@ class TestGradeRelevance:
             [{"chunk_id": "c0", "relevance_score": 0.9, "supporting": True}]
         )
         chunks = [_chunk("c0"), _chunk("c1")]
-        kept, passed, failed = grade_relevance("query", chunks, llm, min_score=0.5)
+        kept, passed, failed, all_scores = grade_relevance("query", chunks, llm, min_score=0.5)
         assert [c.id for c in kept] == ["c0"]
         assert passed == 1
         assert failed == 1
+        assert all_scores == pytest.approx([0.9])
 
     def test_llm_failure_returns_all_chunks(self):
         llm = MagicMock()
         llm.generate.side_effect = RuntimeError("llm down")
         chunks = [_chunk("c0"), _chunk("c1")]
-        kept, passed, failed = grade_relevance("query", chunks, llm, min_score=0.5)
+        kept, passed, failed, all_scores = grade_relevance("query", chunks, llm, min_score=0.5)
         assert kept == chunks
         assert passed == 2
         assert failed == 0
+        assert all_scores == []
 
     def test_parse_failure_returns_all_chunks(self):
         llm = MagicMock()
         llm.generate.return_value = "garbage"
         chunks = [_chunk("c0")]
-        kept, passed, failed = grade_relevance("query", chunks, llm, min_score=0.5)
+        kept, passed, failed, all_scores = grade_relevance("query", chunks, llm, min_score=0.5)
         assert kept == chunks
         assert passed == 1
         assert failed == 0
+        assert all_scores == []
 
 
 class TestRetrievalServiceReliableRAG:
@@ -280,6 +286,7 @@ class TestRetrievalServiceReliableRAG:
         result = await svc.retrieve(Query(text="kubernetes"))
         assert result.chunks == []
         assert result.context == ""
+        assert result.relevance_scores == pytest.approx([0.1, 0.2])
 
     @pytest.mark.asyncio
     async def test_empty_context_triggers_no_info_generation(self, reranked_chunks):

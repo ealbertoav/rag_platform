@@ -62,15 +62,31 @@ class ContextResolution:
     eval_contexts: list[str]
 
 
-def score_retrieval_quality(chunks: list[Chunk]) -> RetrievalQualityScore:
+def score_retrieval_quality(
+    chunks: list[Chunk],
+    *,
+    relevance_scores: list[float] | None = None,
+) -> RetrievalQualityScore:
     """Compute aggregate retrieval quality for CRAG thresholding.
 
-    Uses mean "relevance_score" from Reliable RAG (T-140) metadata when present.
-    Empty retrieval and chunks without grades return "graded=False" so callers skip
-    the corrective branch until Reliable RAG supplies relevance scores.
+    When *relevance_scores* is supplied (all Reliable RAG grades, including chunks
+    filtered by min_score), uses their mean so CRAG can reach WEB_ONLY even when
+    only high-scoring passages survive filtering.
+
+    Empty retrieval with no pre-graded scores returns score=0.0, graded=True so
+    callers can fall back to web search. Non-empty chunks without any grades
+    return graded=False so callers skip CRAG until Reliable RAG is enabled.
     """
+    if relevance_scores is not None:
+        if not relevance_scores:
+            return RetrievalQualityScore(score=0.0, graded=True)
+        return RetrievalQualityScore(
+            score=sum(relevance_scores) / len(relevance_scores),
+            graded=True,
+        )
+
     if not chunks:
-        return RetrievalQualityScore(score=0.0, graded=False)
+        return RetrievalQualityScore(score=0.0, graded=True)
 
     scores: list[float] = []
     for chunk in chunks:

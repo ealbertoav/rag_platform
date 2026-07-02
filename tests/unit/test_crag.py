@@ -27,6 +27,7 @@ from src.rag.quality.crag import (
     refine_knowledge,
     score_retrieval_quality,
 )
+from tests.unit.web_search_helpers import patch_web_search_httpx_post
 
 
 def _chunk(chunk_id: str, *, relevance_score: float | None = None) -> Chunk:
@@ -37,10 +38,10 @@ def _chunk(chunk_id: str, *, relevance_score: float | None = None) -> Chunk:
 
 
 class TestScoreRetrievalQuality:
-    def test_empty_chunks_not_graded(self):
+    def test_empty_chunks_graded_as_zero(self):
         result = score_retrieval_quality([])
         assert result.score == pytest.approx(0.0)
-        assert result.graded is False
+        assert result.graded is True
 
     def test_mean_of_relevance_scores(self):
         chunks = [
@@ -54,6 +55,22 @@ class TestScoreRetrievalQuality:
     def test_ungraded_chunks_not_graded(self):
         result = score_retrieval_quality([_chunk("c0")])
         assert result.graded is False
+
+    def test_pre_graded_scores_include_filtered_out(self):
+        """CRAG uses all Reliable RAG grades, not only surviving chunks."""
+        kept = [_chunk("c2", relevance_score=0.55)]
+        result = score_retrieval_quality(kept, relevance_scores=[0.1, 0.2, 0.55])
+        assert result.score == pytest.approx((0.1 + 0.2 + 0.55) / 3)
+        assert result.graded is True
+        assert (
+            determine_crag_action(result.score, lower_threshold=0.3, upper_threshold=0.7)
+            == CRAGAction.WEB_ONLY
+        )
+
+    def test_empty_pre_graded_scores(self):
+        result = score_retrieval_quality([], relevance_scores=[])
+        assert result.score == pytest.approx(0.0)
+        assert result.graded is True
 
 
 class TestDetermineCRAGAction:
@@ -246,18 +263,7 @@ class TestWebSearchProviders:
         </table></body></html>
         """
         provider = DuckDuckGoWebSearchProvider()
-        mock_response = MagicMock()
-        mock_response.text = html
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch(
-            "src.infrastructure.search.web_search.httpx.AsyncClient", return_value=mock_client
-        ):
+        with patch_web_search_httpx_post(text=html):
             results = await provider.search("example query", max_results=3)
 
         assert len(results) == 1
@@ -479,31 +485,33 @@ class TestChatPipelineCRAG:
         pipeline._web_search.search.assert_not_called()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
-    async def test_empty_retrieval_skips_crag_and_returns_no_info(self):
+    async def test_empty_retrieval_triggers_web_only(self):
         pipeline = _crag_pipeline(
             retrieval_result=_retrieval_result(chunks=[], context=""),
             web_results=[
                 WebSearchResult(title="Hit", url="https://example.com", snippet="web fact"),
             ],
+            refined_context="web refined answer context",
         )
         answer = await pipeline.chat_full("question")
-        assert answer.text == "I don't have information about this."
+        assert answer.text == "answer"
         assert answer.sources == []
-        pipeline._web_search.search.assert_not_called()  # type: ignore[attr-defined]
+        pipeline._web_search.search.assert_awaited_once()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
-    async def test_empty_retrieval_crag_span_skipped(self):
+    async def test_empty_retrieval_crag_span_web_only(self):
         pipeline = _crag_pipeline(
             retrieval_result=_retrieval_result(chunks=[], context=""),
+            web_results=[WebSearchResult(title="Hit", url="https://a.com", snippet="x")],
         )
         with patch("src.rag.pipelines.chat_pipeline.record_crag_span") as record_span:
             await pipeline.chat_full("question")
         record_span.assert_called_once()
         decision = record_span.call_args.args[1]
-        assert decision.skipped is True
-        assert decision.quality_graded is False
-        assert decision.web_search_used is False
-        assert decision.action == CRAGAction.USE_RETRIEVAL
+        assert decision.skipped is False
+        assert decision.quality_graded is True
+        assert decision.web_search_used is True
+        assert decision.action == CRAGAction.WEB_ONLY
 
     @pytest.mark.asyncio
     async def test_combine_without_web_falls_back_to_retrieval(self):
@@ -583,17 +591,37 @@ class TestChatPipelineCRAG:
         assert context_texts == [chunk.text for chunk in chunks]
 
     @pytest.mark.asyncio
-    async def test_benchmark_empty_retrieval_skips_web_and_returns_empty_eval_context(self):
+    async def test_filtered_low_scores_trigger_web_only(self):
+        """CRAG uses all Reliable RAG grades, not only chunks above min_score."""
+        chunks = [_chunk("c2", relevance_score=0.55)]
+        pipeline = _crag_pipeline(
+            retrieval_result=RetrievalResult(
+                query=Query(text="question"),
+                chunks=chunks,
+                context="partial context",
+                relevance_scores=[0.1, 0.2, 0.55],
+            ),
+            web_results=[WebSearchResult(title="Hit", url="https://a.com", snippet="extra")],
+            refined_context="web refined answer context",
+        )
+        answer = await pipeline.chat_full("question")
+        assert answer.text == "answer"
+        assert answer.sources == []
+        pipeline._web_search.search.assert_awaited_once()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_benchmark_empty_retrieval_uses_web_refined_context(self):
         pipeline = _crag_pipeline(
             retrieval_result=_retrieval_result(chunks=[], context=""),
             web_results=[
                 WebSearchResult(title="Hit", url="https://example.com", snippet="web fact"),
             ],
+            refined_context="web refined answer context",
         )
         answer, context_texts = await pipeline.benchmark("question")
-        assert answer.text == "I don't have information about this."
-        assert context_texts == []
-        pipeline._web_search.search.assert_not_called()  # type: ignore[attr-defined]
+        assert answer.text == "answer"
+        assert context_texts == ["web refined answer context"]
+        pipeline._web_search.search.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 class TestChatPipelineCRAGFromSettings:
