@@ -17,3 +17,4 @@ class Answer(BaseModel):
     latency_ms: float = 0.0
     token_count: int = 0
     explanations: list[ChunkExplanation] | None = None
+    highlights: dict[str, list[str]] | None = None

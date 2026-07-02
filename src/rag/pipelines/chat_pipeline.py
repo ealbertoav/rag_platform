@@ -26,6 +26,7 @@ from src.rag.quality.crag import (
     score_retrieval_quality,
 )
 from src.rag.quality.explainable_retrieval import explain_chunks, resolve_chunks_for_sources
+from src.rag.quality.source_highlighting import extract_highlights
 
 if TYPE_CHECKING:
     from src.domain.repositories.llm_repository import LLMRepository
@@ -56,6 +57,7 @@ class ChatPipeline:
         llm: LLMRepository | None = None,
         web_search_max_results: int = 5,
         web_search_available: bool = True,
+        source_highlighting_enabled: bool = False,
     ) -> None:
         self._retrieval = retrieval
         self._generation = generation
@@ -68,6 +70,7 @@ class ChatPipeline:
         self._web_search_available = (
             web_search_available and web_search is not None and llm is not None
         )
+        self._source_highlighting_enabled = source_highlighting_enabled
 
     @property
     def retrieval(self) -> RetrievalPipeline:
@@ -120,6 +123,22 @@ class ChatPipeline:
                 if not explanations:
                     explanations = None
 
+        highlights = None
+        if (
+            self._source_highlighting_enabled
+            and answer.sources
+            and self._llm is not None
+            and resolution.chunks_for_explanation is not None
+        ):
+            source_chunks = resolve_chunks_for_sources(
+                answer.sources,
+                resolution.chunks_for_explanation,
+            )
+            if source_chunks:
+                highlight_map = extract_highlights(answer, source_chunks, self._llm)
+                if highlight_map:
+                    highlights = highlight_map
+
         elapsed = (time.monotonic() - t0) * 1000
         token_count = len(answer.text.split())
         record_generation(token_count, elapsed / 1000)
@@ -131,6 +150,7 @@ class ChatPipeline:
                 "latency_ms": elapsed,
                 "token_count": token_count,
                 "explanations": explanations,
+                "highlights": highlights,
             }
         )
 
@@ -198,6 +218,7 @@ class ChatPipeline:
             llm=llm,
             web_search_max_results=settings.web_search.max_results,
             web_search_available=web_search_available,
+            source_highlighting_enabled=settings.quality.source_highlighting.enabled,
         )
 
     # ── Internals ──────────────────────────────────────────────────────────────

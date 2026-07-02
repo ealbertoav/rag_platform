@@ -61,12 +61,15 @@ def _pipeline(
     context: str = "relevant context",
     chunks: list[Chunk] | None = None,
     llm: MagicMock | None = None,
+    *,
+    source_highlighting_enabled: bool = False,
 ) -> ChatPipeline:
     llm = llm or _llm_mock()
     return ChatPipeline(
         retrieval=_retrieval_mock(context, chunks),
         generation=_service(llm),
         llm=llm,
+        source_highlighting_enabled=source_highlighting_enabled,
     )
 
 
@@ -279,6 +282,43 @@ class TestChatPipelineFull:
         ]
         result = await _pipeline(llm=llm).chat_full("q", explain=True)
         assert result.latency_ms == pytest.approx(500.0)
+
+    @pytest.mark.asyncio
+    async def test_chat_full_highlighting_disabled_skips_highlights(self):
+        llm = _llm_mock("answer text")
+        result = await _pipeline(llm=llm).chat_full("q")
+        assert result.highlights is None
+        assert llm.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_full_highlighting_enabled_attaches_highlights(self):
+        import json
+
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = [
+            "answer text",
+            json.dumps(
+                {
+                    "highlights": [
+                        {"chunk_id": "c0", "spans": ["relevant text 0"]},
+                        {"chunk_id": "c1", "spans": ["relevant text 1"]},
+                    ]
+                }
+            ),
+        ]
+        result = await _pipeline(llm=llm, source_highlighting_enabled=True).chat_full("q")
+        assert result.highlights == {
+            "c0": ["relevant text 0"],
+            "c1": ["relevant text 1"],
+        }
+        assert llm.generate.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_chat_full_highlighting_failure_omits_highlights(self):
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = ["answer text", "not json"]
+        result = await _pipeline(llm=llm, source_highlighting_enabled=True).chat_full("q")
+        assert result.highlights is None
 
 
 class TestChatPipelineProperties:

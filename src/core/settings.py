@@ -203,10 +203,17 @@ class WebSearchSettings(BaseModel):
     tavily: TavilySearchConfig = Field(default_factory=TavilySearchConfig)
 
 
+class SourceHighlightingSettings(BaseModel):
+    enabled: bool = False
+
+
 class QualitySettings(BaseModel):
     reliable_rag: ReliableRAGSettings = Field(default_factory=ReliableRAGSettings)
     self_rag: SelfRAGSettings = Field(default_factory=SelfRAGSettings)
     crag: CRAGSettings = Field(default_factory=CRAGSettings)
+    source_highlighting: SourceHighlightingSettings = Field(
+        default_factory=SourceHighlightingSettings,
+    )
 
 
 class RetrievalSettings(BaseModel):

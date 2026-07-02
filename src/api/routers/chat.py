@@ -58,6 +58,7 @@ class ChatFullResponse(BaseModel):
     latency_ms: float
     token_count: int
     explanations: list[ChunkExplanation] | None = None
+    highlights: dict[str, list[str]] | None = None
 
 
 @router.post("", response_class=StreamingResponse)
@@ -96,6 +97,7 @@ async def chat_full(
         latency_ms=answer.latency_ms,
         token_count=answer.token_count,
         explanations=answer.explanations,
+        highlights=answer.highlights,
     )
 
 
