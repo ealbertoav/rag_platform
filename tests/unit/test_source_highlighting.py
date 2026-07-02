@@ -10,6 +10,7 @@ import pytest
 from src.core.constants import CHUNK_PARENT_ID_KEY, MERGED_CHUNK_IDS_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
+from src.rag.chunking.contextual_headers import chunk_context_text
 from src.rag.quality.source_highlighting import (
     extract_highlights,
     parse_source_highlighting,
@@ -112,6 +113,26 @@ class TestExtractHighlights:
         highlights = extract_highlights(_answer(), [_chunk("c0", passage)], llm)
         assert highlights == {}
 
+    def test_whitespace_normalized_llm_span_returns_verbatim_passage_text(self):
+        llm = MagicMock()
+        passage = "Revenue grew\n12% in Q3."
+        llm.generate.return_value = _highlights_json(
+            [{"chunk_id": "c0", "spans": ["Revenue grew 12% in Q3."]}]
+        )
+        highlights = extract_highlights(_answer(), [_chunk("c0", passage)], llm)
+        assert highlights == {"c0": ["Revenue grew\n12% in Q3."]}
+        assert highlights["c0"][0] in passage
+
+    def test_irregular_spacing_returns_verbatim_passage_text(self):
+        llm = MagicMock()
+        passage = "Revenue  grew  12% in Q3."
+        llm.generate.return_value = _highlights_json(
+            [{"chunk_id": "c0", "spans": ["Revenue grew 12% in Q3."]}]
+        )
+        highlights = extract_highlights(_answer(), [_chunk("c0", passage)], llm)
+        assert highlights == {"c0": ["Revenue  grew  12% in Q3."]}
+        assert highlights["c0"][0] in passage
+
     def test_missing_highlights_omits_chunk(self):
         llm = MagicMock()
         llm.generate.return_value = _highlights_json(
@@ -154,6 +175,9 @@ class TestExtractHighlights:
             "child-a": ["Shared parent body with supporting facts."],
             "child-b": ["Shared parent body with supporting facts."],
         }
+        span = highlights["child-a"][0]
+        assert span in chunk_context_text(child_a)
+        assert span not in child_a.text
 
     def test_merged_source_copies_share_one_highlight(self):
         llm = MagicMock()

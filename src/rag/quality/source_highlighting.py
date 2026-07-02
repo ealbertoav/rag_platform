@@ -49,29 +49,26 @@ def _normalize_whitespace(text: str) -> str:
 
 
 def _validate_span(span: str, passage_text: str) -> str | None:
-    """Return *span* when it is a verbatim substring of *passage_text*, else None."""
+    """Return a verbatim substring of *passage_text* that matches *span*, else None."""
     candidate = span.strip()
     if not candidate:
         return None
     if candidate in passage_text:
         return candidate
 
-    normalized_span = _normalize_whitespace(candidate)
-    span_tokens = normalized_span.split()
-    if not span_tokens:
+    tokens = _normalize_whitespace(candidate).split()
+    if not tokens:
         return None
 
-    passage_tokens = passage_text.split()
-    for start_idx in range(len(passage_tokens)):
-        if passage_tokens[start_idx] != span_tokens[0]:
-            continue
-        end_idx = start_idx + len(span_tokens)
-        if end_idx > len(passage_tokens):
-            continue
-        window = " ".join(passage_tokens[start_idx:end_idx])
-        if _normalize_whitespace(window) == normalized_span:
-            return window
-    return None
+    pattern = r"\s+".join(re.escape(token) for token in tokens)
+    match = re.search(pattern, passage_text)
+    if match is None:
+        return None
+
+    verbatim = match.group(0)
+    if verbatim not in passage_text:
+        return None
+    return verbatim
 
 
 def parse_source_highlighting(text: str) -> SourceHighlightingOutput:
@@ -86,7 +83,10 @@ def extract_highlights(
 ) -> dict[str, list[str]]:
     """Return chunk ID → verbatim supporting sentence spans for *answer*.
 
-    On LLM or parse failure, returns an empty dict (caller omits highlights).
+    Spans are validated as substrings of "chunk_context_text" for each passage
+    group (the same text shown to the answer generator), then copied to every
+    chunk ID in that group. On LLM or parse failure, returns an empty dict
+    (caller omits highlights).
     """
     if not chunks or not answer.text.strip():
         return {}
