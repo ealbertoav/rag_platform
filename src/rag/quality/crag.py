@@ -66,11 +66,11 @@ def score_retrieval_quality(chunks: list[Chunk]) -> RetrievalQualityScore:
     """Compute aggregate retrieval quality for CRAG thresholding.
 
     Uses mean "relevance_score" from Reliable RAG (T-140) metadata when present.
-    Empty retrieval returns "score=0.0, graded=True". Chunks without grades return
-    "graded=False" so callers skip the corrective branch until Reliable RAG runs.
+    Empty retrieval and chunks without grades return "graded=False" so callers skip
+    the corrective branch until Reliable RAG supplies relevance scores.
     """
     if not chunks:
-        return RetrievalQualityScore(score=0.0, graded=True)
+        return RetrievalQualityScore(score=0.0, graded=False)
 
     scores: list[float] = []
     for chunk in chunks:

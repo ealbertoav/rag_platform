@@ -37,10 +37,10 @@ def _chunk(chunk_id: str, *, relevance_score: float | None = None) -> Chunk:
 
 
 class TestScoreRetrievalQuality:
-    def test_empty_chunks_returns_zero_graded(self):
+    def test_empty_chunks_not_graded(self):
         result = score_retrieval_quality([])
         assert result.score == pytest.approx(0.0)
-        assert result.graded is True
+        assert result.graded is False
 
     def test_mean_of_relevance_scores(self):
         chunks = [
@@ -206,7 +206,8 @@ def _retrieval_result(
     context: str = "retrieved context",
     chunks: list[Chunk] | None = None,
 ) -> RetrievalResult:
-    chunks = chunks or [_chunk("c0", relevance_score=0.9)]
+    if chunks is None:
+        chunks = [_chunk("c0", relevance_score=0.9)]
     return RetrievalResult(
         query=Query(text="question"),
         chunks=chunks,
@@ -380,6 +381,33 @@ class TestChatPipelineCRAG:
         pipeline._web_search.search.assert_not_called()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
+    async def test_empty_retrieval_skips_crag_and_returns_no_info(self):
+        pipeline = _crag_pipeline(
+            retrieval_result=_retrieval_result(chunks=[], context=""),
+            web_results=[
+                WebSearchResult(title="Hit", url="https://example.com", snippet="web fact"),
+            ],
+        )
+        answer = await pipeline.chat_full("question")
+        assert answer.text == "I don't have information about this."
+        assert answer.sources == []
+        pipeline._web_search.search.assert_not_called()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_empty_retrieval_crag_span_skipped(self):
+        pipeline = _crag_pipeline(
+            retrieval_result=_retrieval_result(chunks=[], context=""),
+        )
+        with patch("src.rag.pipelines.chat_pipeline.record_crag_span") as record_span:
+            await pipeline.chat_full("question")
+        record_span.assert_called_once()
+        decision = record_span.call_args.args[1]
+        assert decision.skipped is True
+        assert decision.quality_graded is False
+        assert decision.web_search_used is False
+        assert decision.action == CRAGAction.USE_RETRIEVAL
+
+    @pytest.mark.asyncio
     async def test_combine_without_web_falls_back_to_retrieval(self):
         chunks = [_chunk("c0", relevance_score=0.5)]
         pipeline = _crag_pipeline(
@@ -455,6 +483,19 @@ class TestChatPipelineCRAG:
         answer, context_texts = await pipeline.benchmark("question")
         assert answer.text == "answer"
         assert context_texts == [chunk.text for chunk in chunks]
+
+    @pytest.mark.asyncio
+    async def test_benchmark_empty_retrieval_skips_web_and_returns_empty_eval_context(self):
+        pipeline = _crag_pipeline(
+            retrieval_result=_retrieval_result(chunks=[], context=""),
+            web_results=[
+                WebSearchResult(title="Hit", url="https://example.com", snippet="web fact"),
+            ],
+        )
+        answer, context_texts = await pipeline.benchmark("question")
+        assert answer.text == "I don't have information about this."
+        assert context_texts == []
+        pipeline._web_search.search.assert_not_called()  # type: ignore[attr-defined]
 
 
 class TestChatPipelineCRAGFromSettings:
