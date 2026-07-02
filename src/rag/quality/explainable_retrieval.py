@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from src.core.constants import MERGED_CHUNK_IDS_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
-from src.rag.chunking.contextual_headers import chunk_context_text
+from src.rag.chunking.contextual_headers import (
+    chunk_context_text,
+    group_chunks_by_passage,
+)
 from src.rag.structured_output import parse_structured_output
 
 logger = logging.getLogger(__name__)
@@ -36,9 +39,9 @@ def _load_prompt() -> Template:
 
 def _format_passages(chunks: list[Chunk]) -> str:
     lines: list[str] = []
-    for index, chunk in enumerate(chunks, start=1):
-        text = chunk_context_text(chunk).strip().replace("\n", " ")
-        lines.append(f"[{index}] chunk_id={chunk.id}\n{text}")
+    for index, (representative, _) in enumerate(group_chunks_by_passage(chunks), start=1):
+        text = chunk_context_text(representative).strip().replace("\n", " ")
+        lines.append(f"[{index}] chunk_id={representative.id}\n{text}")
     return "\n\n".join(lines)
 
 
@@ -97,10 +100,15 @@ def explain_chunks(
 
     explanation_by_id = {item.chunk_id: item for item in output.explanations}
     explanations: list[ChunkExplanation] = []
-    for chunk in chunks:
-        explanation = explanation_by_id.get(chunk.id)
+    for representative, group in group_chunks_by_passage(chunks):
+        explanation = explanation_by_id.get(representative.id)
         if explanation is None:
-            logger.debug("No explanation for chunk %s — omitting", chunk.id)
+            logger.debug(
+                "No explanation for passage group led by %s — omitting %d chunk(s)",
+                representative.id,
+                len(group),
+            )
             continue
-        explanations.append(explanation)
+        for chunk in group:
+            explanations.append(ChunkExplanation(chunk_id=chunk.id, reason=explanation.reason))
     return explanations

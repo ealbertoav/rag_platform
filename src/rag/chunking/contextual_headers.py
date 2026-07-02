@@ -7,6 +7,7 @@ from typing import Protocol
 from src.core.constants import (
     CHUNK_PARENT_ID_KEY,
     CHUNK_RAW_TEXT_KEY,
+    MERGED_CHUNK_IDS_KEY,
     PARENT_CONTEXT_TEXT_KEY,
 )
 from src.domain.entities.chunk import Chunk
@@ -96,36 +97,45 @@ def chunk_context_text(
     return raw if isinstance(raw, str) else chunk.text
 
 
+def passage_context_key(chunk: Chunk) -> str:
+    """Stable key for chunks that share the same LLM-facing passage text."""
+    parent_id = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
+    parent_context = chunk.metadata.get(PARENT_CONTEXT_TEXT_KEY)
+    if (
+        isinstance(parent_id, str)
+        and parent_id
+        and isinstance(parent_context, str)
+        and parent_context
+    ):
+        return parent_id
+
+    merged_ids = chunk.metadata.get(MERGED_CHUNK_IDS_KEY)
+    if isinstance(merged_ids, list) and merged_ids:
+        return "merged:" + ",".join(sorted(str(chunk_id) for chunk_id in merged_ids))
+
+    return chunk.id
+
+
+def group_chunks_by_passage(chunks: list[Chunk]) -> list[tuple[Chunk, list[Chunk]]]:
+    """Group chunks that map to the same generator-facing passage, preserving order."""
+    groups: dict[str, list[Chunk]] = {}
+    order: list[str] = []
+    for chunk in chunks:
+        key = passage_context_key(chunk)
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(chunk)
+    return [(groups[key][0], groups[key]) for key in order]
+
+
 def join_chunk_context(chunks: list[Chunk]) -> str:
     """Join chunk passages for LLM prompts, deduplicating shared parent context."""
-    seen_parent_passages: set[str] = set()
     parts: list[str] = []
-    for chunk in chunks:
-        parent_id_raw = chunk.metadata.get(CHUNK_PARENT_ID_KEY)
-        parent_context = chunk.metadata.get(PARENT_CONTEXT_TEXT_KEY)
-        parent_id = (
-            parent_id_raw
-            if isinstance(parent_id_raw, str)
-            and parent_id_raw
-            and isinstance(parent_context, str)
-            and parent_context
-            else None
-        )
-        if parent_id is not None:
-            if parent_id in seen_parent_passages:
-                continue
-        elif chunk.id in seen_parent_passages:
-            continue
-
-        text = chunk_context_text(chunk)
-        if not text:
-            continue
-
-        if parent_id is not None:
-            seen_parent_passages.add(parent_id)
-        else:
-            seen_parent_passages.add(chunk.id)
-        parts.append(text)
+    for representative, _group in group_chunks_by_passage(chunks):
+        text = chunk_context_text(representative)
+        if text:
+            parts.append(text)
     return "\n\n".join(parts)
 
 

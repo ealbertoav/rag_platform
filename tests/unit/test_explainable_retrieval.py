@@ -7,11 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.constants import MERGED_CHUNK_IDS_KEY
+from src.core.constants import CHUNK_PARENT_ID_KEY, MERGED_CHUNK_IDS_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.chunk import Chunk
 from src.rag.quality.explainable_retrieval import (
     ChunkExplanation,
-    _format_passages,
     explain_chunks,
     parse_explain_retrieval,
     resolve_chunks_for_sources,
@@ -79,13 +78,6 @@ class TestResolveChunksForSources:
         assert len(resolved) == 1
 
 
-class TestFormatPassages:
-    def test_includes_chunk_id_and_text(self):
-        formatted = _format_passages([_chunk("c0", "revenue grew 12%")])
-        assert "chunk_id=c0" in formatted
-        assert "revenue grew 12%" in formatted
-
-
 class TestExplainChunks:
     def test_returns_explanations_for_all_chunks(self):
         llm = MagicMock()
@@ -101,6 +93,9 @@ class TestExplainChunks:
             ChunkExplanation(chunk_id="c0", reason="Mentions revenue."),
             ChunkExplanation(chunk_id="c1", reason="Covers the same quarter."),
         ]
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "chunk_id=c0" in prompt
+        assert "chunk_id=c1" in prompt
         llm.generate.assert_called_once()
 
     def test_empty_chunks_returns_empty_list(self):
@@ -128,3 +123,62 @@ class TestExplainChunks:
         explanations = explain_chunks("q", [_chunk("c0"), _chunk("c1")], llm)
         assert len(explanations) == 1
         assert explanations[0].chunk_id == "c0"
+
+    def test_parent_context_siblings_share_one_explanation(self):
+        llm = MagicMock()
+        parent_text = "shared parent body."
+        child_a = _chunk(
+            "child-a",
+            text="slice a",
+            metadata={
+                CHUNK_PARENT_ID_KEY: "parent-0",
+                PARENT_CONTEXT_TEXT_KEY: parent_text,
+            },
+        )
+        child_b = _chunk(
+            "child-b",
+            text="slice b",
+            metadata={
+                CHUNK_PARENT_ID_KEY: "parent-0",
+                PARENT_CONTEXT_TEXT_KEY: parent_text,
+            },
+        )
+        llm.generate.return_value = _explanations_json(
+            [{"chunk_id": "child-a", "reason": "Mentions the shared parent topic."}]
+        )
+        explanations = explain_chunks("q", [child_a, child_b], llm)
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert prompt.count("shared parent body.") == 1
+        assert "chunk_id=child-a" in prompt
+        assert "chunk_id=child-b" not in prompt
+        assert explanations == [
+            ChunkExplanation(
+                chunk_id="child-a",
+                reason="Mentions the shared parent topic.",
+            ),
+            ChunkExplanation(
+                chunk_id="child-b",
+                reason="Mentions the shared parent topic.",
+            ),
+        ]
+
+    def test_merged_source_copies_share_one_explanation(self):
+        llm = MagicMock()
+        merged = _chunk(
+            "merged-1",
+            text="combined passage",
+            metadata={MERGED_CHUNK_IDS_KEY: ["c0", "c1"]},
+        )
+        resolved = resolve_chunks_for_sources(["c0", "c1"], [merged])
+        llm.generate.return_value = _explanations_json(
+            [{"chunk_id": "c0", "reason": "Contains the merged segment."}]
+        )
+        explanations = explain_chunks("q", resolved, llm)
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert prompt.count("combined passage") == 1
+        assert "chunk_id=c0" in prompt
+        assert "chunk_id=c1" not in prompt
+        assert explanations == [
+            ChunkExplanation(chunk_id="c0", reason="Contains the merged segment."),
+            ChunkExplanation(chunk_id="c1", reason="Contains the merged segment."),
+        ]
