@@ -179,6 +179,35 @@ class TestExtractHighlights:
         assert span in chunk_context_text(child_a)
         assert span not in child_a.text
 
+    def test_sibling_chunk_id_maps_to_group_highlights(self):
+        llm = MagicMock()
+        parent_text = "Shared parent body with supporting facts."
+        child_a = _chunk(
+            "child-a",
+            text="slice a",
+            metadata={
+                CHUNK_PARENT_ID_KEY: "parent-0",
+                PARENT_CONTEXT_TEXT_KEY: parent_text,
+            },
+        )
+        child_b = _chunk(
+            "child-b",
+            text="slice b",
+            metadata={
+                CHUNK_PARENT_ID_KEY: "parent-0",
+                PARENT_CONTEXT_TEXT_KEY: parent_text,
+            },
+        )
+        llm.generate.return_value = _highlights_json(
+            [{"chunk_id": "child-b", "spans": ["Shared parent body with supporting facts."]}]
+        )
+        answer = Answer(query_id="q-1", text="Supporting facts.", sources=["child-a", "child-b"])
+        highlights = extract_highlights(answer, [child_a, child_b], llm)
+        assert highlights == {
+            "child-a": ["Shared parent body with supporting facts."],
+            "child-b": ["Shared parent body with supporting facts."],
+        }
+
     def test_merged_source_copies_share_one_highlight(self):
         llm = MagicMock()
         merged_text = "Combined passage with key detail."

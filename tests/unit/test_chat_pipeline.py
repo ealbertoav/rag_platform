@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +19,11 @@ from src.rag.pipelines.chat_pipeline import ChatPipeline
 
 
 _NO_INFO = "I don't have information about this."
+_ANSWER_TEXT = "answer text"
+_SAMPLE_EXPLANATIONS = [
+    {"chunk_id": "c0", "reason": "Mentions the topic."},
+    {"chunk_id": "c1", "reason": "Adds supporting detail."},
+]
 
 
 def _chunk(i: int) -> Chunk:
@@ -71,6 +77,23 @@ def _pipeline(
         llm=llm,
         source_highlighting_enabled=source_highlighting_enabled,
     )
+
+
+def _explain_json(
+    explanations: list[dict[str, str]] | None = None,
+    *,
+    highlights: list[dict[str, object]] | None = None,
+) -> str:
+    payload: dict[str, object] = {"explanations": explanations or _SAMPLE_EXPLANATIONS}
+    if highlights is not None:
+        payload["highlights"] = highlights
+    return json.dumps(payload)
+
+
+def _llm_with_post_gen_responses(*responses: str) -> MagicMock:
+    llm = _llm_mock(_ANSWER_TEXT)
+    llm.generate.side_effect = [_ANSWER_TEXT, *responses]
+    return llm
 
 
 # ── GenerationService ──────────────────────────────────────────────────────────
@@ -235,20 +258,7 @@ class TestChatPipelineFull:
 
     @pytest.mark.asyncio
     async def test_chat_full_explain_true_attaches_explanations(self):
-        import json
-
-        llm = _llm_mock("answer text")
-        llm.generate.side_effect = [
-            "answer text",
-            json.dumps(
-                {
-                    "explanations": [
-                        {"chunk_id": "c0", "reason": "Mentions the topic."},
-                        {"chunk_id": "c1", "reason": "Adds supporting detail."},
-                    ]
-                }
-            ),
-        ]
+        llm = _llm_with_post_gen_responses(_explain_json())
         result = await _pipeline(llm=llm).chat_full("q", explain=True)
         assert result.explanations is not None
         assert len(result.explanations) == 2
@@ -265,21 +275,8 @@ class TestChatPipelineFull:
     @pytest.mark.asyncio
     @patch("src.rag.pipelines.chat_pipeline.time.monotonic")
     async def test_chat_full_latency_includes_explain(self, mock_monotonic):
-        import json
-
-        mock_monotonic.side_effect = [0.0, 0.5]
-        llm = _llm_mock("answer text")
-        llm.generate.side_effect = [
-            "answer text",
-            json.dumps(
-                {
-                    "explanations": [
-                        {"chunk_id": "c0", "reason": "Mentions the topic."},
-                        {"chunk_id": "c1", "reason": "Adds supporting detail."},
-                    ]
-                }
-            ),
-        ]
+        mock_monotonic.side_effect = [0.0, 0.5, 0.5, 0.5]
+        llm = _llm_with_post_gen_responses(_explain_json())
         result = await _pipeline(llm=llm).chat_full("q", explain=True)
         assert result.latency_ms == pytest.approx(500.0)
 
@@ -292,11 +289,7 @@ class TestChatPipelineFull:
 
     @pytest.mark.asyncio
     async def test_chat_full_highlighting_enabled_attaches_highlights(self):
-        import json
-
-        llm = _llm_mock("answer text")
-        llm.generate.side_effect = [
-            "answer text",
+        llm = _llm_with_post_gen_responses(
             json.dumps(
                 {
                     "highlights": [
@@ -304,8 +297,8 @@ class TestChatPipelineFull:
                         {"chunk_id": "c1", "spans": ["relevant text 1"]},
                     ]
                 }
-            ),
-        ]
+            )
+        )
         result = await _pipeline(llm=llm, source_highlighting_enabled=True).chat_full("q")
         assert result.highlights == {
             "c0": ["relevant text 0"],
@@ -322,15 +315,39 @@ class TestChatPipelineFull:
 
     @pytest.mark.asyncio
     async def test_chat_full_highlights_param_without_config(self):
-        import json
-
-        llm = _llm_mock("answer text")
-        llm.generate.side_effect = [
-            "answer text",
-            json.dumps({"highlights": [{"chunk_id": "c0", "spans": ["relevant text 0"]}]}),
-        ]
+        llm = _llm_with_post_gen_responses(
+            json.dumps({"highlights": [{"chunk_id": "c0", "spans": ["relevant text 0"]}]})
+        )
         result = await _pipeline(llm=llm).chat_full("q", highlights=True)
         assert result.highlights == {"c0": ["relevant text 0"]}
+        assert llm.generate.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_chat_full_explain_and_highlights_use_single_combined_llm_call(self):
+        llm = _llm_with_post_gen_responses(
+            _explain_json(
+                highlights=[
+                    {"chunk_id": "c0", "spans": ["relevant text 0"]},
+                    {"chunk_id": "c1", "spans": ["relevant text 1"]},
+                ]
+            )
+        )
+        result = await _pipeline(llm=llm).chat_full("q", explain=True, highlights=True)
+        assert result.explanations is not None
+        assert len(result.explanations) == 2
+        assert result.highlights == {
+            "c0": ["relevant text 0"],
+            "c1": ["relevant text 1"],
+        }
+        assert llm.generate.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_chat_full_combined_failure_omits_both(self):
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = ["answer text", "not json"]
+        result = await _pipeline(llm=llm).chat_full("q", explain=True, highlights=True)
+        assert result.explanations is None
+        assert result.highlights is None
         assert llm.generate.call_count == 2
 
 

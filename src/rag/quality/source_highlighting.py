@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING
 
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from src.domain.entities.chunk import Chunk
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
     from src.domain.entities.answer import Answer
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer("rag-platform.quality")
 
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "quality" / "source_highlighting.txt"
 _WHITESPACE = re.compile(r"\s+")
@@ -70,44 +73,29 @@ def _validate_span(span: str, passage_text: str) -> str | None:
     return verbatim
 
 
-def parse_source_highlighting(text: str) -> SourceHighlightingOutput:
-    """Parse and validate structured highlight JSON from an LLM response."""
-    return parse_structured_output(text, SourceHighlightingOutput, label="source highlighting")
+def _lookup_spans(
+    highlights_by_id: dict[str, list[str]],
+    representative: Chunk,
+    group: list[Chunk],
+) -> list[str] | None:
+    """Resolve highlight spans by representative or any sibling chunk ID in a *group*."""
+    if representative.id in highlights_by_id:
+        return highlights_by_id[representative.id]
+    for chunk in group:
+        if chunk.id in highlights_by_id:
+            return highlights_by_id[chunk.id]
+    return None
 
 
-def extract_highlights(
-    answer: Answer,
+def map_highlights_to_chunks(
+    highlights_by_id: dict[str, list[str]],
     chunks: list[Chunk],
-    llm: LLMRepository,
 ) -> dict[str, list[str]]:
-    """Return chunk ID → verbatim supporting sentence spans for *answer*.
-
-    Spans are validated as substrings of "chunk_context_text" for each passage
-    group (the same text shown to the answer generator), then copied to every
-    chunk ID in that group. On LLM or parse failure, returns an empty dict
-    (caller omits highlights).
-    """
-    if not chunks or not answer.text.strip():
-        return {}
-
-    template = _load_prompt()
-    prompt = template.substitute(
-        answer=answer.text.strip(),
-        passages=format_passages_for_llm(chunks, normalize_newlines=False),
-    )
-
-    try:
-        response = llm.generate(prompt=prompt, context="")
-        output = parse_source_highlighting(response)
-    except Exception as exc:
-        logger.warning("Source highlighting failed for answer %r: %s", answer.query_id, exc)
-        return {}
-
-    highlights_by_id = {item.chunk_id: item.spans for item in output.highlights}
+    """Validate LLM highlight spans and map them to every chunk ID in each passage group."""
     result: dict[str, list[str]] = {}
 
     for representative, group in group_chunks_by_passage(chunks):
-        raw_spans = highlights_by_id.get(representative.id)
+        raw_spans = _lookup_spans(highlights_by_id, representative, group)
         if not raw_spans:
             logger.debug(
                 "No highlights for passage group led by %s — omitting %d chunk(s)",
@@ -139,3 +127,48 @@ def extract_highlights(
             result[chunk.id] = list(validated)
 
     return result
+
+
+def parse_source_highlighting(text: str) -> SourceHighlightingOutput:
+    """Parse and validate structured highlight JSON from an LLM response."""
+    return parse_structured_output(text, SourceHighlightingOutput, label="source highlighting")
+
+
+def extract_highlights(
+    answer: Answer,
+    chunks: list[Chunk],
+    llm: LLMRepository,
+) -> dict[str, list[str]]:
+    """Return chunk ID → verbatim supporting sentence spans for *answer*.
+
+    Spans are validated as substrings of "chunk_context_text" for each passage
+    group (the same text shown to the answer generator), then copied to every
+    chunk ID in that group. On LLM or parse failure, returns an empty dict
+    (caller omits highlights).
+    """
+    if not chunks or not answer.text.strip():
+        return {}
+
+    template = _load_prompt()
+    prompt = template.substitute(
+        answer=answer.text.strip(),
+        passages=format_passages_for_llm(chunks, normalize_newlines=False),
+    )
+
+    with _tracer.start_as_current_span("quality.source_highlighting") as span:
+        t0 = time.monotonic()
+        try:
+            response = llm.generate(prompt=prompt, context="")
+            output = parse_source_highlighting(response)
+        except Exception as exc:
+            logger.warning("Source highlighting failed for answer %r: %s", answer.query_id, exc)
+            span.set_attribute("quality.success", False)
+            span.set_attribute("latency_ms", round((time.monotonic() - t0) * 1000, 1))
+            return {}
+
+        highlights_by_id = {item.chunk_id: item.spans for item in output.highlights}
+        result = map_highlights_to_chunks(highlights_by_id, chunks)
+        span.set_attribute("quality.success", True)
+        span.set_attribute("quality.highlight_chunk_count", len(result))
+        span.set_attribute("latency_ms", round((time.monotonic() - t0) * 1000, 1))
+        return result
