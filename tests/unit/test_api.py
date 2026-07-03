@@ -325,6 +325,35 @@ class TestChatFull:
         chat_pipeline_mock.chat_full.assert_awaited_once()
         assert chat_pipeline_mock.chat_full.await_args.kwargs["explain"] is True
 
+    @pytest.mark.asyncio
+    async def test_highlights_true_passes_flag_to_pipeline(self, app_client, chat_pipeline_mock):
+        async with _client(app_client) as c:
+            await c.post("/chat/full?highlights=true", json={"question": "q"})
+        chat_pipeline_mock.chat_full.assert_awaited_once()
+        assert chat_pipeline_mock.chat_full.await_args.kwargs["highlights"] is True
+
+    @pytest.mark.asyncio
+    async def test_highlights_omitted_by_default(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/full", json={"question": "q"})).json()
+        assert "highlights" not in data
+
+    @pytest.mark.asyncio
+    async def test_highlights_included_when_present(self, app_client, chat_pipeline_mock):
+        chat_pipeline_mock.chat_full = AsyncMock(
+            return_value=Answer(
+                query_id="q-1",
+                text="Hello world",
+                sources=["c0"],
+                latency_ms=42.0,
+                token_count=2,
+                highlights={"c0": ["relevant text 0"]},
+            )
+        )
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/full", json={"question": "q"})).json()
+        assert data["highlights"] == {"c0": ["relevant text 0"]}
+
 
 # ── /chat/agent ────────────────────────────────────────────────────────────────
 

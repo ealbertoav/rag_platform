@@ -17,3 +17,11 @@ class Answer(BaseModel):
     latency_ms: float = 0.0
     token_count: int = 0
     explanations: list[ChunkExplanation] | None = None
+    highlights: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "Chunk ID to supporting spans copied verbatim from the LLM-facing passage text "
+            "(see chunk_context_text), not necessarily from Chunk.text when parent context "
+            "or contextual headers apply."
+        ),
+    )

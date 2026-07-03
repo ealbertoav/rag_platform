@@ -26,6 +26,8 @@ from src.rag.quality.crag import (
     score_retrieval_quality,
 )
 from src.rag.quality.explainable_retrieval import explain_chunks, resolve_chunks_for_sources
+from src.rag.quality.post_generation import explain_and_highlight
+from src.rag.quality.source_highlighting import extract_highlights
 
 if TYPE_CHECKING:
     from src.domain.repositories.llm_repository import LLMRepository
@@ -56,6 +58,7 @@ class ChatPipeline:
         llm: LLMRepository | None = None,
         web_search_max_results: int = 5,
         web_search_available: bool = True,
+        source_highlighting_enabled: bool = False,
     ) -> None:
         self._retrieval = retrieval
         self._generation = generation
@@ -68,6 +71,7 @@ class ChatPipeline:
         self._web_search_available = (
             web_search_available and web_search is not None and llm is not None
         )
+        self._source_highlighting_enabled = source_highlighting_enabled
 
     @property
     def retrieval(self) -> RetrievalPipeline:
@@ -91,11 +95,21 @@ class ChatPipeline:
         resolution = await self._resolve_context(query.text, result)
         return self._generation.stream(query.text, resolution.context)
 
-    async def chat_full(self, question: str | Query, *, explain: bool = False) -> Answer:
+    async def chat_full(
+        self,
+        question: str | Query,
+        *,
+        explain: bool = False,
+        highlights: bool = False,
+    ) -> Answer:
         """Run the full pipeline and return a complete "Answer".
 
         Useful for non-streaming contexts (tests, scripts).
         When *explain* is True, attaches per-source retrieval explanations.
+        When *highlight* is True or "quality.source_highlighting.enabled" is set,
+        attaches verbatim supporting spans from each cited passage.
+        When both are requested, a single combined LLM call is tried first; any
+        missing side falls back to the dedicated explained or highlight path.
         """
         query = question if isinstance(question, Query) else Query(text=question)
         t0 = time.monotonic()
@@ -104,21 +118,50 @@ class ChatPipeline:
 
         answer = self._generation.generate(query.text, resolution.context, resolution.sources)
 
-        explanations = None
+        highlighting_requested = highlights or self._source_highlighting_enabled
+        llm = self._llm
+        source_chunks = None
         if (
-            explain
-            and answer.sources
-            and self._llm is not None
+            answer.sources
+            and llm is not None
             and resolution.chunks_for_explanation is not None
+            and (explain or highlighting_requested)
         ):
             source_chunks = resolve_chunks_for_sources(
                 answer.sources,
                 resolution.chunks_for_explanation,
             )
-            if source_chunks:
-                explanations = explain_chunks(query.text, source_chunks, self._llm)
-                if not explanations:
-                    explanations = None
+            if not source_chunks:
+                source_chunks = None
+
+        explanations = None
+        highlights_result = None
+        if explain and highlighting_requested and source_chunks is not None and llm is not None:
+            explanation_list, highlight_map = explain_and_highlight(
+                query.text,
+                answer,
+                source_chunks,
+                llm,
+            )
+            if explanation_list:
+                explanations = explanation_list
+            if highlight_map:
+                highlights_result = highlight_map
+
+        if explain and explanations is None and source_chunks is not None and llm is not None:
+            explanation_list = explain_chunks(query.text, source_chunks, llm)
+            if explanation_list:
+                explanations = explanation_list
+
+        if (
+            highlighting_requested
+            and highlights_result is None
+            and source_chunks is not None
+            and llm is not None
+        ):
+            highlight_map = extract_highlights(answer, source_chunks, llm)
+            if highlight_map:
+                highlights_result = highlight_map
 
         elapsed = (time.monotonic() - t0) * 1000
         token_count = len(answer.text.split())
@@ -131,6 +174,7 @@ class ChatPipeline:
                 "latency_ms": elapsed,
                 "token_count": token_count,
                 "explanations": explanations,
+                "highlights": highlights_result,
             }
         )
 
@@ -198,6 +242,7 @@ class ChatPipeline:
             llm=llm,
             web_search_max_results=settings.web_search.max_results,
             web_search_available=web_search_available,
+            source_highlighting_enabled=settings.quality.source_highlighting.enabled,
         )
 
     # ── Internals ──────────────────────────────────────────────────────────────

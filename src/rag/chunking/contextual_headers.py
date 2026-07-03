@@ -139,6 +139,26 @@ def join_chunk_context(chunks: list[Chunk]) -> str:
     return "\n\n".join(parts)
 
 
+def format_passages_for_llm(
+    chunks: list[Chunk],
+    *,
+    normalize_newlines: bool = False,
+) -> str:
+    """Format deduplicated passages for batched quality LLM prompts.
+
+    When *normalize_newlines* is True, newlines are collapsed to spaces (readable
+    prose prompts for explain/grade). When False, passage text is preserved for
+    verbatim span matching (source highlighting).
+    """
+    lines: list[str] = []
+    for index, (representative, _) in enumerate(group_chunks_by_passage(chunks), start=1):
+        text = chunk_context_text(representative).strip()
+        if normalize_newlines:
+            text = text.replace("\n", " ")
+        lines.append(f"[{index}] chunk_id={representative.id}\n{text}")
+    return "\n\n".join(lines)
+
+
 class ContextualHeadersChunker:
     """Decorator that prepends document context headers before embedding."""
 

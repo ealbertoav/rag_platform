@@ -13,6 +13,7 @@ from src.rag.quality.crag import (
     score_retrieval_quality,
 )
 from src.rag.quality.explainable_retrieval import ChunkExplanation, explain_chunks
+from src.rag.quality.post_generation import explain_and_highlight
 from src.rag.quality.reliable_rag import ChunkRelevance, grade_relevance
 from src.rag.quality.self_rag import (
     RetrievalDecision,
@@ -23,6 +24,7 @@ from src.rag.quality.self_rag import (
     decide_retrieval,
     score_utility,
 )
+from src.rag.quality.source_highlighting import extract_highlights
 
 __all__ = [
     "CRAGAction",
@@ -40,8 +42,10 @@ __all__ = [
     "decide_retrieval",
     "determine_crag_action",
     "eval_contexts_for_resolution",
+    "explain_and_highlight",
     "explain_chunks",
     "explainable_chunks_for_resolution",
+    "extract_highlights",
     "grade_relevance",
     "refine_knowledge",
     "score_retrieval_quality",
