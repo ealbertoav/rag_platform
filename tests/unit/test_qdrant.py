@@ -24,7 +24,7 @@ from src.core.constants import FEEDBACK_REVISION_KEY, FEEDBACK_SCORE_KEY
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
-from src.infrastructure.vectordb.qdrant import QdrantVectorStore, _ThreadSafeQdrantClient
+from src.infrastructure.vectordb.qdrant import QdrantVectorStore, ThreadSafeQdrantClient
 
 FEEDBACK_SCORE_EPSILON = 1e-9
 MAX_FEEDBACK_UPDATE_RETRIES = 20
@@ -128,6 +128,34 @@ def _merge_metadata_set_payload_side_effect(point: MagicMock):
     return set_payload_side_effect
 
 
+def _zero_feedback_point(chunk: Chunk) -> MagicMock:
+    point = MagicMock()
+    point.id = chunk.id
+    point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+    return point
+
+
+def _wire_feedback_cas_conflict_batch_update(
+    mock_client: MagicMock,
+    point: MagicMock,
+) -> dict[str, int]:
+    """Simulate perpetual CAS loss by bumping feedback on every batch update."""
+    metadata_writes = {"count": 0}
+
+    def batch_update_side_effect(**_batch_kwargs: object) -> None:
+        metadata_writes["count"] += 1
+        bump = metadata_writes["count"]
+        point.payload = {
+            "metadata": {
+                "feedback_score": float(bump + 100),
+                "feedback_revision": bump + 100,
+            },
+        }
+
+    mock_client.batch_update_points.side_effect = batch_update_side_effect
+    return metadata_writes
+
+
 # ── fixtures ───────────────────────────────────────────────────────────────────
 
 
@@ -229,9 +257,18 @@ class TestThreadSafeQdrantClient:
     def test_returns_non_callable_attribute_without_locking(self):
         raw = MagicMock()
         raw.collection_name = "raw-collection"
-        wrapped = _ThreadSafeQdrantClient(raw, threading.RLock())
+        wrapped = ThreadSafeQdrantClient(raw, threading.RLock())
 
         assert wrapped.collection_name == "raw-collection"
+
+    def test_locks_callable_methods(self):
+        raw = MagicMock()
+        lock = threading.RLock()
+        wrapped = ThreadSafeQdrantClient(raw, lock)
+
+        wrapped.count(collection_name="test_col")
+
+        raw.count.assert_called_once_with(collection_name="test_col")
 
 
 # ── interface conformance ──────────────────────────────────────────────────────
@@ -337,7 +374,7 @@ class TestUpsert:
         chunks = [_chunk(0), _chunk(1)]
         mock_client.retrieve.return_value = []
         store.upsert(chunks)
-        mock_client.upsert.assert_called_once()
+        assert mock_client.upsert.call_count == 2
 
     def test_upsert_passes_collection_name(self, store: QdrantVectorStore, mock_client: MagicMock):
         mock_client.retrieve.return_value = []
@@ -350,8 +387,9 @@ class TestUpsert:
     ):
         mock_client.retrieve.return_value = []
         store.upsert([_chunk(0), _chunk(1), _chunk(2)])
-        _, kwargs = mock_client.upsert.call_args
-        assert len(kwargs["points"]) == 3
+        assert mock_client.upsert.call_count == 3
+        for call in mock_client.upsert.call_args_list:
+            assert len(call.kwargs["points"]) == 1
 
     def test_upsert_preserves_existing_feedback_metadata(
         self, store: QdrantVectorStore, mock_client: MagicMock
@@ -498,6 +536,7 @@ class TestUpsert:
             store.upsert([_chunk(with_vectors=False)])
 
     def test_wraps_client_error(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.retrieve.return_value = []
         mock_client.upsert.side_effect = RuntimeError("oops")
         with pytest.raises(VectorStoreError) as exc_info:
             store.upsert([_chunk()])
@@ -536,23 +575,9 @@ class TestUpsert:
         self, store: QdrantVectorStore, mock_client: MagicMock
     ):
         chunk = _chunk(0)
-        point = MagicMock()
-        point.id = chunk.id
-        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        point = _zero_feedback_point(chunk)
         mock_client.retrieve.return_value = [point]
-        metadata_writes = {"count": 0}
-
-        def batch_update_side_effect(**_batch_kwargs: object) -> None:
-            metadata_writes["count"] += 1
-            bump = metadata_writes["count"]
-            point.payload = {
-                "metadata": {
-                    "feedback_score": float(bump + 100),
-                    "feedback_revision": bump + 100,
-                },
-            }
-
-        mock_client.batch_update_points.side_effect = batch_update_side_effect
+        metadata_writes = _wire_feedback_cas_conflict_batch_update(mock_client, point)
 
         with pytest.raises(VectorStoreError, match="Failed to upsert existing chunk"):
             store.upsert([chunk])
@@ -698,6 +723,106 @@ class TestUpsert:
         with pytest.raises(VectorStoreError, match="batch_update_points failed") as exc_info:
             store.upsert([chunk])
         assert exc_info.value.cause is not None
+
+    def test_upsert_routes_stale_new_chunk_to_update_path(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        """Chunk classified as new at upsert start but created before insert uses CAS update."""
+        chunk = _chunk(0)
+        existing = _existing_point(chunk, feedback_score=3.0, feedback_revision=2)
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            ids = kwargs.get("ids", [])
+            assert isinstance(ids, list)
+            if reads["count"] == 1:
+                return []
+            if chunk.id in [str(chunk_id) for chunk_id in ids]:
+                return [existing]
+            return []
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.batch_update_points.side_effect = _batch_update_existing_chunk_side_effect(
+            existing
+        )
+
+        store.upsert([chunk])
+
+        mock_client.upsert.assert_not_called()
+        mock_client.batch_update_points.assert_called_once()
+        metadata_ops = _batch_metadata_ops(
+            _require_update_operations(
+                mock_client.batch_update_points.call_args.kwargs["update_operations"]
+            )
+        )
+        assert metadata_ops[0].payload[FEEDBACK_SCORE_KEY] == 3.0
+        assert metadata_ops[0].payload[FEEDBACK_REVISION_KEY] == 2
+
+    def test_upsert_new_chunk_updates_after_concurrent_feedback_on_insert(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        point = MagicMock()
+        point.id = chunk.id
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            if reads["count"] == 1:
+                return []
+            if reads["count"] == 2:
+                return []
+            point.payload = {
+                "metadata": {"feedback_score": 1.0, "feedback_revision": 1},
+            }
+            return [point]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.batch_update_points.side_effect = _batch_update_existing_chunk_side_effect(
+            point
+        )
+
+        store.upsert([chunk])
+
+        assert mock_client.upsert.call_count == 1
+        mock_client.batch_update_points.assert_called_once()
+
+    def test_upsert_new_chunk_returns_after_insert_when_feedback_still_default(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        point = MagicMock()
+        point.id = chunk.id
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            if reads["count"] <= 2:
+                return []
+            return [point]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+
+        store.upsert([chunk])
+
+        assert mock_client.upsert.call_count == 1
+        mock_client.batch_update_points.assert_not_called()
+
+    def test_insert_new_chunk_raises_after_retry_exhaustion(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        point = _zero_feedback_point(chunk)
+        mock_client.retrieve.return_value = [point]
+        metadata_writes = _wire_feedback_cas_conflict_batch_update(mock_client, point)
+
+        with pytest.raises(VectorStoreError, match="Failed to upsert existing chunk"):
+            store._insert_new_chunk(chunk)
+
+        assert metadata_writes["count"] == MAX_FEEDBACK_UPDATE_RETRIES
 
 
 class TestExistingChunkMetadataCas:
@@ -1538,6 +1663,7 @@ class TestQdrantMisc:
         self, store: QdrantVectorStore, mock_client: MagicMock
     ):
         store.embedding_model_name = "bge_m3:models/bge-m3"
+        mock_client.retrieve.return_value = []
         store.upsert([_chunk(0)])
         _, kwargs = mock_client.upsert.call_args
         payload = kwargs["points"][0].payload

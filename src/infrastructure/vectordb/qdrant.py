@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from typing import Any, TypeAlias, cast
+from types import TracebackType
+from typing import Any, Protocol, TypeAlias, cast
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -62,12 +63,24 @@ QdrantNamedVectors: TypeAlias = dict[
 ]
 
 
-class _ThreadSafeQdrantClient:
+class _SynchronizedLock(Protocol):
+    def __enter__(self) -> bool: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+        /,
+    ) -> None: ...
+
+
+class ThreadSafeQdrantClient:
     """Serialize Qdrant HTTP calls — the underlying httpx client is not thread-safe."""
 
     __slots__ = ("_client", "_lock")
 
-    def __init__(self, client: QdrantClient, lock: threading.RLock) -> None:
+    def __init__(self, client: QdrantClient, lock: _SynchronizedLock) -> None:
         self._client = client
         self._lock = lock
 
@@ -134,7 +147,7 @@ class QdrantVectorStore(VectorStoreRepository):
         self.embedding_model_name = embedding_model_name
         self._client_lock = threading.RLock()
         raw_client = QdrantClient(url=url, api_key=api_key or None, check_compatibility=False)
-        self._client = _ThreadSafeQdrantClient(raw_client, self._client_lock)
+        self._client = ThreadSafeQdrantClient(raw_client, self._client_lock)
         self._collection_ready = False
         self._model_validated = False  # set True after first successful _validate_embedding_model
 
@@ -187,10 +200,7 @@ class QdrantVectorStore(VectorStoreRepository):
                 existing_committed = True
 
             if new_chunks:
-                self._client.upsert(
-                    collection_name=self.collection,
-                    points=[self._to_point(chunk) for chunk in new_chunks],
-                )
+                self._insert_new_chunks(new_chunks)
         except Exception as exc:
             if existing_committed and snapshots:
                 self._rollback_points(snapshots, context="upsert")
@@ -506,6 +516,31 @@ class QdrantVectorStore(VectorStoreRepository):
             f"Failed to initialize feedback fields for {chunk_id!r} "
             f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
         )
+
+    def _insert_new_chunks(self, chunks: list[Chunk]) -> None:
+        """Insert points absent at upsert start, re-checking each id before writing."""
+        for chunk in chunks:
+            self._insert_new_chunk(chunk)
+
+    def _insert_new_chunk(self, chunk: Chunk) -> None:
+        """Insert one point when absent, or CAS-update if it appeared before the writing."""
+        if self._retrieve_points([chunk.id]):
+            self._update_existing_chunk(chunk)
+            return
+        self._client.upsert(
+            collection_name=self.collection,
+            points=[self._to_point(chunk)],
+        )
+        points = self._retrieve_points([chunk.id])
+        if not points:
+            return
+        metadata = self._metadata_from_point(points[0])
+        if self._feedback_revision_from_metadata(metadata) == 0 and self._feedback_scores_equal(
+            self._feedback_score_from_metadata(metadata), 0.0
+        ):
+            return
+        # Concurrent writer recorded feedback; refresh vectors without clobbering it.
+        self._update_existing_chunk(chunk)
 
     def _snapshot_existing_points(self, chunk_ids: list[str]) -> dict[str, PointStruct]:
         """Capture the full point state so upsert can roll back on partial failure."""
