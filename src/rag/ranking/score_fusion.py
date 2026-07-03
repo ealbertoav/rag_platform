@@ -28,8 +28,8 @@ def rrf_fuse(
     The constant k (default 60) controls how many early ranks are penalized.
     Higher k → less penalty for lower ranks; lower k → stronger top-rank boost.
 
-    Chunks are deduplicated by "Chunk.id" — metadata (including feedback scores)
-    is merged across retriever views of the same chunk.
+    Chunks are deduplicated by "Chunk.id" — non-feedback metadata is merged
+    across retriever views of the same chunk (feedback scores stay on the first view).
     """
     scores: dict[str, float] = {}
     chunks: dict[str, Chunk] = {}
@@ -57,8 +57,8 @@ def weighted_linear_fuse(
 
     Both score lists are min-max normalized to [0, 1] before combining so that
     the raw score scales (cosine similarity vs. BM25) don't dominate.
-    When the same chunk appears in both lists, metadata (including feedback scores)
-    is merged rather than letting one retriever overwrite the other.
+    When the same chunk appears in both lists, non-feedback metadata is merged
+    rather than letting one retriever overwrite the other.
     """
 
     def _normalise(results: list[SearchResult]) -> dict[str, float]:
@@ -67,15 +67,15 @@ def weighted_linear_fuse(
         scores = [s for _, s in results]
         lo, hi = min(scores), max(scores)
         denom = hi - lo if hi != lo else 1.0
-        return {chunk.id: (s - lo) / denom for chunk, s in results}
+        return {result.id: (s - lo) / denom for result, s in results}
 
     dense_norm = _normalise(dense)
     sparse_norm = _normalise(sparse)
 
     all_ids = set(dense_norm) | set(sparse_norm)
     chunks: dict[str, Chunk] = {}
-    for chunk, _ in dense + sparse:
-        _register_chunk(chunks, chunk)
+    for result, _ in dense + sparse:
+        _register_chunk(chunks, result)
     fused: dict[str, float] = {
         cid: alpha * dense_norm.get(cid, 0.0) + (1.0 - alpha) * sparse_norm.get(cid, 0.0)
         for cid in all_ids

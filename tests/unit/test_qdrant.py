@@ -224,7 +224,7 @@ def _wire_new_chunk_retrieve_and_upsert(
     mock_client: MagicMock,
     chunks: list[Chunk],
 ) -> None:
-    """Simulate new-chunk upsert: absent at start, readable after each insert."""
+    """Simulate new-chunk upsert: absent at the start, readable after each insert."""
     points_by_id = {chunk.id: _zero_feedback_point(chunk) for chunk in chunks}
     inserted: set[str] = set()
 
@@ -255,7 +255,7 @@ def _wire_mixed_upsert_new_insert_fails(
     feedback_score: float = 1.0,
     feedback_revision: int = 1,
 ) -> tuple[Chunk, Chunk]:
-    """Configure mixed upsert where the new-chunk insert raises on upsert."""
+    """Configure mixed upsert where the new-chunk insert rises on upsert."""
     new_chunk = _chunk(new_index)
     existing_chunk = _chunk(existing_index)
     existing = _existing_point(
@@ -947,6 +947,81 @@ class TestUpsert:
         assert mock_client.upsert.call_count == 2
         assert str(mock_client.upsert.call_args_list[0].kwargs["points"][0].id) == chunk_a.id
         assert str(mock_client.upsert.call_args_list[1].kwargs["points"][0].id) == chunk_b.id
+        mock_client.delete.assert_called_once()
+        deleted_ids = mock_client.delete.call_args.kwargs["points_selector"].points
+        assert deleted_ids == [chunk_a.id]
+
+    def test_insert_new_chunk_returns_false_when_concurrent_feedback_after_insert(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        point = MagicMock()
+        point.id = chunk.id
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            if reads["count"] == 1:
+                return []
+            point.payload = {
+                "metadata": {"feedback_score": 1.0, "feedback_revision": 1},
+            }
+            return [point]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.batch_update_points.side_effect = _batch_update_existing_chunk_side_effect(
+            point
+        )
+
+        assert store._insert_new_chunk(chunk) is False
+
+    def test_upsert_does_not_rollback_chunk_with_concurrent_feedback_on_insert(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk_a = _chunk(0)
+        chunk_b = _chunk(1)
+        point_a = _zero_feedback_point(chunk_a)
+        point_b = MagicMock()
+        point_b.id = chunk_b.id
+        point_b.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            ids = kwargs.get("ids", [])
+            assert isinstance(ids, list)
+            id_strs = [str(chunk_id) for chunk_id in ids]
+            if reads["count"] == 1:
+                return []
+            if chunk_a.id in id_strs and reads["count"] == 3:
+                return [point_a]
+            if chunk_b.id in id_strs:
+                if reads["count"] == 5:
+                    return []
+                point_b.payload = {
+                    "metadata": {"feedback_score": 2.0, "feedback_revision": 1},
+                }
+                return [point_b]
+            return []
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.batch_update_points.side_effect = _batch_update_existing_chunk_side_effect(
+            point_b
+        )
+
+        chunk_c = _chunk(2)
+
+        def upsert_side_effect(**kwargs: object) -> None:
+            points = _require_list(kwargs["points"])
+            if len(points) == 1 and str(points[0].id) == chunk_c.id:
+                raise RuntimeError("insert failed for chunk-c")
+
+        mock_client.upsert.side_effect = upsert_side_effect
+
+        with pytest.raises(VectorStoreError, match="Qdrant upsert failed"):
+            store.upsert([chunk_a, chunk_b, chunk_c])
+
         mock_client.delete.assert_called_once()
         deleted_ids = mock_client.delete.call_args.kwargs["points_selector"].points
         assert deleted_ids == [chunk_a.id]

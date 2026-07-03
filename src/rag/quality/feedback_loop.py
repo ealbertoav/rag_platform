@@ -34,19 +34,17 @@ def _feedback_score_from_raw(raw: object) -> float:
 
 
 def merge_chunk_views(left: Chunk, right: Chunk) -> Chunk:
-    """Merge two views of the same chunk, keeping the highest feedback score."""
+    """Merge two views of the same chunk.
+
+    Feedback scores are not merged across retriever views — Qdrant is the
+    authoritative store (see ``apply_feedback_boost``). The left view's
+    feedback metadata is preserved when present.
+    """
     merged_meta: dict[str, Any] = dict(left.metadata)
     for key, value in right.metadata.items():
         if key == FEEDBACK_SCORE_KEY:
-            best = max(
-                feedback_score_from_metadata(merged_meta),
-                _feedback_score_from_raw(value),
-            )
-            if best > 0:
-                merged_meta[FEEDBACK_SCORE_KEY] = best
-            elif FEEDBACK_SCORE_KEY in right.metadata and FEEDBACK_SCORE_KEY not in merged_meta:
-                merged_meta[FEEDBACK_SCORE_KEY] = value
-        elif key not in merged_meta:
+            continue
+        if key not in merged_meta:
             merged_meta[key] = value
     return left.model_copy(update={"metadata": merged_meta})
 
@@ -100,9 +98,10 @@ def apply_feedback_boost(
             vector_scores = vector_store.get_feedback_scores(chunk_ids)
         except VectorStoreError as exc:
             logger.warning(
-                "Feedback score lookup failed; falling back to chunk metadata: %s",
+                "Feedback score lookup failed; skipping boost to avoid stale metadata: %s",
                 exc,
             )
+            vector_scores = {}
 
     boosted: list[SearchResult] = []
     for chunk, fused_score in results:

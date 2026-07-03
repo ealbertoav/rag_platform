@@ -553,7 +553,7 @@ class QdrantVectorStore(VectorStoreRepository):
             return True
         # Concurrent writer recorded feedback; refresh vectors without clobbering it.
         self._update_existing_chunk(chunk)
-        return True
+        return False
 
     def _snapshot_existing_points(self, chunk_ids: list[str]) -> dict[str, PointStruct]:
         """Capture the full point state so upsert can roll back on partial failure."""

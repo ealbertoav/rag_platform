@@ -80,7 +80,7 @@ class TestRrfFuse:
         results = rrf_fuse([_r(0), _r(1)], top_k=10)
         assert len(results) == 2
 
-    def test_merges_feedback_metadata_from_later_lists(self):
+    def test_does_not_merge_feedback_metadata_from_later_lists(self):
         dense_chunk = Chunk(id="c0", document_id="doc", text="dense view", metadata={})
         sparse_chunk = Chunk(
             id="c0",
@@ -90,7 +90,7 @@ class TestRrfFuse:
         )
         fused = rrf_fuse([(dense_chunk, 0.9)], [(sparse_chunk, 0.8)], top_k=1)
         assert fused[0][0].text == "dense view"
-        assert fused[0][0].metadata[FEEDBACK_SCORE_KEY] == 3.0
+        assert FEEDBACK_SCORE_KEY not in fused[0][0].metadata
 
 
 # ── weighted_linear_fuse ──────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ class TestWeightedLinearFuse:
         results = weighted_linear_fuse([(chunk, 0.9)], [(chunk, 0.8)], alpha=0.7, top_k=5)
         assert sum(1 for c, _ in results if c.id == chunk.id) == 1
 
-    def test_merges_feedback_metadata_when_sparse_would_overwrite(self):
+    def test_preserves_dense_feedback_metadata_when_sparse_has_none(self):
         dense_chunk = Chunk(
             id="c0",
             document_id="doc",
