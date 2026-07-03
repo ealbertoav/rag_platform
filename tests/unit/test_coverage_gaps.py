@@ -469,6 +469,7 @@ class TestQdrantFeedbackGaps:
         chunk = chunk.model_copy(
             update={"embedding": [0.1, 0.2, 0.3, 0.4], "sparse_vector": {1: 0.9}}
         )
+        store._client.retrieve.return_value = []
         store.upsert([chunk])
         payload = store._client.upsert.call_args.kwargs["points"][0].payload
         assert payload[CHUNK_TYPE_KEY] == CHUNK_TYPE_HYPE

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -23,7 +24,12 @@ from qdrant_client.models import (
     SparseVector as QSparseVector,
 )
 
-from src.core.constants import CHUNK_TYPE_KEY, FEEDBACK_SCORE_KEY, RRF_K
+from src.core.constants import (
+    CHUNK_TYPE_KEY,
+    FEEDBACK_REVISION_KEY,
+    FEEDBACK_SCORE_KEY,
+    RRF_K,
+)
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.retrieval_filter import RetrievalFilter
@@ -38,7 +44,8 @@ _SPARSE = "sparse"
 _EXPANSION = 3  # multiplier for hybrid search candidate pool
 _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
 _FEEDBACK_SCORE_EPSILON = 1e-9
-_MAX_FEEDBACK_UPDATE_RETRIES = 5
+_MAX_FEEDBACK_UPDATE_RETRIES = 20
+_FEEDBACK_UPDATE_ID_KEY = "feedback_update_id"
 
 
 # ── RRF fusion (module-level so it can be tested independently) ────────────────
@@ -119,13 +126,17 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def upsert(self, chunks: list[Chunk]) -> None:
         self._ensure_collection()
+        chunk_ids = [chunk.id for chunk in chunks]
+        existing_metadata = self._existing_feedback_metadata_by_id(chunk_ids)
         points: list[PointStruct] = []
         for chunk in chunks:
             if chunk.embedding is None or chunk.sparse_vector is None:
                 raise VectorStoreError(
                     f"Chunk {chunk.id!r} must have embedding and sparse_vector before upsert"
                 )
-            points.append(self._to_point(chunk))
+            points.append(
+                self._to_point(self._preserve_feedback_metadata(chunk, existing_metadata))
+            )
         if points:
             try:
                 self._client.upsert(collection_name=self.collection, points=points)
@@ -248,6 +259,7 @@ class QdrantVectorStore(VectorStoreRepository):
         """Persist *feedback_score* under chunk metadata in the Qdrant payload."""
         metadata = self._require_chunk_metadata(chunk_id)
         metadata[FEEDBACK_SCORE_KEY] = feedback_score
+        metadata[FEEDBACK_REVISION_KEY] = self._feedback_revision_from_metadata(metadata) + 1
         self._set_chunk_metadata(chunk_id, metadata)
 
     def accumulate_feedback_score(self, chunk_id: str, delta: float) -> float:
@@ -256,14 +268,19 @@ class QdrantVectorStore(VectorStoreRepository):
             raise VectorStoreError(
                 f"Chunk {chunk_id!r} not found in collection {self.collection!r}"
             )
+        self._ensure_feedback_fields_initialized(chunk_id)
         for attempt in range(_MAX_FEEDBACK_UPDATE_RETRIES):
-            current = self.get_feedback_score(chunk_id)
-            updated = current + delta
+            current_score = self.get_feedback_score(chunk_id)
+            current_revision = self.get_feedback_revision(chunk_id)
+            updated = current_score + delta
+            next_revision = current_revision + 1
             if self._try_set_feedback_score_if_current(
                 chunk_id,
-                expected=current,
+                expected_score=current_score,
+                expected_revision=current_revision,
                 feedback_score=updated,
-            ) and self._feedback_scores_equal(self.get_feedback_score(chunk_id), updated):
+                feedback_revision=next_revision,
+            ):
                 return updated
             logger.debug(
                 "Feedback accumulate conflict for chunk_id=%r attempt=%d",
@@ -275,11 +292,31 @@ class QdrantVectorStore(VectorStoreRepository):
             f"{chunk_id!r} after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
         )
 
-    def _feedback_cas_filter(self, chunk_id: str, expected: float) -> Filter:
-        """Build a Qdrant filter that matches only when feedback_score equals *expected*."""
+    def get_feedback_revision(self, chunk_id: str) -> int:
+        """Return the feedback revision counter stored in chunk metadata."""
+        points = self._retrieve_points([chunk_id])
+        if not points:
+            return 0
+        return self._feedback_revision_from_metadata(self._metadata_from_point(points[0]))
+
+    def _feedback_cas_filter(
+        self,
+        chunk_id: str,
+        expected_score: float,
+        expected_revision: int,
+    ) -> Filter:
+        """Build a filter matching only the current feedback (score, revision) pair."""
         id_match = HasIdCondition(has_id=[chunk_id])
-        if self._feedback_scores_equal(expected, 0.0):
-            score_match: Filter | FieldCondition | IsNullCondition = Filter(
+        score_match = self._feedback_score_match_condition(expected_score)
+        revision_match = self._feedback_revision_match_condition(expected_revision)
+        return Filter(must=[id_match, score_match, revision_match])
+
+    def _feedback_score_match_condition(
+        self,
+        expected_score: float,
+    ) -> Filter | FieldCondition | IsNullCondition:
+        if self._feedback_scores_equal(expected_score, 0.0):
+            return Filter(
                 should=[
                     IsNullCondition(is_null=PayloadField(key="metadata.feedback_score")),
                     FieldCondition(
@@ -291,35 +328,132 @@ class QdrantVectorStore(VectorStoreRepository):
                     ),
                 ]
             )
-        else:
-            score_match = FieldCondition(
-                key="metadata.feedback_score",
-                range=Range(
-                    gte=expected - _FEEDBACK_SCORE_EPSILON,
-                    lte=expected + _FEEDBACK_SCORE_EPSILON,
-                ),
+        return FieldCondition(
+            key="metadata.feedback_score",
+            range=Range(
+                gte=expected_score - _FEEDBACK_SCORE_EPSILON,
+                lte=expected_score + _FEEDBACK_SCORE_EPSILON,
+            ),
+        )
+
+    @staticmethod
+    def _feedback_revision_match_condition(
+        expected_revision: int,
+    ) -> Filter | FieldCondition | IsNullCondition:
+        if expected_revision == 0:
+            return Filter(
+                should=[
+                    IsNullCondition(is_null=PayloadField(key="metadata.feedback_revision")),
+                    FieldCondition(
+                        key="metadata.feedback_revision",
+                        range=Range(gte=0, lte=0),
+                    ),
+                ]
             )
-        return Filter(must=[id_match, score_match])
+        return FieldCondition(
+            key="metadata.feedback_revision",
+            range=Range(
+                gte=expected_revision - _FEEDBACK_SCORE_EPSILON,
+                lte=expected_revision + _FEEDBACK_SCORE_EPSILON,
+            ),
+        )
 
     def _try_set_feedback_score_if_current(
         self,
         chunk_id: str,
         *,
-        expected: float,
+        expected_score: float,
+        expected_revision: int,
         feedback_score: float,
+        feedback_revision: int,
     ) -> bool:
-        """Persist *feedback_score* only when the stored value still equals *expected*."""
+        """Persist feedback only when the stored (score, revision) pair still matches."""
+        cas_filter = self._feedback_cas_filter(
+            chunk_id,
+            expected_score,
+            expected_revision,
+        )
+        actual_score = self.get_feedback_score(chunk_id)
+        actual_revision = self.get_feedback_revision(chunk_id)
+        if actual_revision != expected_revision or not self._feedback_scores_equal(
+            actual_score, expected_score
+        ):
+            return False
+        update_id = str(uuid.uuid4())
         try:
             self._client.set_payload(
                 collection_name=self.collection,
-                payload={FEEDBACK_SCORE_KEY: feedback_score},
+                payload={
+                    FEEDBACK_SCORE_KEY: feedback_score,
+                    FEEDBACK_REVISION_KEY: feedback_revision,
+                    _FEEDBACK_UPDATE_ID_KEY: update_id,
+                },
                 key="metadata",
-                points=self._feedback_cas_filter(chunk_id, expected),
+                points=cas_filter,
                 wait=True,
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
-        return True
+        metadata = self._metadata_from_point(self._retrieve_points([chunk_id])[0])
+        return (
+            metadata.get(_FEEDBACK_UPDATE_ID_KEY) == update_id
+            and self._feedback_revision_from_metadata(metadata) == feedback_revision
+            and self._feedback_scores_equal(
+                self._feedback_score_from_metadata(metadata),
+                feedback_score,
+            )
+        )
+
+    def _ensure_feedback_fields_initialized(self, chunk_id: str) -> None:
+        """Backfill explicit feedback defaults so Qdrant payload filters can match them."""
+        metadata = self._require_chunk_metadata(chunk_id)
+        score = self._feedback_score_from_metadata(metadata)
+        revision = self._feedback_revision_from_metadata(metadata)
+        if (
+            metadata.get(FEEDBACK_SCORE_KEY) == score
+            and metadata.get(FEEDBACK_REVISION_KEY) == revision
+        ):
+            return
+        metadata[FEEDBACK_SCORE_KEY] = score
+        metadata[FEEDBACK_REVISION_KEY] = revision
+        self._set_chunk_metadata(chunk_id, metadata)
+
+    def _existing_feedback_metadata_by_id(
+        self,
+        chunk_ids: list[str],
+    ) -> dict[str, dict[str, object]]:
+        unique_ids = list(dict.fromkeys(chunk_ids))
+        if not unique_ids:
+            return {}
+        points = self._retrieve_points(unique_ids)
+        preserved: dict[str, dict[str, object]] = {}
+        for point in points:
+            metadata = self._metadata_from_point(point)
+            feedback_metadata = self._feedback_metadata_from_stored(metadata)
+            if feedback_metadata:
+                preserved[str(point.id)] = feedback_metadata
+        return preserved
+
+    @staticmethod
+    def _feedback_metadata_from_stored(metadata: dict[str, object]) -> dict[str, object]:
+        preserved: dict[str, object] = {}
+        if FEEDBACK_SCORE_KEY in metadata:
+            preserved[FEEDBACK_SCORE_KEY] = metadata[FEEDBACK_SCORE_KEY]
+        if FEEDBACK_REVISION_KEY in metadata:
+            preserved[FEEDBACK_REVISION_KEY] = metadata[FEEDBACK_REVISION_KEY]
+        return preserved
+
+    @staticmethod
+    def _preserve_feedback_metadata(
+        chunk: Chunk,
+        existing_metadata: dict[str, dict[str, object]],
+    ) -> Chunk:
+        stored = existing_metadata.get(chunk.id)
+        if not stored:
+            return chunk
+        merged_metadata = dict(chunk.metadata)
+        merged_metadata.update(stored)
+        return chunk.model_copy(update={"metadata": merged_metadata})
 
     def _retrieve_points(self, chunk_ids: list[str]) -> list[Any]:
         self._ensure_collection()
@@ -363,6 +497,17 @@ class QdrantVectorStore(VectorStoreRepository):
         if isinstance(value, int | float):
             return float(value)
         return 0.0
+
+    @staticmethod
+    def _feedback_revision_from_metadata(metadata: dict[str, object]) -> int:
+        value = metadata.get(FEEDBACK_REVISION_KEY)
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return 0
 
     @staticmethod
     def _feedback_scores_equal(left: float, right: float) -> bool:
@@ -544,6 +689,10 @@ class QdrantVectorStore(VectorStoreRepository):
         assert embedding is not None
         assert sparse_vector is not None
         payload = chunk.model_dump(exclude={"embedding", "sparse_vector"})
+        metadata = dict(payload.get("metadata") or {})
+        metadata.setdefault(FEEDBACK_SCORE_KEY, 0.0)
+        metadata.setdefault(FEEDBACK_REVISION_KEY, 0)
+        payload["metadata"] = metadata
         if self.embedding_model_name:
             payload["embedding_model_name"] = self.embedding_model_name
         chunk_type = chunk.metadata.get(CHUNK_TYPE_KEY)

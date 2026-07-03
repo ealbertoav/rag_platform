@@ -97,3 +97,31 @@ class TestQdrantIntegration:
         results = store.search_dense(c.embedding, top_k=1)  # type: ignore[arg-type]
         assert results[0][0].text == c.text
         assert results[0][0].document_id == c.document_id
+
+    def test_upsert_preserves_feedback_metadata(self, store):
+        chunk = _chunk(50)
+        store.upsert([chunk])
+        store.accumulate_feedback_score(chunk.id, 2.0)
+        store.accumulate_feedback_score(chunk.id, 1.5)
+        assert store.get_feedback_score(chunk.id) == 3.5
+        assert store.get_feedback_revision(chunk.id) == 2
+
+        reindexed = _chunk(50)
+        store.upsert([reindexed])
+
+        assert store.get_feedback_score(chunk.id) == 3.5
+        assert store.get_feedback_revision(chunk.id) == 2
+
+    def test_accumulate_feedback_score_is_linearizable(self, store):
+        chunk = _chunk(51)
+        store.upsert([chunk])
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(
+                pool.map(lambda _: store.accumulate_feedback_score(chunk.id, 1.0), range(10))
+            )
+
+        assert store.get_feedback_score(chunk.id) == 10.0
+        assert store.get_feedback_revision(chunk.id) == 10
+        assert sorted(results) == list(range(1, 11))

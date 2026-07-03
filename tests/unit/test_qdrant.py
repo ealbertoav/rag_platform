@@ -10,13 +10,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from qdrant_client.models import FieldCondition, Filter, HasIdCondition
 
+from src.core.constants import FEEDBACK_REVISION_KEY, FEEDBACK_SCORE_KEY
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.infrastructure.vectordb.qdrant import QdrantVectorStore
 
 FEEDBACK_SCORE_EPSILON = 1e-9
-MAX_FEEDBACK_UPDATE_RETRIES = 5
+MAX_FEEDBACK_UPDATE_RETRIES = 20
 
 
 def _require_list(value: object) -> list[Any]:
@@ -37,6 +38,19 @@ def _require_has_id_condition(value: object) -> HasIdCondition:
 def _require_field_condition(value: object) -> FieldCondition:
     assert isinstance(value, FieldCondition)
     return value
+
+
+def _merge_metadata_set_payload_side_effect(point: MagicMock):
+    """Return a mock set_payload handler that merges metadata updates into *point*."""
+
+    def set_payload_side_effect(**set_payload_kwargs: object) -> None:
+        payload = set_payload_kwargs["payload"]
+        assert isinstance(payload, dict)
+        metadata = dict(point.payload.get("metadata") or {})
+        metadata.update(payload)
+        point.payload = {"metadata": metadata}
+
+    return set_payload_side_effect
 
 
 # ── fixtures ───────────────────────────────────────────────────────────────────
@@ -184,10 +198,12 @@ class TestEnsureCollection:
 class TestUpsert:
     def test_calls_client_upsert(self, store: QdrantVectorStore, mock_client: MagicMock):
         chunks = [_chunk(0), _chunk(1)]
+        mock_client.retrieve.return_value = []
         store.upsert(chunks)
         mock_client.upsert.assert_called_once()
 
     def test_upsert_passes_collection_name(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.retrieve.return_value = []
         store.upsert([_chunk()])
         _, kwargs = mock_client.upsert.call_args
         assert kwargs["collection_name"] == "test_col"
@@ -195,9 +211,39 @@ class TestUpsert:
     def test_upsert_point_count_matches_chunks(
         self, store: QdrantVectorStore, mock_client: MagicMock
     ):
+        mock_client.retrieve.return_value = []
         store.upsert([_chunk(0), _chunk(1), _chunk(2)])
         _, kwargs = mock_client.upsert.call_args
         assert len(kwargs["points"]) == 3
+
+    def test_upsert_preserves_existing_feedback_metadata(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        existing = MagicMock()
+        existing.id = chunk.id
+        existing.payload = {
+            "metadata": {
+                "feedback_score": 4.0,
+                "feedback_revision": 3,
+            }
+        }
+        mock_client.retrieve.return_value = [existing]
+        store.upsert([chunk])
+        payload = mock_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload["metadata"][FEEDBACK_SCORE_KEY] == 4.0
+        assert payload["metadata"][FEEDBACK_REVISION_KEY] == 3
+
+    def test_upsert_adds_chunk_type_to_payload(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        from src.core.constants import CHUNK_TYPE_HYPE, CHUNK_TYPE_KEY
+
+        chunk = _chunk(0).model_copy(update={"metadata": {CHUNK_TYPE_KEY: CHUNK_TYPE_HYPE}})
+        mock_client.retrieve.return_value = []
+        store.upsert([chunk])
+        payload = mock_client.upsert.call_args.kwargs["points"][0].payload
+        assert payload[CHUNK_TYPE_KEY] == CHUNK_TYPE_HYPE
 
     def test_upsert_skips_empty_list(self, store: QdrantVectorStore, mock_client: MagicMock):
         store.upsert([])
@@ -375,9 +421,59 @@ class TestQdrantFeedbackScore:
         mock_client.retrieve.return_value = [point]
         assert store.get_feedback_score("chunk-a") == 2.5
 
+    def test_get_feedback_score_retrieve_failure_raises(self, store, mock_client):
+        mock_client.retrieve.side_effect = RuntimeError("down")
+        with pytest.raises(VectorStoreError, match="retrieve failed"):
+            store.get_feedback_score("chunk-a")
+
+    def test_get_feedback_score_bool_returns_zero(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": True}}
+        mock_client.retrieve.return_value = [point]
+        assert store.get_feedback_score("chunk-a") == 0.0
+
     def test_get_feedback_score_missing_chunk_returns_zero(self, store, mock_client):
         mock_client.retrieve.return_value = []
         assert store.get_feedback_score("missing") == 0.0
+
+    def test_get_feedback_revision_reads_metadata(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_revision": 3}}
+        mock_client.retrieve.return_value = [point]
+        assert store.get_feedback_revision("chunk-a") == 3
+
+    def test_get_feedback_revision_missing_chunk_returns_zero(self, store, mock_client):
+        mock_client.retrieve.return_value = []
+        assert store.get_feedback_revision("missing") == 0
+
+    def test_get_feedback_revision_bool_returns_zero(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_revision": True}}
+        mock_client.retrieve.return_value = [point]
+        assert store.get_feedback_revision("chunk-a") == 0
+
+    def test_get_feedback_revision_integer_float(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_revision": 4.0}}
+        mock_client.retrieve.return_value = [point]
+        assert store.get_feedback_revision("chunk-a") == 4
+
+    def test_ensure_feedback_fields_initialized_backfills_defaults(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"source": "doc.pdf"}}
+        mock_client.retrieve.return_value = [point]
+        store._ensure_feedback_fields_initialized("chunk-a")
+        mock_client.set_payload.assert_called_once_with(
+            collection_name="test_col",
+            payload={
+                "metadata": {
+                    "source": "doc.pdf",
+                    "feedback_score": 0.0,
+                    "feedback_revision": 0,
+                }
+            },
+            points=["chunk-a"],
+        )
 
     def test_set_feedback_score_updates_metadata(self, store, mock_client):
         point = MagicMock()
@@ -386,7 +482,13 @@ class TestQdrantFeedbackScore:
         store.set_feedback_score("chunk-a", 1.0)
         mock_client.set_payload.assert_called_once_with(
             collection_name="test_col",
-            payload={"metadata": {"source": "doc.pdf", "feedback_score": 1.0}},
+            payload={
+                "metadata": {
+                    "source": "doc.pdf",
+                    "feedback_score": 1.0,
+                    "feedback_revision": 1,
+                }
+            },
             points=["chunk-a"],
         )
 
@@ -395,49 +497,92 @@ class TestQdrantFeedbackScore:
         with pytest.raises(VectorStoreError, match="not found"):
             store.set_feedback_score("missing", 1.0)
 
+    def test_set_feedback_score_set_payload_failure_raises(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"source": "doc.pdf"}}
+        mock_client.retrieve.return_value = [point]
+        mock_client.set_payload.side_effect = RuntimeError("write failed")
+        with pytest.raises(VectorStoreError, match="set_payload failed"):
+            store.set_feedback_score("chunk-a", 1.0)
+
     def test_get_feedback_scores_empty_ids_returns_empty(self, store, mock_client):
         assert store.get_feedback_scores([]) == {}
         mock_client.retrieve.assert_not_called()
 
     def test_try_set_feedback_score_if_current_uses_conditional_filter(self, store, mock_client):
-        store._try_set_feedback_score_if_current(
+        point = MagicMock()
+        point.payload = {
+            "metadata": {"feedback_score": 1.0, "feedback_revision": 0},
+        }
+        mock_client.retrieve.return_value = [point]
+
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
+        assert store._try_set_feedback_score_if_current(
             "chunk-a",
-            expected=1.0,
+            expected_score=1.0,
+            expected_revision=0,
             feedback_score=3.0,
+            feedback_revision=1,
         )
         mock_client.set_payload.assert_called_once()
         _, set_payload_args = mock_client.set_payload.call_args
         assert set_payload_args["collection_name"] == "test_col"
-        assert set_payload_args["payload"] == {"feedback_score": 3.0}
-        assert set_payload_args["key"] == "metadata"
-        assert set_payload_args["wait"] is True
+        assert set_payload_args["payload"]["feedback_score"] == 3.0
+        assert set_payload_args["payload"]["feedback_revision"] == 1
+        assert "feedback_update_id" in set_payload_args["payload"]
         points = _require_filter(set_payload_args["points"])
         must_conditions = _require_list(points.must)
         id_match = _require_has_id_condition(must_conditions[0])
         assert id_match.has_id == ["chunk-a"]
 
-    def test_try_set_feedback_score_if_current_wraps_set_payload_error(
+    def test_try_set_feedback_score_if_current_returns_false_when_cas_misses(
         self, store, mock_client
     ):
+        point = MagicMock()
+        point.payload = {
+            "metadata": {"feedback_score": 2.0, "feedback_revision": 1},
+        }
+        mock_client.retrieve.return_value = [point]
+        assert not store._try_set_feedback_score_if_current(
+            "chunk-a",
+            expected_score=1.0,
+            expected_revision=0,
+            feedback_score=2.0,
+            feedback_revision=1,
+        )
+        mock_client.set_payload.assert_not_called()
+
+    def test_try_set_feedback_score_if_current_wraps_set_payload_error(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {
+            "metadata": {"feedback_score": 1.0, "feedback_revision": 0},
+        }
+        mock_client.retrieve.return_value = [point]
         mock_client.set_payload.side_effect = RuntimeError("set failed")
         with pytest.raises(VectorStoreError, match="Qdrant set_payload failed"):
             store._try_set_feedback_score_if_current(
                 "chunk-a",
-                expected=1.0,
+                expected_score=1.0,
+                expected_revision=0,
                 feedback_score=3.0,
+                feedback_revision=1,
             )
 
     def test_feedback_cas_filter_matches_zero_or_missing(self, store):
-        match_filter = store._feedback_cas_filter("chunk-a", 0.0)
+        match_filter = store._feedback_cas_filter("chunk-a", 0.0, 0)
         must_conditions = _require_list(match_filter.must)
         score_match = _require_filter(must_conditions[1])
         assert score_match.should is not None
+        revision_match = _require_filter(must_conditions[2])
+        assert revision_match.should is not None
 
     def test_feedback_cas_filter_matches_nonzero_with_range(self, store):
-        match_filter = store._feedback_cas_filter("chunk-a", 2.0)
+        match_filter = store._feedback_cas_filter("chunk-a", 2.0, 3)
         must_conditions = _require_list(match_filter.must)
         score_match = _require_field_condition(must_conditions[1])
         assert score_match.range is not None
+        revision_match = _require_field_condition(must_conditions[2])
+        assert revision_match.range is not None
 
     def test_get_feedback_scores_batch(self, store, mock_client):
         point_a = MagicMock()
@@ -458,50 +603,74 @@ class TestQdrantFeedbackScore:
 
     def test_accumulate_feedback_score_adds_delta(self, store, mock_client):
         point = MagicMock()
-        point.payload = {"metadata": {"feedback_score": 1.0}}
+        point.payload = {"metadata": {"feedback_score": 1.0, "feedback_revision": 2}}
         mock_client.retrieve.return_value = [point]
 
-        def set_payload_side_effect(**set_payload_kwargs: object) -> None:
-            payload = set_payload_kwargs["payload"]
-            key = set_payload_kwargs.get("key")
-            assert isinstance(payload, dict)
-            if key == "metadata":
-                metadata = dict(point.payload.get("metadata") or {})
-                metadata.update(payload)
-                point.payload = {"metadata": metadata}
-
-        mock_client.set_payload.side_effect = set_payload_side_effect
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
         result = store.accumulate_feedback_score("chunk-a", 0.5)
         assert result == 1.5
         mock_client.set_payload.assert_called_once()
         _, set_payload_args = mock_client.set_payload.call_args
-        assert set_payload_args["payload"] == {"feedback_score": 1.5}
-        assert set_payload_args["key"] == "metadata"
+        assert set_payload_args["payload"]["feedback_score"] == 1.5
+        assert set_payload_args["payload"]["feedback_revision"] == 3
+        assert "feedback_update_id" in set_payload_args["payload"]
 
     def test_accumulate_feedback_score_missing_chunk_raises(self, store, mock_client):
         mock_client.retrieve.return_value = []
         with pytest.raises(VectorStoreError, match="not found"):
             store.accumulate_feedback_score("missing", 1.0)
 
+    def test_accumulate_feedback_score_retries_after_concurrent_write(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            if reads["count"] == 4:
+                point.payload = {
+                    "metadata": {"feedback_score": 1.0, "feedback_revision": 1},
+                }
+            return [point]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
+        result = store.accumulate_feedback_score("chunk-a", 1.0)
+        assert result == 2.0
+        assert point.payload["metadata"][FEEDBACK_SCORE_KEY] == 2.0
+        assert point.payload["metadata"][FEEDBACK_REVISION_KEY] == 2
+
     def test_accumulate_feedback_score_serializes_concurrent_updates(self, store, mock_client):
-        current = {"value": 0.0}
+        current = {"score": 0.0, "revision": 0, "update_id": None}
         lock = threading.Lock()
 
         def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
             point = MagicMock()
             with lock:
-                point.payload = {"metadata": {"feedback_score": current["value"]}}
+                metadata: dict[str, object] = {
+                    "feedback_score": current["score"],
+                    "feedback_revision": current["revision"],
+                }
+                if current["update_id"] is not None:
+                    metadata["feedback_update_id"] = current["update_id"]
+                point.payload = {"metadata": metadata}
             return [point]
 
         def set_payload_side_effect(**set_payload_kwargs: object) -> None:
             payload = set_payload_kwargs["payload"]
             assert isinstance(payload, dict)
-            requested = float(payload["feedback_score"])
             with lock:
-                expected = current["value"] + 1.0
-                if abs(requested - expected) > FEEDBACK_SCORE_EPSILON:
+                expected_score = current["score"] + 1.0
+                expected_revision = current["revision"] + 1
+                requested_score = float(payload["feedback_score"])
+                requested_revision = int(payload["feedback_revision"])
+                if abs(requested_score - expected_score) > FEEDBACK_SCORE_EPSILON:
                     return
-                current["value"] = requested
+                if requested_revision != expected_revision:
+                    return
+                current["score"] = requested_score
+                current["revision"] = requested_revision
+                current["update_id"] = payload.get("feedback_update_id")
 
         mock_client.retrieve.side_effect = retrieve_side_effect
         mock_client.set_payload.side_effect = set_payload_side_effect
@@ -511,13 +680,15 @@ class TestQdrantFeedbackScore:
                 pool.map(lambda _: store.accumulate_feedback_score("chunk-a", 1.0), range(10))
             )
 
-        assert current["value"] == 10.0
+        assert current["score"] == 10.0
+        assert current["revision"] == 10
         assert sorted(results) == list(range(1, 11))
 
     def test_accumulate_feedback_score_raises_after_retry_exhaustion(self, store, mock_client):
         point = MagicMock()
-        point.payload = {"metadata": {"feedback_score": 0.0}}
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
         mock_client.retrieve.return_value = [point]
+        mock_client.set_payload.side_effect = lambda **_kwargs: None
 
         with pytest.raises(VectorStoreError, match="Failed to accumulate feedback"):
             store.accumulate_feedback_score("chunk-a", 1.0)
