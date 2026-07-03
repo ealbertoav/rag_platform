@@ -280,6 +280,31 @@ class QdrantVectorStore(VectorStoreRepository):
         except Exception as exc:
             raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
 
+    def get_feedback_scores(self, chunk_ids: list[str]) -> dict[str, float]:
+        """Return feedback scores for *chunk_ids* in a single retrieve call."""
+        unique_ids = list(dict.fromkeys(chunk_ids))
+        if not unique_ids:
+            return {}
+        self._ensure_collection()
+        try:
+            points = self._client.retrieve(
+                collection_name=self.collection,
+                ids=unique_ids,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
+        scores = dict.fromkeys(unique_ids, 0.0)
+        for point in points:
+            metadata = (point.payload or {}).get("metadata") or {}
+            value = metadata.get(FEEDBACK_SCORE_KEY)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int | float):
+                scores[str(point.id)] = float(value)
+        return scores
+
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _ensure_collection(self) -> None:

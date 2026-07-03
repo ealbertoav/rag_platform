@@ -168,6 +168,8 @@ class HybridRetriever:
         fused = apply_feedback_boost(
             fused,
             boost_multiplier=self._feedback_boost_multiplier,
+            bm25_index=self._bm25.bm25_index if self._feedback_boost_multiplier > 0 else None,
+            vector_store=self._dense.vector_store if self._feedback_boost_multiplier > 0 else None,
         )
         fused = fused[:top_k]
         logger.debug(

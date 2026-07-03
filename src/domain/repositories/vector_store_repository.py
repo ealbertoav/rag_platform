@@ -73,3 +73,8 @@ class VectorStoreRepository(ABC):
     @abstractmethod
     def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
         """Persist *feedback_score* on the chunk payload for future retrieval boosting."""
+
+    def get_feedback_scores(self, chunk_ids: list[str]) -> dict[str, float]:
+        """Return feedback scores for *chunk_ids* (missing IDs map to 0.0)."""
+        unique_ids = list(dict.fromkeys(chunk_ids))
+        return {chunk_id: self.get_feedback_score(chunk_id) for chunk_id in unique_ids}

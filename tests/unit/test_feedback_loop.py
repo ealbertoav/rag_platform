@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,15 +49,28 @@ class TestRecordFeedback:
         record_feedback(store, "query-1", "chunk-a", 1.0)
         store.set_feedback_score.assert_called_once_with("chunk-a", 2.0)
 
-    def test_updates_bm25_metadata_when_index_provided(self):
+    def test_updates_bm25_metadata_when_index_provided(self, tmp_path: Path):
         store = MagicMock()
         store.get_feedback_score.return_value = 0.0
-        index = BM25Index()
+        index = BM25Index(index_path=tmp_path / "bm25.json")
         index.index([_chunk("chunk-a")])
         record_feedback(store, "query-1", "chunk-a", 1.0, bm25_index=index)
         updated = index.get_by_id("chunk-a")
         assert updated is not None
         assert updated.metadata[FEEDBACK_SCORE_KEY] == 1.0
+        reloaded = BM25Index(index_path=tmp_path / "bm25.json")
+        reloaded.load()
+        persisted = reloaded.get_by_id("chunk-a")
+        assert persisted is not None
+        assert persisted.metadata[FEEDBACK_SCORE_KEY] == 1.0
+
+    def test_missing_bm25_chunk_logs_warning(self, caplog):
+        store = MagicMock()
+        store.get_feedback_score.return_value = 0.0
+        index = BM25Index()
+        with caplog.at_level(logging.WARNING):
+            record_feedback(store, "query-1", "missing", 1.0, bm25_index=index)
+        assert "not found in BM25 index" in caplog.text
 
 
 class TestApplyFeedbackBoost:
@@ -76,6 +91,18 @@ class TestApplyFeedbackBoost:
         results = [_result("c0", 0.5, feedback_score=-1.0)]
         boosted = apply_feedback_boost(results, boost_multiplier=0.1)
         assert boosted[0][1] == 0.5
+
+    def test_vector_store_lookup_applies_when_metadata_stale(self):
+        store = MagicMock()
+        store.get_feedback_scores.return_value = {"c0": 4.0}
+        results = [_result("c0", 0.5)]
+        boosted = apply_feedback_boost(
+            results,
+            boost_multiplier=0.1,
+            vector_store=store,
+        )
+        assert boosted[0][1] == pytest.approx(0.9)
+        store.get_feedback_scores.assert_called_once_with(["c0"])
 
 
 class TestFeedbackApi:

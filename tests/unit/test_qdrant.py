@@ -367,6 +367,23 @@ class TestQdrantFeedbackScore:
         with pytest.raises(VectorStoreError, match="not found"):
             store.set_feedback_score("missing", 1.0)
 
+    def test_get_feedback_scores_batch(self, store, mock_client):
+        point_a = MagicMock()
+        point_a.id = "chunk-a"
+        point_a.payload = {"metadata": {"feedback_score": 2.0}}
+        point_b = MagicMock()
+        point_b.id = "chunk-b"
+        point_b.payload = {"metadata": {}}
+        mock_client.retrieve.return_value = [point_a, point_b]
+        scores = store.get_feedback_scores(["chunk-a", "chunk-b", "chunk-a"])
+        assert scores == {"chunk-a": 2.0, "chunk-b": 0.0}
+        mock_client.retrieve.assert_called_once_with(
+            collection_name="test_col",
+            ids=["chunk-a", "chunk-b"],
+            with_payload=True,
+            with_vectors=False,
+        )
+
 
 # ── embedding model validation ─────────────────────────────────────────────────
 
