@@ -170,6 +170,22 @@ reportUnknownArgumentType = false
 reportUnknownParameterType = false
 reportUnknownMemberType = false
 
+[tool.pyrefly]
+search-path = ["src", "scripts"]
+# Optional runtime deps — install via uv sync --extra api-embeddings / graph / evals.
+ignore-missing-imports = [
+    "cohere",
+    "cohere.*",
+    "openai",
+    "openai.*",
+    "voyageai",
+    "voyageai.*",
+    "google",
+    "google.*",
+    "neo4j",
+    "neo4j.*",
+]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

@@ -75,10 +75,6 @@ class ProviderResult:
     n_queries: int
     error: str = ""
 
-    @property
-    def passed(self) -> bool:
-        return not self.error and self.recall_at_5 > 0
-
 
 def _compute_recall_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
     if not relevant_ids:
@@ -234,7 +230,11 @@ def _print_table(results: list[ProviderResult], k: int) -> None:
             status = "[red]ERROR[/red]"
             row = [r.name, "–", "–", "–", f"${r.cost_per_1k:.3f}", "–", status]
         else:
-            status = "[green]OK ✓[/green]" if r.passed else "[yellow]SKIP[/yellow]"
+            status = (
+                "[green]OK ✓[/green]"
+                if not r.error and r.recall_at_5 > 0
+                else "[yellow]SKIP[/yellow]"
+            )
             cost = f"${r.cost_per_1k:.3f}" if r.cost_per_1k > 0 else "[dim]$0.000[/dim]"
             row = [
                 r.name,
