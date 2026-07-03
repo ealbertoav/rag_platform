@@ -19,7 +19,7 @@ from qdrant_client.models import (
     SparseVector as QSparseVector,
 )
 
-from src.core.constants import CHUNK_TYPE_KEY, RRF_K
+from src.core.constants import CHUNK_TYPE_KEY, FEEDBACK_SCORE_KEY, RRF_K
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.retrieval_filter import RetrievalFilter
@@ -230,6 +230,55 @@ class QdrantVectorStore(VectorStoreRepository):
             return self._client.count(collection_name=self.collection).count
         except Exception as exc:
             raise VectorStoreError("Qdrant count failed", cause=exc) from exc
+
+    def get_feedback_score(self, chunk_id: str) -> float:
+        """Return accumulated user feedback score stored in chunk metadata."""
+        self._ensure_collection()
+        try:
+            points = self._client.retrieve(
+                collection_name=self.collection,
+                ids=[chunk_id],
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
+        if not points:
+            return 0.0
+        metadata = (points[0].payload or {}).get("metadata") or {}
+        value = metadata.get(FEEDBACK_SCORE_KEY)
+        if isinstance(value, bool):
+            return 0.0
+        if isinstance(value, int | float):
+            return float(value)
+        return 0.0
+
+    def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+        """Persist *feedback_score* under chunk metadata in the Qdrant payload."""
+        self._ensure_collection()
+        try:
+            points = self._client.retrieve(
+                collection_name=self.collection,
+                ids=[chunk_id],
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
+        if not points:
+            raise VectorStoreError(
+                f"Chunk {chunk_id!r} not found in collection {self.collection!r}"
+            )
+        metadata = dict((points[0].payload or {}).get("metadata") or {})
+        metadata[FEEDBACK_SCORE_KEY] = feedback_score
+        try:
+            self._client.set_payload(
+                collection_name=self.collection,
+                payload={"metadata": metadata},
+                points=[chunk_id],
+            )
+        except Exception as exc:
+            raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
 
     # ── Internals ──────────────────────────────────────────────────────────────
 

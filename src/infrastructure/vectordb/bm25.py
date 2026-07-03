@@ -240,6 +240,20 @@ class BM25Index:
                     return chunk
         return None
 
+    def update_chunk_metadata(self, chunk_id: str, updates: dict[str, object]) -> bool:
+        """Merge *updates* into the indexed chunk's metadata. Returns False when missing."""
+        if not updates:
+            return False
+        with self._lock:
+            for index, chunk in enumerate(self._chunks):
+                if chunk.id != chunk_id:
+                    continue
+                metadata = dict(chunk.metadata)
+                metadata.update(updates)
+                self._chunks[index] = chunk.model_copy(update={"metadata": metadata})
+                return True
+        return False
+
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _migrate_legacy_pickle(self, legacy_path: Path) -> None:

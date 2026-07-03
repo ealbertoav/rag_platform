@@ -188,6 +188,11 @@ class RetrievalPipeline:
             hyde_retriever=hyde,  # type: ignore[arg-type]
             hierarchical_retriever=hierarchical,  # type: ignore[arg-type]
             fusion_mode=cfg.hybrid_fusion,
+            feedback_boost_multiplier=(
+                settings.quality.feedback_loop.boost_multiplier
+                if settings.quality.feedback_loop.enabled
+                else 0.0
+            ),
         )
 
         expander = None

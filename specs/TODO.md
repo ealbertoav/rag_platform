@@ -1693,7 +1693,7 @@
 ---
 
 ### T-144 · Source Highlighting in Answers
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Identify and return the specific sentences within each chunk that support the generated answer — extends Reliable RAG (T-140) for user-facing transparency.
 - **Inputs:** T-140 (relevance grading), T-031 (generation), T-143 (explainable retrieval)
 - **Outputs:** `Answer.highlights` with chunk ID → supporting sentence spans.
@@ -1711,7 +1711,7 @@
 ---
 
 ### T-145 · Retrieval Feedback Loop
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Collect user relevance feedback on retrieved chunks and persist scores in chunk metadata for future retrieval boosting — inspired by RAG_Techniques `retrieval_with_feedback_loop.py`.
 - **Inputs:** T-013 (Qdrant payload updates), T-117 (SQLite metadata), T-032 (API)
 - **Outputs:** Feedback API + metadata-boosted retrieval scoring.

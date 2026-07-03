@@ -207,6 +207,11 @@ class SourceHighlightingSettings(BaseModel):
     enabled: bool = False
 
 
+class FeedbackLoopSettings(BaseModel):
+    enabled: bool = False
+    boost_multiplier: float = Field(default=0.05, ge=0.0)
+
+
 class QualitySettings(BaseModel):
     reliable_rag: ReliableRAGSettings = Field(default_factory=ReliableRAGSettings)
     self_rag: SelfRAGSettings = Field(default_factory=SelfRAGSettings)
@@ -214,6 +219,7 @@ class QualitySettings(BaseModel):
     source_highlighting: SourceHighlightingSettings = Field(
         default_factory=SourceHighlightingSettings,
     )
+    feedback_loop: FeedbackLoopSettings = Field(default_factory=FeedbackLoopSettings)
 
 
 class RetrievalSettings(BaseModel):

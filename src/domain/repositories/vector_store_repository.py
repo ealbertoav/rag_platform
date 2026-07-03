@@ -65,3 +65,11 @@ class VectorStoreRepository(ABC):
     @abstractmethod
     def count(self) -> int:
         """Return the total number of chunks currently stored."""
+
+    @abstractmethod
+    def get_feedback_score(self, chunk_id: str) -> float:
+        """Return the accumulated feedback score for *chunk_id* (0.0 when unset)."""
+
+    @abstractmethod
+    def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+        """Persist *feedback_score* on the chunk payload for future retrieval boosting."""

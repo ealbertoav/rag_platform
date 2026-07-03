@@ -340,6 +340,34 @@ class TestDeleteAndCount:
             store.count()
 
 
+class TestQdrantFeedbackScore:
+    def test_get_feedback_score_reads_metadata(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 2.5}}
+        mock_client.retrieve.return_value = [point]
+        assert store.get_feedback_score("chunk-a") == 2.5
+
+    def test_get_feedback_score_missing_chunk_returns_zero(self, store, mock_client):
+        mock_client.retrieve.return_value = []
+        assert store.get_feedback_score("missing") == 0.0
+
+    def test_set_feedback_score_updates_metadata(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"source": "doc.pdf"}}
+        mock_client.retrieve.return_value = [point]
+        store.set_feedback_score("chunk-a", 1.0)
+        mock_client.set_payload.assert_called_once_with(
+            collection_name="test_col",
+            payload={"metadata": {"source": "doc.pdf", "feedback_score": 1.0}},
+            points=["chunk-a"],
+        )
+
+    def test_set_feedback_score_missing_chunk_raises(self, store, mock_client):
+        mock_client.retrieve.return_value = []
+        with pytest.raises(VectorStoreError, match="not found"):
+            store.set_feedback_score("missing", 1.0)
+
+
 # ── embedding model validation ─────────────────────────────────────────────────
 
 

@@ -8,6 +8,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.domain.repositories.vector_store_repository import SearchResult
 from src.rag.enrichment.document_augmentation import resolve_synthetic_questions
+from src.rag.quality.feedback_loop import apply_feedback_boost
 from src.rag.ranking.score_fusion import rrf_fuse, weighted_linear_fuse
 from src.rag.retrieval.bm25_retriever import BM25Retriever
 from src.rag.retrieval.dense_retriever import DenseRetriever
@@ -46,6 +47,7 @@ class HybridRetriever:
         hyde_retriever: HyDERetriever | None = None,
         hierarchical_retriever: HierarchicalRetriever | None = None,
         fusion_mode: str = "rrf",
+        feedback_boost_multiplier: float = 0.0,
     ) -> None:
         self._dense = dense
         self._bm25 = bm25
@@ -55,6 +57,7 @@ class HybridRetriever:
         self._hyde = hyde_retriever
         self._hierarchical = hierarchical_retriever
         self._fusion_mode = fusion_mode
+        self._feedback_boost_multiplier = feedback_boost_multiplier
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -139,6 +142,9 @@ class HybridRetriever:
             )
 
         hyde_active = self._hyde is not None and use_hyde
+        fusion_top_k = top_k
+        if self._feedback_boost_multiplier > 0:
+            fusion_top_k = min(top_k * _EXPANSION, _MAX_CANDIDATES)
         if (
             self._fusion_mode == "weighted_linear"
             and self._graph is None
@@ -146,7 +152,9 @@ class HybridRetriever:
             and not hyde_active
             and self._hierarchical is None
         ):
-            fused = weighted_linear_fuse(dense_results, bm25_results, alpha=self.alpha, top_k=top_k)
+            fused = weighted_linear_fuse(
+                dense_results, bm25_results, alpha=self.alpha, top_k=fusion_top_k
+            )
         else:
             fused = rrf_fuse(
                 dense_results,
@@ -155,8 +163,13 @@ class HybridRetriever:
                 hype_results,
                 hyde_results,
                 hierarchical_results,
-                top_k=top_k,
+                top_k=fusion_top_k,
             )
+        fused = apply_feedback_boost(
+            fused,
+            boost_multiplier=self._feedback_boost_multiplier,
+        )
+        fused = fused[:top_k]
         logger.debug(
             (
                 "Hybrid retrieval: %d dense + %d bm25 + %d graph + %d hype "
