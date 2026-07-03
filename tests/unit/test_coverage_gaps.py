@@ -469,7 +469,21 @@ class TestQdrantFeedbackGaps:
         chunk = chunk.model_copy(
             update={"embedding": [0.1, 0.2, 0.3, 0.4], "sparse_vector": {1: 0.9}}
         )
-        store._client.retrieve.return_value = []
+        point = MagicMock()
+        point.id = chunk.id
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        inserted = {"done": False}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            if inserted["done"]:
+                return [point]
+            return []
+
+        def upsert_side_effect(**_kwargs: object) -> None:
+            inserted["done"] = True
+
+        store._client.retrieve.side_effect = retrieve_side_effect
+        store._client.upsert.side_effect = upsert_side_effect
         store.upsert([chunk])
         payload = store._client.upsert.call_args.kwargs["points"][0].payload
         assert payload[CHUNK_TYPE_KEY] == CHUNK_TYPE_HYPE

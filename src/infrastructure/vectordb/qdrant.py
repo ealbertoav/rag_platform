@@ -519,28 +519,41 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def _insert_new_chunks(self, chunks: list[Chunk]) -> None:
         """Insert points absent at upsert start, re-checking each id before writing."""
-        for chunk in chunks:
-            self._insert_new_chunk(chunk)
+        inserted_ids: list[str] = []
+        try:
+            for chunk in chunks:
+                if self._insert_new_chunk(chunk):
+                    inserted_ids.append(chunk.id)
+        except Exception:
+            if inserted_ids:
+                self._rollback_inserted_chunks(inserted_ids, context="partial new-chunk insert")
+            raise
 
-    def _insert_new_chunk(self, chunk: Chunk) -> None:
-        """Insert one point when absent, or CAS-update if it appeared before the writing."""
+    def _insert_new_chunk(self, chunk: Chunk) -> bool:
+        """Insert one point when absent, or CAS-update if it appeared before writing.
+
+        Returns True when a fresh point was inserted via upsert (eligible for insert rollback).
+        """
         if self._retrieve_points([chunk.id]):
             self._update_existing_chunk(chunk)
-            return
+            return False
         self._client.upsert(
             collection_name=self.collection,
             points=[self._to_point(chunk)],
         )
         points = self._retrieve_points([chunk.id])
         if not points:
-            return
+            raise VectorStoreError(
+                f"Chunk {chunk.id!r} not found after upsert in collection {self.collection!r}"
+            )
         metadata = self._metadata_from_point(points[0])
         if self._feedback_revision_from_metadata(metadata) == 0 and self._feedback_scores_equal(
             self._feedback_score_from_metadata(metadata), 0.0
         ):
-            return
+            return True
         # Concurrent writer recorded feedback; refresh vectors without clobbering it.
         self._update_existing_chunk(chunk)
+        return True
 
     def _snapshot_existing_points(self, chunk_ids: list[str]) -> dict[str, PointStruct]:
         """Capture the full point state so upsert can roll back on partial failure."""
@@ -577,6 +590,29 @@ class QdrantVectorStore(VectorStoreRepository):
                 "Qdrant %s rollback failed for chunk_ids=%r: %s",
                 context,
                 list(snapshots),
+                exc,
+            )
+            raise VectorStoreError(
+                f"Qdrant {context} rollback failed",
+                cause=exc,
+            ) from exc
+
+    def _rollback_inserted_chunks(
+        self,
+        chunk_ids: list[str],
+        *,
+        context: str,
+    ) -> None:
+        """Delete freshly inserted points after a failed new-chunk batch."""
+        if not chunk_ids:
+            return
+        try:
+            self.delete(chunk_ids)
+        except Exception as exc:
+            logger.error(
+                "Qdrant %s rollback failed for chunk_ids=%r: %s",
+                context,
+                chunk_ids,
                 exc,
             )
             raise VectorStoreError(
