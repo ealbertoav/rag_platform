@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from typing import Any, TypeAlias, cast
 
@@ -61,6 +62,27 @@ QdrantNamedVectors: TypeAlias = dict[
 ]
 
 
+class _ThreadSafeQdrantClient:
+    """Serialize Qdrant HTTP calls — the underlying httpx client is not thread-safe."""
+
+    __slots__ = ("_client", "_lock")
+
+    def __init__(self, client: QdrantClient, lock: threading.RLock) -> None:
+        self._client = client
+        self._lock = lock
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._client, name)
+        if not callable(attr):
+            return attr
+
+        def locked_call(*args: Any, **kwargs: Any) -> Any:
+            with self._lock:
+                return attr(*args, **kwargs)
+
+        return locked_call
+
+
 # ── RRF fusion (module-level so it can be tested independently) ────────────────
 
 
@@ -110,7 +132,9 @@ class QdrantVectorStore(VectorStoreRepository):
         self.collection = collection
         self.dense_dim = dense_dim
         self.embedding_model_name = embedding_model_name
-        self._client = QdrantClient(url=url, api_key=api_key or None, check_compatibility=False)
+        self._client_lock = threading.RLock()
+        raw_client = QdrantClient(url=url, api_key=api_key or None, check_compatibility=False)
+        self._client = _ThreadSafeQdrantClient(raw_client, self._client_lock)
         self._collection_ready = False
         self._model_validated = False  # set True after first successful _validate_embedding_model
 
@@ -132,8 +156,9 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def drop_collection(self) -> None:
         """Delete the Qdrant collection and reset the ready flag."""
-        self._client.delete_collection(self.collection)
-        self._collection_ready = False
+        with self._client_lock:
+            self._client.delete_collection(self.collection)
+            self._collection_ready = False
 
     # ── VectorStoreRepository interface ────────────────────────────────────────
 
@@ -152,15 +177,23 @@ class QdrantVectorStore(VectorStoreRepository):
         new_chunks = [chunk for chunk in chunks if chunk.id not in existing_ids]
         existing_chunks = [chunk for chunk in chunks if chunk.id in existing_ids]
 
+        snapshots: dict[str, PointStruct] = {}
+        existing_committed = False
+
         try:
+            if existing_chunks:
+                snapshots = self._snapshot_existing_points([chunk.id for chunk in existing_chunks])
+                self._update_existing_chunks(existing_chunks, snapshots=snapshots)
+                existing_committed = True
+
             if new_chunks:
                 self._client.upsert(
                     collection_name=self.collection,
                     points=[self._to_point(chunk) for chunk in new_chunks],
                 )
-            if existing_chunks:
-                self._update_existing_chunks(existing_chunks)
         except Exception as exc:
+            if existing_committed and snapshots:
+                self._rollback_points(snapshots, context="upsert")
             raise VectorStoreError("Qdrant upsert failed", cause=exc) from exc
 
     def search_dense(
@@ -264,7 +297,7 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def count(self) -> int:
         try:
-            return self._client.count(collection_name=self.collection).count
+            return cast(int, self._client.count(collection_name=self.collection).count)
         except Exception as exc:
             raise VectorStoreError("Qdrant count failed", cause=exc) from exc
 
@@ -474,10 +507,69 @@ class QdrantVectorStore(VectorStoreRepository):
             f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
         )
 
-    def _update_existing_chunks(self, chunks: list[Chunk]) -> None:
+    def _snapshot_existing_points(self, chunk_ids: list[str]) -> dict[str, PointStruct]:
+        """Capture the full point state so upsert can roll back on partial failure."""
+        unique_ids = list(dict.fromkeys(chunk_ids))
+        points = self._retrieve_points(unique_ids, with_vectors=True)
+        snapshots: dict[str, PointStruct] = {}
+        for point in points:
+            snapshots[str(point.id)] = PointStruct(
+                id=point.id,
+                vector=point.vector,
+                payload=dict(point.payload or {}),
+            )
+        missing = [chunk_id for chunk_id in unique_ids if chunk_id not in snapshots]
+        if missing:
+            raise VectorStoreError(f"Cannot snapshot existing chunks for rollback: {missing!r}")
+        return snapshots
+
+    def _rollback_points(
+        self,
+        snapshots: dict[str, PointStruct],
+        *,
+        context: str,
+    ) -> None:
+        """Restore previously snapshotted points after a failed upsert."""
+        if not snapshots:
+            return
+        try:
+            self._client.upsert(
+                collection_name=self.collection,
+                points=list(snapshots.values()),
+            )
+        except Exception as exc:
+            logger.error(
+                "Qdrant %s rollback failed for chunk_ids=%r: %s",
+                context,
+                list(snapshots),
+                exc,
+            )
+            raise VectorStoreError(
+                f"Qdrant {context} rollback failed",
+                cause=exc,
+            ) from exc
+
+    def _update_existing_chunks(
+        self,
+        chunks: list[Chunk],
+        *,
+        snapshots: dict[str, PointStruct],
+    ) -> None:
         """Refresh vectors and non-feedback payload for points that already exist."""
-        for chunk in chunks:
-            self._update_existing_chunk(chunk)
+        updated_ids: list[str] = []
+        try:
+            for chunk in chunks:
+                self._update_existing_chunk(chunk)
+                updated_ids.append(chunk.id)
+        except Exception:
+            if updated_ids:
+                partial = {
+                    chunk_id: snapshots[chunk_id]
+                    for chunk_id in updated_ids
+                    if chunk_id in snapshots
+                }
+                self._rollback_points(partial, context="partial existing-chunk update")
+            raise
 
     def _update_existing_chunk(self, chunk: Chunk) -> None:
         """Update one existing point atomically while preserving feedback under CAS."""
@@ -631,14 +723,22 @@ class QdrantVectorStore(VectorStoreRepository):
             preserved[_FEEDBACK_UPDATE_ID_KEY] = metadata[_FEEDBACK_UPDATE_ID_KEY]
         return preserved
 
-    def _retrieve_points(self, chunk_ids: list[str]) -> list[Any]:
+    def _retrieve_points(
+        self,
+        chunk_ids: list[str],
+        *,
+        with_vectors: bool = False,
+    ) -> list[Any]:
         self._ensure_collection()
         try:
-            return self._client.retrieve(
-                collection_name=self.collection,
-                ids=chunk_ids,
-                with_payload=True,
-                with_vectors=False,
+            return cast(
+                list[Any],
+                self._client.retrieve(
+                    collection_name=self.collection,
+                    ids=chunk_ids,
+                    with_payload=True,
+                    with_vectors=with_vectors,
+                ),
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
@@ -708,37 +808,38 @@ class QdrantVectorStore(VectorStoreRepository):
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _ensure_collection(self) -> None:
-        if self._collection_ready:
-            return
-        collection_existed: bool
-        try:
-            if not self._client.collection_exists(self.collection):
-                metadata = (
-                    {_EMBEDDING_MODEL_METADATA_KEY: self.embedding_model_name}
-                    if self.embedding_model_name
-                    else None
-                )
-                self._client.create_collection(
-                    collection_name=self.collection,
-                    vectors_config={
-                        _DENSE: VectorParams(size=self.dense_dim, distance=Distance.COSINE),
-                    },
-                    sparse_vectors_config={
-                        _SPARSE: SparseVectorParams(index=SparseIndexParams(on_disk=False)),
-                    },
-                    metadata=metadata,
-                )
-                logger.info(
-                    "Created Qdrant collection %r (%d-dim)", self.collection, self.dense_dim
-                )
-                collection_existed = False
-            else:
-                collection_existed = True
-        except Exception as exc:
-            raise VectorStoreError("Qdrant collection setup failed", cause=exc) from exc
-        if collection_existed and not self._model_validated:
-            self._validate_embedding_model()
-        self._collection_ready = True
+        with self._client_lock:
+            if self._collection_ready:
+                return
+            collection_existed: bool
+            try:
+                if not self._client.collection_exists(self.collection):
+                    metadata = (
+                        {_EMBEDDING_MODEL_METADATA_KEY: self.embedding_model_name}
+                        if self.embedding_model_name
+                        else None
+                    )
+                    self._client.create_collection(
+                        collection_name=self.collection,
+                        vectors_config={
+                            _DENSE: VectorParams(size=self.dense_dim, distance=Distance.COSINE),
+                        },
+                        sparse_vectors_config={
+                            _SPARSE: SparseVectorParams(index=SparseIndexParams(on_disk=False)),
+                        },
+                        metadata=metadata,
+                    )
+                    logger.info(
+                        "Created Qdrant collection %r (%d-dim)", self.collection, self.dense_dim
+                    )
+                    collection_existed = False
+                else:
+                    collection_existed = True
+            except Exception as exc:
+                raise VectorStoreError("Qdrant collection setup failed", cause=exc) from exc
+            if collection_existed and not self._model_validated:
+                self._validate_embedding_model()
+            self._collection_ready = True
 
     def get_collection_embedding_model(self) -> str | None:
         """Return the embedding model tracked for this collection.
