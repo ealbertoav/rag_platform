@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -63,12 +63,20 @@ class TestMergeChunkViews:
 
 
 class TestResolveFeedbackScore:
-    def test_reads_score_from_bm25_index(self):
+    def test_prefers_vector_store_over_stale_metadata(self):
+        chunk = _chunk("c0", feedback_score=5.0)
+        assert resolve_feedback_score(chunk, vector_scores={"c0": -1.0}) == -1.0
+
+    def test_falls_back_to_chunk_metadata_without_vector_store(self):
+        assert resolve_feedback_score(_chunk("c0", feedback_score=2.0)) == 2.0
+
+    def test_ignores_stale_bm25_when_vector_store_supplied(self):
         from src.infrastructure.vectordb.bm25 import BM25Index
 
         index = BM25Index()
         index.index([_chunk("c0", feedback_score=5.0)])
-        assert resolve_feedback_score(_chunk("c0"), bm25_index=index) == 5.0
+        chunk = _chunk("c0", feedback_score=0.0)
+        assert resolve_feedback_score(chunk, vector_scores={"c0": -1.0}) == -1.0
 
 
 class TestRecordFeedback:
@@ -124,29 +132,25 @@ class TestFeedbackApi:
 
     @pytest.mark.asyncio
     async def test_submit_feedback_returns_204(self, app_client):
-        with patch("src.api.routers.feedback.QdrantVectorStore.from_settings") as factory:
-            store = MagicMock()
-            store.accumulate_feedback_score.return_value = 1.0
-            factory.return_value = store
-            async with self._client(app_client) as client:
-                resp = await client.post(
-                    "/feedback",
-                    json={"query_id": "q-1", "chunk_id": "chunk-a", "relevant": True},
-                )
+        store = MagicMock()
+        store.accumulate_feedback_score.return_value = 1.0
+        app_client.state.vector_store = store
+        async with self._client(app_client) as client:
+            resp = await client.post(
+                "/feedback",
+                json={"query_id": "q-1", "chunk_id": "chunk-a", "relevant": True},
+            )
         assert resp.status_code == 204
         store.accumulate_feedback_score.assert_called_once_with("chunk-a", 1.0)
 
     @pytest.mark.asyncio
     async def test_missing_chunk_returns_404(self, app_client):
-        with patch("src.api.routers.feedback.QdrantVectorStore.from_settings") as factory:
-            store = MagicMock()
-            store.accumulate_feedback_score.side_effect = VectorStoreError(
-                "Chunk 'missing' not found"
+        store = MagicMock()
+        store.accumulate_feedback_score.side_effect = VectorStoreError("Chunk 'missing' not found")
+        app_client.state.vector_store = store
+        async with self._client(app_client) as client:
+            resp = await client.post(
+                "/feedback",
+                json={"query_id": "q-1", "chunk_id": "missing", "relevant": False},
             )
-            factory.return_value = store
-            async with self._client(app_client) as client:
-                resp = await client.post(
-                    "/feedback",
-                    json={"query_id": "q-1", "chunk_id": "missing", "relevant": False},
-                )
         assert resp.status_code == 404

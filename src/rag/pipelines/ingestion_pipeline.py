@@ -228,7 +228,11 @@ class IngestionPipeline:
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls, bm25: BM25Index | None = None) -> IngestionPipeline:
+    def from_settings(
+        cls,
+        bm25: BM25Index | None = None,
+        vector_store: VectorStoreRepository | None = None,
+    ) -> IngestionPipeline:
         """Build the pipeline from application settings (real dependencies)."""
         from src.core.settings import settings
         from src.infrastructure.embeddings import get_embedding_provider
@@ -253,7 +257,8 @@ class IngestionPipeline:
             **chunker_kwargs,
         )
         embedder = get_embedding_provider()
-        vector_store = QdrantVectorStore.from_settings()
+        if vector_store is None:
+            vector_store = QdrantVectorStore.from_settings()
         bm25_index = bm25 or BM25Index.load_or_create()
         service = IngestionService(chunker=chunker, embedder=embedder)
 

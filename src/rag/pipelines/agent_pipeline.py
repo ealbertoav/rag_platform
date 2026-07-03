@@ -29,6 +29,7 @@ from src.rag.quality.self_rag import (
 from src.rag.ranking.score_fusion import rrf_fuse
 
 if TYPE_CHECKING:
+    from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.infrastructure.vectordb.bm25 import BM25Index
 
 logger = logging.getLogger(__name__)
@@ -201,9 +202,13 @@ class AgentPipeline:
         cls,
         max_iterations: int = _DEFAULT_MAX_ITERATIONS,
         bm25_index: BM25Index | None = None,
+        vector_store: VectorStoreRepository | None = None,
     ) -> AgentPipeline:
         return cls(
-            pipeline=ChatPipeline.from_settings(bm25_index=bm25_index),
+            pipeline=ChatPipeline.from_settings(
+                bm25_index=bm25_index,
+                vector_store=vector_store,
+            ),
             max_iterations=max_iterations,
             self_rag_enabled=settings.quality.self_rag.enabled,
         )

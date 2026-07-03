@@ -8,9 +8,13 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    HasIdCondition,
+    IsNullCondition,
     MatchValue,
+    PayloadField,
     PointIdsList,
     PointStruct,
+    Range,
     SparseIndexParams,
     SparseVectorParams,
     VectorParams,
@@ -248,6 +252,10 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def accumulate_feedback_score(self, chunk_id: str, delta: float) -> float:
         """Add *delta* to the stored feedback score with compare-and-set retries."""
+        if not self._retrieve_points([chunk_id]):
+            raise VectorStoreError(
+                f"Chunk {chunk_id!r} not found in collection {self.collection!r}"
+            )
         for attempt in range(_MAX_FEEDBACK_UPDATE_RETRIES):
             current = self.get_feedback_score(chunk_id)
             updated = current + delta
@@ -267,6 +275,32 @@ class QdrantVectorStore(VectorStoreRepository):
             f"{chunk_id!r} after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
         )
 
+    def _feedback_cas_filter(self, chunk_id: str, expected: float) -> Filter:
+        """Build a Qdrant filter that matches only when feedback_score equals *expected*."""
+        id_match = HasIdCondition(has_id=[chunk_id])
+        if self._feedback_scores_equal(expected, 0.0):
+            score_match: Filter | FieldCondition | IsNullCondition = Filter(
+                should=[
+                    IsNullCondition(is_null=PayloadField(key="metadata.feedback_score")),
+                    FieldCondition(
+                        key="metadata.feedback_score",
+                        range=Range(
+                            gte=-_FEEDBACK_SCORE_EPSILON,
+                            lte=_FEEDBACK_SCORE_EPSILON,
+                        ),
+                    ),
+                ]
+            )
+        else:
+            score_match = FieldCondition(
+                key="metadata.feedback_score",
+                range=Range(
+                    gte=expected - _FEEDBACK_SCORE_EPSILON,
+                    lte=expected + _FEEDBACK_SCORE_EPSILON,
+                ),
+            )
+        return Filter(must=[id_match, score_match])
+
     def _try_set_feedback_score_if_current(
         self,
         chunk_id: str,
@@ -275,12 +309,16 @@ class QdrantVectorStore(VectorStoreRepository):
         feedback_score: float,
     ) -> bool:
         """Persist *feedback_score* only when the stored value still equals *expected*."""
-        metadata = self._require_chunk_metadata(chunk_id)
-        actual = self._feedback_score_from_metadata(metadata)
-        if not self._feedback_scores_equal(actual, expected):
-            return False
-        metadata[FEEDBACK_SCORE_KEY] = feedback_score
-        self._set_chunk_metadata(chunk_id, metadata)
+        try:
+            self._client.set_payload(
+                collection_name=self.collection,
+                payload={FEEDBACK_SCORE_KEY: feedback_score},
+                key="metadata",
+                points=self._feedback_cas_filter(chunk_id, expected),
+                wait=True,
+            )
+        except Exception as exc:
+            raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
         return True
 
     def _retrieve_points(self, chunk_ids: list[str]) -> list[Any]:

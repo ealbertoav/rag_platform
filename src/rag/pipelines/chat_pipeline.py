@@ -31,6 +31,7 @@ from src.rag.quality.source_highlighting import extract_highlights
 
 if TYPE_CHECKING:
     from src.domain.repositories.llm_repository import LLMRepository
+    from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.domain.repositories.web_search_repository import WebSearchRepository
     from src.domain.services.retrieval_service import RetrievalResult
 
@@ -60,8 +61,8 @@ class ChatPipeline:
         web_search_available: bool = True,
         source_highlighting_enabled: bool = False,
     ) -> None:
-        self._retrieval = retrieval
-        self._generation = generation
+        self.retrieval = retrieval
+        self.generation = generation
         self._crag_enabled = crag_enabled
         self._crag_lower_threshold = crag_lower_threshold
         self._crag_upper_threshold = crag_upper_threshold
@@ -73,14 +74,6 @@ class ChatPipeline:
         )
         self._source_highlighting_enabled = source_highlighting_enabled
 
-    @property
-    def retrieval(self) -> RetrievalPipeline:
-        return self._retrieval
-
-    @property
-    def generation(self) -> GenerationService:
-        return self._generation
-
     # ── Public ─────────────────────────────────────────────────────────────────
 
     async def chat(self, question: str | Query) -> AsyncIterator[str]:
@@ -91,9 +84,9 @@ class ChatPipeline:
                 yield token
         """
         query = question if isinstance(question, Query) else Query(text=question)
-        result = await self._retrieval.retrieve(query)
+        result = await self.retrieval.retrieve(query)
         resolution = await self._resolve_context(query.text, result)
-        return self._generation.stream(query.text, resolution.context)
+        return self.generation.stream(query.text, resolution.context)
 
     async def chat_full(
         self,
@@ -113,10 +106,10 @@ class ChatPipeline:
         """
         query = question if isinstance(question, Query) else Query(text=question)
         t0 = time.monotonic()
-        result = await self._retrieval.retrieve(query)
+        result = await self.retrieval.retrieve(query)
         resolution = await self._resolve_context(query.text, result)
 
-        answer = self._generation.generate(query.text, resolution.context, resolution.sources)
+        answer = self.generation.generate(query.text, resolution.context, resolution.sources)
 
         highlighting_requested = highlights or self._source_highlighting_enabled
         llm = self._llm
@@ -187,10 +180,10 @@ class ChatPipeline:
         """
         t0 = time.monotonic()
         query = Query(text=question)
-        retrieval_result = await self._retrieval.retrieve(query)
+        retrieval_result = await self.retrieval.retrieve(query)
         resolution = await self._resolve_context(question, retrieval_result)
 
-        answer = self._generation.generate(question, resolution.context, resolution.sources)
+        answer = self.generation.generate(question, resolution.context, resolution.sources)
 
         elapsed = (time.monotonic() - t0) * 1000
         answer = answer.model_copy(
@@ -205,14 +198,22 @@ class ChatPipeline:
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls, bm25_index: object | None = None) -> ChatPipeline:
+    def from_settings(
+        cls,
+        bm25_index: object | None = None,
+        vector_store: VectorStoreRepository | None = None,
+    ) -> ChatPipeline:
         """Build the full pipeline from settings (lazy model loading)."""
         from src.core.settings import settings
         from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
         from src.infrastructure.search.web_search import get_web_search_provider
 
         llm = LlamaCppProvider.from_settings()
-        retrieval = RetrievalPipeline.from_settings(llm=llm, bm25_index=bm25_index)  # type: ignore[arg-type]
+        retrieval = RetrievalPipeline.from_settings(
+            llm=llm,
+            bm25_index=bm25_index,  # type: ignore[arg-type]
+            vector_store=vector_store,
+        )
         generation = GenerationService.from_settings(llm=llm)
 
         crag_cfg = settings.quality.crag

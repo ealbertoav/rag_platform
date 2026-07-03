@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from src.api.dependencies import get_vector_store
 from src.api.security import require_api_key
 from src.core.exceptions import VectorStoreError
-from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.rag.quality.feedback_loop import record_feedback, score_from_relevant
 
 router = APIRouter(
@@ -22,9 +23,11 @@ class FeedbackRequest(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_204_NO_CONTENT)
-async def submit_feedback(body: FeedbackRequest, _request: Request) -> None:
+async def submit_feedback(
+    body: FeedbackRequest,
+    vector_store: VectorStoreRepository = Depends(get_vector_store),
+) -> None:
     """Record user relevance feedback for a retrieved chunk."""
-    vector_store = QdrantVectorStore.from_settings()
     score = score_from_relevant(body.relevant)
     try:
         record_feedback(

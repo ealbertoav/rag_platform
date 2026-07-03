@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.rag.pipelines.agent_pipeline import AgentPipeline
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
@@ -20,3 +21,8 @@ def get_agent_pipeline(request: Request) -> AgentPipeline:
 def get_ingestion_pipeline(request: Request) -> IngestionPipeline:
     pipeline: IngestionPipeline = request.app.state.ingestion_pipeline
     return pipeline
+
+
+def get_vector_store(request: Request) -> VectorStoreRepository:
+    vector_store: VectorStoreRepository = request.app.state.vector_store
+    return vector_store

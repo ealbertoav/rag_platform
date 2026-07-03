@@ -135,17 +135,14 @@ class TestFeedbackApi502:
     async def test_vector_store_error_returns_502(self):
         app = create_app()
         app.state.models_loaded = True
-        with patch("src.api.routers.feedback.QdrantVectorStore.from_settings") as factory:
-            store = MagicMock()
-            store.accumulate_feedback_score.side_effect = VectorStoreError("Qdrant retrieve failed")
-            factory.return_value = store
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.post(
-                    "/feedback",
-                    json={"query_id": "q-1", "chunk_id": "chunk-a", "relevant": True},
-                )
+        store = MagicMock()
+        store.accumulate_feedback_score.side_effect = VectorStoreError("Qdrant retrieve failed")
+        app.state.vector_store = store
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/feedback",
+                json={"query_id": "q-1", "chunk_id": "chunk-a", "relevant": True},
+            )
         assert resp.status_code == 502
 
 
