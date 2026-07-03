@@ -10,6 +10,8 @@ from __future__ import annotations
 from uuid import NAMESPACE_DNS, uuid5
 
 import pytest
+from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from src.domain.entities.chunk import Chunk
 
@@ -24,11 +26,9 @@ def _chunk_id(i: int) -> str:
 
 def _reachable() -> bool:
     try:
-        from qdrant_client import QdrantClient
-
         QdrantClient(url=_QDRANT_URL, timeout=2, check_compatibility=False).get_collections()
         return True
-    except Exception:
+    except (OSError, TimeoutError, ResponseHandlingException):
         return False
 
 
@@ -125,3 +125,25 @@ class TestQdrantIntegration:
         assert store.get_feedback_score(chunk.id) == 10.0
         assert store.get_feedback_revision(chunk.id) == 10
         assert sorted(results) == list(range(1, 11))
+
+    def test_upsert_during_feedback_accumulation_preserves_scores(self, store):
+        chunk = _chunk(52)
+        store.upsert([chunk])
+        from concurrent.futures import ThreadPoolExecutor
+
+        def reindex() -> None:
+            for _ in range(5):
+                store.upsert([_chunk(52)])
+
+        def accumulate() -> None:
+            for _ in range(5):
+                store.accumulate_feedback_score(chunk.id, 1.0)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            reindex_future = pool.submit(reindex)
+            accumulate_future = pool.submit(accumulate)
+            reindex_future.result()
+            accumulate_future.result()
+
+        assert store.get_feedback_score(chunk.id) == 5.0
+        assert store.get_feedback_revision(chunk.id) == 5

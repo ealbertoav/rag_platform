@@ -229,10 +229,108 @@ class TestUpsert:
             }
         }
         mock_client.retrieve.return_value = [existing]
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(existing)
         store.upsert([chunk])
-        payload = mock_client.upsert.call_args.kwargs["points"][0].payload
-        assert payload["metadata"][FEEDBACK_SCORE_KEY] == 4.0
-        assert payload["metadata"][FEEDBACK_REVISION_KEY] == 3
+        mock_client.upsert.assert_not_called()
+        mock_client.update_vectors.assert_called_once()
+        metadata_calls = [
+            call.kwargs
+            for call in mock_client.set_payload.call_args_list
+            if call.kwargs.get("key") == "metadata"
+        ]
+        assert len(metadata_calls) == 1
+        assert metadata_calls[0]["payload"][FEEDBACK_SCORE_KEY] == 4.0
+        assert metadata_calls[0]["payload"][FEEDBACK_REVISION_KEY] == 3
+
+    def test_upsert_preserves_feedback_update_id(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        existing = MagicMock()
+        existing.id = chunk.id
+        existing.payload = {
+            "metadata": {
+                "feedback_score": 1.0,
+                "feedback_revision": 1,
+                "feedback_update_id": "update-123",
+            }
+        }
+        mock_client.retrieve.return_value = [existing]
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(existing)
+        store.upsert([chunk])
+        metadata_calls = [
+            call.kwargs
+            for call in mock_client.set_payload.call_args_list
+            if call.kwargs.get("key") == "metadata"
+        ]
+        assert metadata_calls[0]["payload"]["feedback_update_id"] == "update-123"
+
+    def test_upsert_existing_chunk_uses_update_vectors(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        existing = MagicMock()
+        existing.id = chunk.id
+        existing.payload = {"metadata": {}}
+        mock_client.retrieve.return_value = [existing]
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(existing)
+        store.upsert([chunk])
+        mock_client.upsert.assert_not_called()
+        update_args = mock_client.update_vectors.call_args.kwargs
+        assert update_args["collection_name"] == "test_col"
+        assert len(update_args["points"]) == 1
+        assert str(update_args["points"][0].id) == chunk.id
+
+    def test_upsert_retries_metadata_when_feedback_changes_during_update(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        point = MagicMock()
+        point.id = chunk.id
+        point.payload = {"metadata": {"feedback_score": 1.0, "feedback_revision": 1}}
+        mock_client.retrieve.return_value = [point]
+        metadata_writes = {"count": 0}
+
+        def set_payload_side_effect(**set_payload_kwargs: object) -> None:
+            if set_payload_kwargs.get("key") != "metadata":
+                return
+            metadata_writes["count"] += 1
+            if metadata_writes["count"] == 1:
+                point.payload = {
+                    "metadata": {"feedback_score": 2.0, "feedback_revision": 2},
+                }
+                return
+            _merge_metadata_set_payload_side_effect(point)(**set_payload_kwargs)
+
+        mock_client.set_payload.side_effect = set_payload_side_effect
+        store.upsert([chunk])
+        assert metadata_writes["count"] >= 2
+        assert point.payload["metadata"][FEEDBACK_SCORE_KEY] == 2.0
+        assert point.payload["metadata"][FEEDBACK_REVISION_KEY] == 2
+
+    def test_upsert_mixed_new_and_existing_chunks(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        new_chunk = _chunk(0)
+        existing_chunk = _chunk(1)
+        existing = MagicMock()
+        existing.id = existing_chunk.id
+        existing.payload = {"metadata": {"feedback_score": 2.0, "feedback_revision": 1}}
+
+        def retrieve_side_effect(**kwargs: object) -> list[MagicMock]:
+            ids = kwargs.get("ids", [])
+            assert isinstance(ids, list)
+            if existing_chunk.id in ids:
+                return [existing]
+            return []
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(existing)
+        store.upsert([new_chunk, existing_chunk])
+        mock_client.upsert.assert_called_once()
+        assert len(mock_client.upsert.call_args.kwargs["points"]) == 1
+        mock_client.update_vectors.assert_called_once()
+        assert len(mock_client.update_vectors.call_args.kwargs["points"]) == 1
 
     def test_upsert_adds_chunk_type_to_payload(
         self, store: QdrantVectorStore, mock_client: MagicMock
@@ -257,6 +355,100 @@ class TestUpsert:
         mock_client.upsert.side_effect = RuntimeError("oops")
         with pytest.raises(VectorStoreError) as exc_info:
             store.upsert([_chunk()])
+        assert exc_info.value.cause is not None
+
+    def test_upsert_existing_chunk_sets_top_level_payload_fields(self, mock_client: MagicMock):
+        from src.core.constants import CHUNK_TYPE_HYPE, CHUNK_TYPE_KEY
+
+        store = QdrantVectorStore(
+            collection="test_col",
+            dense_dim=4,
+            embedding_model_name="bge-m3",
+        )
+        store._client = mock_client
+        store._collection_ready = True
+        chunk = _chunk(0).model_copy(update={"metadata": {CHUNK_TYPE_KEY: CHUNK_TYPE_HYPE}})
+        existing = MagicMock()
+        existing.id = chunk.id
+        existing.payload = {"metadata": {}}
+        mock_client.retrieve.return_value = [existing]
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(existing)
+
+        store.upsert([chunk])
+
+        top_level_calls = [
+            call.kwargs
+            for call in mock_client.set_payload.call_args_list
+            if call.kwargs.get("key") is None
+        ]
+        assert top_level_calls[0]["payload"]["embedding_model_name"] == "bge-m3"
+        assert top_level_calls[0]["payload"][CHUNK_TYPE_KEY] == CHUNK_TYPE_HYPE
+
+    def test_upsert_existing_chunk_raises_after_metadata_retry_exhaustion(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = _chunk(0)
+        point = MagicMock()
+        point.id = chunk.id
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        mock_client.retrieve.return_value = [point]
+        metadata_writes = {"count": 0}
+
+        def set_payload_side_effect(**set_payload_kwargs: object) -> None:
+            if set_payload_kwargs.get("key") != "metadata":
+                return
+            metadata_writes["count"] += 1
+            bump = metadata_writes["count"]
+            point.payload = {
+                "metadata": {
+                    "feedback_score": float(bump + 100),
+                    "feedback_revision": bump + 100,
+                },
+            }
+
+        mock_client.set_payload.side_effect = set_payload_side_effect
+
+        with pytest.raises(VectorStoreError, match="Failed to upsert metadata"):
+            store.upsert([chunk])
+
+        assert metadata_writes["count"] == MAX_FEEDBACK_UPDATE_RETRIES
+
+
+class TestExistingChunkMetadataCas:
+    def test_try_set_metadata_if_feedback_current_returns_false_before_write(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 1.0, "feedback_revision": 2}}
+        mock_client.retrieve.return_value = [point]
+
+        assert not store._try_set_metadata_if_feedback_current(
+            "chunk-a",
+            metadata={"source": "test.pdf"},
+            expected_score=1.0,
+            expected_revision=1,
+        )
+        mock_client.set_payload.assert_not_called()
+
+    def test_try_set_metadata_if_feedback_current_wraps_set_payload_error(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 1.0, "feedback_revision": 0}}
+        mock_client.retrieve.return_value = [point]
+        mock_client.set_payload.side_effect = RuntimeError("write failed")
+
+        with pytest.raises(VectorStoreError, match="set_payload failed") as exc_info:
+            store._try_set_metadata_if_feedback_current(
+                "chunk-a",
+                metadata={
+                    "source": "test.pdf",
+                    FEEDBACK_SCORE_KEY: 1.0,
+                    FEEDBACK_REVISION_KEY: 0,
+                },
+                expected_score=1.0,
+                expected_revision=0,
+            )
         assert exc_info.value.cause is not None
 
 

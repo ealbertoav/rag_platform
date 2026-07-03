@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, TypeAlias, cast
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    Document,
     FieldCondition,
     Filter,
     HasIdCondition,
+    Image,
+    InferenceObject,
     IsNullCondition,
     MatchValue,
     PayloadField,
     PointIdsList,
     PointStruct,
+    PointVectors,
     Range,
     SparseIndexParams,
     SparseVectorParams,
@@ -46,6 +50,11 @@ _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
 _FEEDBACK_SCORE_EPSILON = 1e-9
 _MAX_FEEDBACK_UPDATE_RETRIES = 20
 _FEEDBACK_UPDATE_ID_KEY = "feedback_update_id"
+
+QdrantNamedVectors: TypeAlias = dict[
+    str,
+    DenseVector | QSparseVector | list[list[float]] | Document | Image | InferenceObject,
+]
 
 
 # ── RRF fusion (module-level so it can be tested independently) ────────────────
@@ -126,22 +135,29 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def upsert(self, chunks: list[Chunk]) -> None:
         self._ensure_collection()
-        chunk_ids = [chunk.id for chunk in chunks]
-        existing_metadata = self._existing_feedback_metadata_by_id(chunk_ids)
-        points: list[PointStruct] = []
+        if not chunks:
+            return
         for chunk in chunks:
             if chunk.embedding is None or chunk.sparse_vector is None:
                 raise VectorStoreError(
                     f"Chunk {chunk.id!r} must have embedding and sparse_vector before upsert"
                 )
-            points.append(
-                self._to_point(self._preserve_feedback_metadata(chunk, existing_metadata))
-            )
-        if points:
-            try:
-                self._client.upsert(collection_name=self.collection, points=points)
-            except Exception as exc:
-                raise VectorStoreError("Qdrant upsert failed", cause=exc) from exc
+
+        chunk_ids = [chunk.id for chunk in chunks]
+        existing_ids = {str(point.id) for point in self._retrieve_points(chunk_ids)}
+        new_chunks = [chunk for chunk in chunks if chunk.id not in existing_ids]
+        existing_chunks = [chunk for chunk in chunks if chunk.id in existing_ids]
+
+        try:
+            if new_chunks:
+                self._client.upsert(
+                    collection_name=self.collection,
+                    points=[self._to_point(chunk) for chunk in new_chunks],
+                )
+            if existing_chunks:
+                self._update_existing_chunks(existing_chunks)
+        except Exception as exc:
+            raise VectorStoreError("Qdrant upsert failed", cause=exc) from exc
 
     def search_dense(
         self,
@@ -418,21 +434,112 @@ class QdrantVectorStore(VectorStoreRepository):
         metadata[FEEDBACK_REVISION_KEY] = revision
         self._set_chunk_metadata(chunk_id, metadata)
 
-    def _existing_feedback_metadata_by_id(
+    def _update_existing_chunks(self, chunks: list[Chunk]) -> None:
+        """Refresh vectors and non-feedback payload for points that already exist."""
+        self._client.update_vectors(
+            collection_name=self.collection,
+            points=[
+                PointVectors(id=chunk.id, vector=self._vectors_from_chunk(chunk))
+                for chunk in chunks
+            ],
+            wait=True,
+        )
+        for chunk in chunks:
+            self._client.set_payload(
+                collection_name=self.collection,
+                payload=self._top_level_payload(chunk),
+                points=[chunk.id],
+                wait=True,
+            )
+            self._set_existing_chunk_metadata_with_feedback_cas(chunk)
+
+    def _set_existing_chunk_metadata_with_feedback_cas(self, chunk: Chunk) -> None:
+        """Replace chunk metadata while preserving live feedback fields under CAS."""
+        for attempt in range(_MAX_FEEDBACK_UPDATE_RETRIES):
+            existing = self._require_chunk_metadata(chunk.id)
+            expected_score = self._feedback_score_from_metadata(existing)
+            expected_revision = self._feedback_revision_from_metadata(existing)
+            metadata = dict(chunk.metadata)
+            metadata.update(self._feedback_metadata_from_stored(existing))
+            if self._try_set_metadata_if_feedback_current(
+                chunk.id,
+                metadata=metadata,
+                expected_score=expected_score,
+                expected_revision=expected_revision,
+            ):
+                return
+            logger.debug(
+                "Upsert metadata conflict for chunk_id=%r attempt=%d",
+                chunk.id,
+                attempt + 1,
+            )
+        raise VectorStoreError(
+            f"Failed to upsert metadata for {chunk.id!r} "
+            f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
+        )
+
+    def _try_set_metadata_if_feedback_current(
         self,
-        chunk_ids: list[str],
-    ) -> dict[str, dict[str, object]]:
-        unique_ids = list(dict.fromkeys(chunk_ids))
-        if not unique_ids:
-            return {}
-        points = self._retrieve_points(unique_ids)
-        preserved: dict[str, dict[str, object]] = {}
-        for point in points:
-            metadata = self._metadata_from_point(point)
-            feedback_metadata = self._feedback_metadata_from_stored(metadata)
-            if feedback_metadata:
-                preserved[str(point.id)] = feedback_metadata
-        return preserved
+        chunk_id: str,
+        *,
+        metadata: dict[str, object],
+        expected_score: float,
+        expected_revision: int,
+    ) -> bool:
+        """Persist metadata only when the stored feedback (score, revision) pair still matches."""
+        cas_filter = self._feedback_cas_filter(
+            chunk_id,
+            expected_score,
+            expected_revision,
+        )
+        actual_score = self.get_feedback_score(chunk_id)
+        actual_revision = self.get_feedback_revision(chunk_id)
+        if actual_revision != expected_revision or not self._feedback_scores_equal(
+            actual_score, expected_score
+        ):
+            return False
+        try:
+            self._client.set_payload(
+                collection_name=self.collection,
+                payload=metadata,
+                key="metadata",
+                points=cas_filter,
+                wait=True,
+            )
+        except Exception as exc:
+            raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
+        after = self._metadata_from_point(self._retrieve_points([chunk_id])[0])
+        return self._feedback_revision_from_metadata(
+            after
+        ) == expected_revision and self._feedback_scores_equal(
+            self._feedback_score_from_metadata(after),
+            expected_score,
+        )
+
+    @staticmethod
+    def _vectors_from_chunk(chunk: Chunk) -> QdrantNamedVectors:
+        embedding = chunk.embedding
+        sparse_vector = chunk.sparse_vector
+        assert embedding is not None and sparse_vector is not None
+        return cast(
+            QdrantNamedVectors,
+            {
+                _DENSE: embedding,
+                _SPARSE: QSparseVector(
+                    indices=list(sparse_vector.keys()),  # type: ignore[union-attr]
+                    values=list(sparse_vector.values()),  # type: ignore[union-attr]
+                ),
+            },
+        )
+
+    def _top_level_payload(self, chunk: Chunk) -> dict[str, object]:
+        payload = chunk.model_dump(exclude={"embedding", "sparse_vector", "metadata"})
+        if self.embedding_model_name:
+            payload["embedding_model_name"] = self.embedding_model_name
+        chunk_type = chunk.metadata.get(CHUNK_TYPE_KEY)
+        if chunk_type:
+            payload[CHUNK_TYPE_KEY] = chunk_type
+        return payload
 
     @staticmethod
     def _feedback_metadata_from_stored(metadata: dict[str, object]) -> dict[str, object]:
@@ -441,19 +548,9 @@ class QdrantVectorStore(VectorStoreRepository):
             preserved[FEEDBACK_SCORE_KEY] = metadata[FEEDBACK_SCORE_KEY]
         if FEEDBACK_REVISION_KEY in metadata:
             preserved[FEEDBACK_REVISION_KEY] = metadata[FEEDBACK_REVISION_KEY]
+        if _FEEDBACK_UPDATE_ID_KEY in metadata:
+            preserved[_FEEDBACK_UPDATE_ID_KEY] = metadata[_FEEDBACK_UPDATE_ID_KEY]
         return preserved
-
-    @staticmethod
-    def _preserve_feedback_metadata(
-        chunk: Chunk,
-        existing_metadata: dict[str, dict[str, object]],
-    ) -> Chunk:
-        stored = existing_metadata.get(chunk.id)
-        if not stored:
-            return chunk
-        merged_metadata = dict(chunk.metadata)
-        merged_metadata.update(stored)
-        return chunk.model_copy(update={"metadata": merged_metadata})
 
     def _retrieve_points(self, chunk_ids: list[str]) -> list[Any]:
         self._ensure_collection()
@@ -684,10 +781,6 @@ class QdrantVectorStore(VectorStoreRepository):
         self._model_validated = True
 
     def _to_point(self, chunk: Chunk) -> PointStruct:
-        embedding = chunk.embedding
-        sparse_vector = chunk.sparse_vector
-        assert embedding is not None
-        assert sparse_vector is not None
         payload = chunk.model_dump(exclude={"embedding", "sparse_vector"})
         metadata = dict(payload.get("metadata") or {})
         metadata.setdefault(FEEDBACK_SCORE_KEY, 0.0)
@@ -700,13 +793,7 @@ class QdrantVectorStore(VectorStoreRepository):
             payload[CHUNK_TYPE_KEY] = chunk_type
         return PointStruct(
             id=chunk.id,
-            vector={
-                _DENSE: embedding,
-                _SPARSE: QSparseVector(
-                    indices=list(sparse_vector.keys()),  # type: ignore[union-attr]
-                    values=list(sparse_vector.values()),  # type: ignore[union-attr]
-                ),
-            },
+            vector=self._vectors_from_chunk(chunk),
             payload=payload,
         )
 
