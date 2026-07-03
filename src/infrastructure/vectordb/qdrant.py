@@ -286,6 +286,10 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         self._ensure_feedback_fields_initialized(chunk_id)
         for attempt in range(_MAX_FEEDBACK_UPDATE_RETRIES):
+            if not self._retrieve_points([chunk_id]):
+                raise VectorStoreError(
+                    f"Chunk {chunk_id!r} not found in collection {self.collection!r}"
+                )
             current_score = self.get_feedback_score(chunk_id)
             current_revision = self.get_feedback_revision(chunk_id)
             updated = current_score + delta
@@ -374,6 +378,27 @@ class QdrantVectorStore(VectorStoreRepository):
             ),
         )
 
+    def _feedback_cas_pre_check(
+        self,
+        chunk_id: str,
+        expected_score: float,
+        expected_revision: int,
+    ) -> Filter | None:
+        """Return a CAS filter when feedback state matches, else None on conflict."""
+        cas_filter = self._feedback_cas_filter(
+            chunk_id,
+            expected_score,
+            expected_revision,
+        )
+        current_metadata = self._metadata_from_point(self._require_point(chunk_id))
+        actual_score = self._feedback_score_from_metadata(current_metadata)
+        actual_revision = self._feedback_revision_from_metadata(current_metadata)
+        if actual_revision != expected_revision or not self._feedback_scores_equal(
+            actual_score, expected_score
+        ):
+            return None
+        return cas_filter
+
     def _try_set_feedback_score_if_current(
         self,
         chunk_id: str,
@@ -384,16 +409,12 @@ class QdrantVectorStore(VectorStoreRepository):
         feedback_revision: int,
     ) -> bool:
         """Persist feedback only when the stored (score, revision) pair still matches."""
-        cas_filter = self._feedback_cas_filter(
+        cas_filter = self._feedback_cas_pre_check(
             chunk_id,
             expected_score,
             expected_revision,
         )
-        actual_score = self.get_feedback_score(chunk_id)
-        actual_revision = self.get_feedback_revision(chunk_id)
-        if actual_revision != expected_revision or not self._feedback_scores_equal(
-            actual_score, expected_score
-        ):
+        if cas_filter is None:
             return False
         update_id = str(uuid.uuid4())
         try:
@@ -410,7 +431,7 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
-        metadata = self._metadata_from_point(self._retrieve_points([chunk_id])[0])
+        metadata = self._metadata_from_point(self._require_point(chunk_id))
         return (
             metadata.get(_FEEDBACK_UPDATE_ID_KEY) == update_id
             and self._feedback_revision_from_metadata(metadata) == feedback_revision
@@ -503,16 +524,12 @@ class QdrantVectorStore(VectorStoreRepository):
         expected_revision: int,
     ) -> bool:
         """Persist metadata only when the stored feedback (score, revision) pair still matches."""
-        cas_filter = self._feedback_cas_filter(
+        cas_filter = self._feedback_cas_pre_check(
             chunk_id,
             expected_score,
             expected_revision,
         )
-        actual_score = self.get_feedback_score(chunk_id)
-        actual_revision = self.get_feedback_revision(chunk_id)
-        if actual_revision != expected_revision or not self._feedback_scores_equal(
-            actual_score, expected_score
-        ):
+        if cas_filter is None:
             return False
         try:
             self._client.set_payload(
@@ -524,7 +541,7 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
-        after = self._metadata_from_point(self._retrieve_points([chunk_id])[0])
+        after = self._metadata_from_point(self._require_point(chunk_id))
         return self._feedback_revision_from_metadata(
             after
         ) == expected_revision and self._feedback_scores_equal(
@@ -580,13 +597,16 @@ class QdrantVectorStore(VectorStoreRepository):
         except Exception as exc:
             raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
 
-    def _require_chunk_metadata(self, chunk_id: str) -> dict[str, object]:
+    def _require_point(self, chunk_id: str) -> Any:
         points = self._retrieve_points([chunk_id])
         if not points:
             raise VectorStoreError(
                 f"Chunk {chunk_id!r} not found in collection {self.collection!r}"
             )
-        return dict(self._metadata_from_point(points[0]))
+        return points[0]
+
+    def _require_chunk_metadata(self, chunk_id: str) -> dict[str, object]:
+        return dict(self._metadata_from_point(self._require_point(chunk_id)))
 
     def _set_chunk_metadata(self, chunk_id: str, metadata: dict[str, object]) -> None:
         try:

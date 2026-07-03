@@ -494,6 +494,34 @@ class TestExistingChunkMetadataCas:
             )
         assert exc_info.value.cause is not None
 
+    def test_try_set_metadata_if_feedback_current_raises_when_chunk_deleted_before_write(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        mock_client.retrieve.return_value = []
+        with pytest.raises(VectorStoreError, match="not found"):
+            store._try_set_metadata_if_feedback_current(
+                "chunk-a",
+                metadata={"source": "test.pdf"},
+                expected_score=0.0,
+                expected_revision=0,
+            )
+        mock_client.set_payload.assert_not_called()
+
+    def test_try_set_metadata_if_feedback_current_raises_when_chunk_deleted_after_write(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 1.0, "feedback_revision": 0}}
+        mock_client.retrieve.side_effect = [[point], []]
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
+        with pytest.raises(VectorStoreError, match="not found"):
+            store._try_set_metadata_if_feedback_current(
+                "chunk-a",
+                metadata={"source": "test.pdf", FEEDBACK_SCORE_KEY: 1.0, FEEDBACK_REVISION_KEY: 0},
+                expected_score=1.0,
+                expected_revision=0,
+            )
+
 
 # ── search_dense ───────────────────────────────────────────────────────────────
 
@@ -839,6 +867,56 @@ class TestQdrantFeedbackScore:
                 feedback_score=3.0,
                 feedback_revision=1,
             )
+
+    def test_try_set_feedback_score_if_current_raises_when_chunk_deleted_before_write(
+        self, store, mock_client
+    ):
+        mock_client.retrieve.return_value = []
+        with pytest.raises(VectorStoreError, match="not found"):
+            store._try_set_feedback_score_if_current(
+                "chunk-a",
+                expected_score=0.0,
+                expected_revision=0,
+                feedback_score=1.0,
+                feedback_revision=1,
+            )
+        mock_client.set_payload.assert_not_called()
+
+    def test_try_set_feedback_score_if_current_raises_when_chunk_deleted_after_write(
+        self, store, mock_client
+    ):
+        point = MagicMock()
+        point.payload = {
+            "metadata": {"feedback_score": 1.0, "feedback_revision": 0},
+        }
+        mock_client.retrieve.side_effect = [[point], []]
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
+        with pytest.raises(VectorStoreError, match="not found"):
+            store._try_set_feedback_score_if_current(
+                "chunk-a",
+                expected_score=1.0,
+                expected_revision=0,
+                feedback_score=3.0,
+                feedback_revision=1,
+            )
+
+    def test_accumulate_feedback_score_raises_when_chunk_deleted_during_retry(
+        self, store, mock_client
+    ):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 1.0, "feedback_revision": 2}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            if reads["count"] <= 2:
+                return [point]
+            return []
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
+        with pytest.raises(VectorStoreError, match="not found"):
+            store.accumulate_feedback_score("chunk-a", 0.5)
 
     def test_feedback_cas_filter_matches_zero_or_missing(self, store):
         match_filter = store._feedback_cas_filter("chunk-a", 0.0, 0)
