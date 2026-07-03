@@ -108,6 +108,8 @@ class ChatPipeline:
         When *explain* is True, attaches per-source retrieval explanations.
         When *highlight* is True or "quality.source_highlighting.enabled" is set,
         attaches verbatim supporting spans from each cited passage.
+        When both are requested, a single combined LLM call is tried first; any
+        missing side falls back to the dedicated explained or highlight path.
         """
         query = question if isinstance(question, Query) else Query(text=question)
         t0 = time.monotonic()
@@ -134,7 +136,7 @@ class ChatPipeline:
 
         explanations = None
         highlights_result = None
-        if explain and highlighting_requested and source_chunks and llm is not None:
+        if explain and highlighting_requested and source_chunks is not None and llm is not None:
             explanation_list, highlight_map = explain_and_highlight(
                 query.text,
                 answer,
@@ -145,11 +147,18 @@ class ChatPipeline:
                 explanations = explanation_list
             if highlight_map:
                 highlights_result = highlight_map
-        elif explain and source_chunks and llm is not None:
+
+        if explain and explanations is None and source_chunks is not None and llm is not None:
             explanation_list = explain_chunks(query.text, source_chunks, llm)
             if explanation_list:
                 explanations = explanation_list
-        elif highlighting_requested and source_chunks and llm is not None:
+
+        if (
+            highlighting_requested
+            and highlights_result is None
+            and source_chunks is not None
+            and llm is not None
+        ):
             highlight_map = extract_highlights(answer, source_chunks, llm)
             if highlight_map:
                 highlights_result = highlight_map
