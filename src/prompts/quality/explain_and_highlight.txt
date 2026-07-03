@@ -22,7 +22,7 @@ Guidance for highlights:
 - Omit passages with no supporting sentences
 - Prefer complete sentences; keep spans concise
 
-Output ONLY valid JSON with two fields:
+Output ONLY valid JSON with two top-level fields (use empty arrays when a field has no entries):
 - "explanations": array of {chunk_id, reason} objects, one per passage with an explanation, in passage order
 - "highlights": array of {chunk_id, spans} objects, one per passage with at least one supporting span, in passage order
 

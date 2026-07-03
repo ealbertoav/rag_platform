@@ -342,6 +342,15 @@ class TestChatPipelineFull:
         assert llm.generate.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_chat_full_combined_explanations_only_still_attaches_explanations(self):
+        llm = _llm_with_post_gen_responses(json.dumps({"explanations": _SAMPLE_EXPLANATIONS}))
+        result = await _pipeline(llm=llm).chat_full("q", explain=True, highlights=True)
+        assert result.explanations is not None
+        assert len(result.explanations) == 2
+        assert result.highlights is None
+        assert llm.generate.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_chat_full_combined_failure_omits_both(self):
         llm = _llm_mock("answer text")
         llm.generate.side_effect = ["answer text", "not json"]
