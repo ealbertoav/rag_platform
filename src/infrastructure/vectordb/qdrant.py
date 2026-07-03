@@ -20,8 +20,12 @@ from qdrant_client.models import (
     PointStruct,
     PointVectors,
     Range,
+    SetPayload,
+    SetPayloadOperation,
     SparseIndexParams,
     SparseVectorParams,
+    UpdateVectors,
+    UpdateVectorsOperation,
     VectorParams,
 )
 from qdrant_client.models import (
@@ -476,30 +480,15 @@ class QdrantVectorStore(VectorStoreRepository):
             self._update_existing_chunk(chunk)
 
     def _update_existing_chunk(self, chunk: Chunk) -> None:
-        """Update one existing point; metadata CAS runs before vectors/payload change."""
-        self._set_existing_chunk_metadata_with_feedback_cas(chunk)
-        self._client.update_vectors(
-            collection_name=self.collection,
-            points=[PointVectors(id=chunk.id, vector=self._vectors_from_chunk(chunk))],
-            wait=True,
-        )
-        self._client.set_payload(
-            collection_name=self.collection,
-            payload=self._top_level_payload(chunk),
-            points=[chunk.id],
-            wait=True,
-        )
-
-    def _set_existing_chunk_metadata_with_feedback_cas(self, chunk: Chunk) -> None:
-        """Replace chunk metadata while preserving live feedback fields under CAS."""
+        """Update one existing point atomically while preserving feedback under CAS."""
         for attempt in range(_MAX_FEEDBACK_UPDATE_RETRIES):
             existing = self._require_chunk_metadata(chunk.id)
             expected_score = self._feedback_score_from_metadata(existing)
             expected_revision = self._feedback_revision_from_metadata(existing)
             metadata = dict(chunk.metadata)
             metadata.update(self._feedback_metadata_from_stored(existing))
-            if self._try_set_metadata_if_feedback_current(
-                chunk.id,
+            if self._try_batch_update_existing_chunk_if_feedback_current(
+                chunk,
                 metadata=metadata,
                 expected_score=expected_score,
                 expected_revision=expected_revision,
@@ -511,8 +500,65 @@ class QdrantVectorStore(VectorStoreRepository):
                 attempt + 1,
             )
         raise VectorStoreError(
-            f"Failed to upsert metadata for {chunk.id!r} "
+            f"Failed to upsert existing chunk {chunk.id!r} "
             f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
+        )
+
+    def _try_batch_update_existing_chunk_if_feedback_current(
+        self,
+        chunk: Chunk,
+        *,
+        metadata: dict[str, object],
+        expected_score: float,
+        expected_revision: int,
+    ) -> bool:
+        """Atomically refresh vectors and payload when the feedback state still matches."""
+        cas_filter = self._feedback_cas_pre_check(
+            chunk.id,
+            expected_score,
+            expected_revision,
+        )
+        if cas_filter is None:
+            return False
+        try:
+            self._client.batch_update_points(
+                collection_name=self.collection,
+                update_operations=[
+                    SetPayloadOperation(
+                        set_payload=SetPayload(
+                            payload=metadata,
+                            key="metadata",
+                            filter=cas_filter,
+                        )
+                    ),
+                    UpdateVectorsOperation(
+                        update_vectors=UpdateVectors(
+                            points=[
+                                PointVectors(
+                                    id=chunk.id,
+                                    vector=self._vectors_from_chunk(chunk),
+                                )
+                            ],
+                            update_filter=cas_filter,
+                        )
+                    ),
+                    SetPayloadOperation(
+                        set_payload=SetPayload(
+                            payload=self._top_level_payload(chunk),
+                            filter=cas_filter,
+                        )
+                    ),
+                ],
+                wait=True,
+            )
+        except Exception as exc:
+            raise VectorStoreError("Qdrant batch_update_points failed", cause=exc) from exc
+        after = self._metadata_from_point(self._require_point(chunk.id))
+        return self._feedback_revision_from_metadata(
+            after
+        ) == expected_revision and self._feedback_scores_equal(
+            self._feedback_score_from_metadata(after),
+            expected_score,
         )
 
     def _try_set_metadata_if_feedback_current(

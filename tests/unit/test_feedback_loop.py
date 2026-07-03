@@ -118,6 +118,17 @@ class TestApplyFeedbackBoost:
         assert boosted[0][1] == pytest.approx(0.9)
         store.get_feedback_scores.assert_called_once_with(["c0"])
 
+    def test_vector_store_lookup_failure_falls_back_to_metadata(self):
+        store = MagicMock()
+        store.get_feedback_scores.side_effect = VectorStoreError("Qdrant retrieve failed")
+        results = [_result("c0", 0.5, feedback_score=3.0)]
+        boosted = apply_feedback_boost(
+            results,
+            boost_multiplier=0.1,
+            vector_store=store,
+        )
+        assert boosted[0][1] == pytest.approx(0.8)
+
 
 class TestFeedbackApi:
     @pytest.fixture

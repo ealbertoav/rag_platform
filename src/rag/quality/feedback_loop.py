@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.core.constants import FEEDBACK_SCORE_KEY
+from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.vector_store_repository import SearchResult, VectorStoreRepository
 
@@ -95,7 +96,13 @@ def apply_feedback_boost(
     vector_scores: dict[str, float] | None = None
     if vector_store is not None:
         chunk_ids = [chunk.id for chunk, _ in results]
-        vector_scores = vector_store.get_feedback_scores(chunk_ids)
+        try:
+            vector_scores = vector_store.get_feedback_scores(chunk_ids)
+        except VectorStoreError as exc:
+            logger.warning(
+                "Feedback score lookup failed; falling back to chunk metadata: %s",
+                exc,
+            )
 
     boosted: list[SearchResult] = []
     for chunk, fused_score in results:
