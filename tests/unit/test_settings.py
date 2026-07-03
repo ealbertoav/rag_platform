@@ -133,6 +133,9 @@ class TestYamlDefaults:
         assert settings.quality.crag.lower_threshold == pytest.approx(0.3)
         assert settings.quality.crag.upper_threshold == pytest.approx(0.7)
 
+    def test_source_highlighting_defaults_from_yaml(self):
+        assert settings.quality.source_highlighting.enabled is False
+
     def test_web_search_defaults_from_yaml(self):
         assert settings.web_search.provider == "none"
         assert settings.web_search.max_results == 5

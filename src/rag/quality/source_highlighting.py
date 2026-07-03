@@ -4,14 +4,21 @@ import logging
 import re
 from pathlib import Path
 from string import Template
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
-from src.rag.chunking.contextual_headers import chunk_context_text, group_chunks_by_passage
+from src.rag.chunking.contextual_headers import (
+    chunk_context_text,
+    format_passages_for_llm,
+    group_chunks_by_passage,
+)
 from src.rag.structured_output import parse_structured_output
+
+if TYPE_CHECKING:
+    from src.domain.entities.answer import Answer
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +41,6 @@ class SourceHighlightingOutput(BaseModel):
 
 def _load_prompt() -> Template:
     return Template(_PROMPT_PATH.read_text(encoding="utf-8"))
-
-
-def _format_passages(chunks: list[Chunk]) -> str:
-    lines: list[str] = []
-    for index, (representative, _) in enumerate(group_chunks_by_passage(chunks), start=1):
-        text = chunk_context_text(representative).strip()
-        lines.append(f"[{index}] chunk_id={representative.id}\n{text}")
-    return "\n\n".join(lines)
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -94,7 +93,7 @@ def extract_highlights(
     template = _load_prompt()
     prompt = template.substitute(
         answer=answer.text.strip(),
-        passages=_format_passages(chunks),
+        passages=format_passages_for_llm(chunks, normalize_newlines=False),
     )
 
     try:

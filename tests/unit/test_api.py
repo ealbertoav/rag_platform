@@ -326,6 +326,13 @@ class TestChatFull:
         assert chat_pipeline_mock.chat_full.await_args.kwargs["explain"] is True
 
     @pytest.mark.asyncio
+    async def test_highlights_true_passes_flag_to_pipeline(self, app_client, chat_pipeline_mock):
+        async with _client(app_client) as c:
+            await c.post("/chat/full?highlights=true", json={"question": "q"})
+        chat_pipeline_mock.chat_full.assert_awaited_once()
+        assert chat_pipeline_mock.chat_full.await_args.kwargs["highlights"] is True
+
+    @pytest.mark.asyncio
     async def test_highlights_omitted_by_default(self, app_client):
         async with _client(app_client) as c:
             data = (await c.post("/chat/full", json={"question": "q"})).json()

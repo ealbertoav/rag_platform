@@ -86,11 +86,18 @@ async def chat_stream(
 async def chat_full(
     body: ChatRequest,
     explain: bool = QueryParam(False, description="Attach per-source retrieval explanations."),
+    highlights: bool = QueryParam(
+        False,
+        description=(
+            "Attach verbatim supporting spans per source chunk. Also enabled when "
+            "quality.source_highlighting.enabled is true in config."
+        ),
+    ),
     pipeline: ChatPipeline = Depends(get_chat_pipeline),
 ) -> ChatFullResponse:
     """Non-streaming endpoint — returns the complete answer once generated."""
     query = _query_from_request(body)
-    answer = await pipeline.chat_full(query, explain=explain)
+    answer = await pipeline.chat_full(query, explain=explain, highlights=highlights)
     return ChatFullResponse(
         answer=answer.text,
         sources=answer.sources,

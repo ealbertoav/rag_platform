@@ -320,6 +320,19 @@ class TestChatPipelineFull:
         result = await _pipeline(llm=llm, source_highlighting_enabled=True).chat_full("q")
         assert result.highlights is None
 
+    @pytest.mark.asyncio
+    async def test_chat_full_highlights_param_without_config(self):
+        import json
+
+        llm = _llm_mock("answer text")
+        llm.generate.side_effect = [
+            "answer text",
+            json.dumps({"highlights": [{"chunk_id": "c0", "spans": ["relevant text 0"]}]}),
+        ]
+        result = await _pipeline(llm=llm).chat_full("q", highlights=True)
+        assert result.highlights == {"c0": ["relevant text 0"]}
+        assert llm.generate.call_count == 2
+
 
 class TestChatPipelineProperties:
     def test_retrieval_property(self):

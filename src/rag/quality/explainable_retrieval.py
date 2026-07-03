@@ -10,7 +10,7 @@ from src.core.constants import MERGED_CHUNK_IDS_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
 from src.rag.chunking.contextual_headers import (
-    chunk_context_text,
+    format_passages_for_llm,
     group_chunks_by_passage,
 )
 from src.rag.structured_output import parse_structured_output
@@ -35,14 +35,6 @@ class ExplainRetrievalOutput(BaseModel):
 
 def _load_prompt() -> Template:
     return Template(_PROMPT_PATH.read_text(encoding="utf-8"))
-
-
-def _format_passages(chunks: list[Chunk]) -> str:
-    lines: list[str] = []
-    for index, (representative, _) in enumerate(group_chunks_by_passage(chunks), start=1):
-        text = chunk_context_text(representative).strip().replace("\n", " ")
-        lines.append(f"[{index}] chunk_id={representative.id}\n{text}")
-    return "\n\n".join(lines)
 
 
 def resolve_chunks_for_sources(sources: list[str], chunks: list[Chunk]) -> list[Chunk]:
@@ -88,7 +80,7 @@ def explain_chunks(
     template = _load_prompt()
     prompt = template.substitute(
         query=query.strip(),
-        passages=_format_passages(chunks),
+        passages=format_passages_for_llm(chunks, normalize_newlines=True),
     )
 
     try:

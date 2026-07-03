@@ -23,6 +23,7 @@ from src.rag.quality.self_rag import (
     decide_retrieval,
     score_utility,
 )
+from src.rag.quality.source_highlighting import extract_highlights
 
 __all__ = [
     "CRAGAction",
@@ -42,6 +43,7 @@ __all__ = [
     "eval_contexts_for_resolution",
     "explain_chunks",
     "explainable_chunks_for_resolution",
+    "extract_highlights",
     "grade_relevance",
     "refine_knowledge",
     "score_retrieval_quality",

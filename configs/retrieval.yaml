@@ -86,3 +86,5 @@ quality:
     enabled: false               # Corrective RAG web search fallback in chat pipeline (T-142)
     lower_threshold: 0.3         # below → discard retrieval, web search only
     upper_threshold: 0.7         # above → use retrieved context as-is
+  source_highlighting:
+    enabled: false               # T-144 post-generation span extraction on /chat/full

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
 from src.rag.chunking.contextual_headers import (
-    chunk_context_text,
+    format_passages_for_llm,
 )
 from src.rag.chunking.contextual_headers import (
     group_chunks_by_passage as _group_chunks_for_grading,
@@ -40,11 +40,7 @@ def _load_prompt() -> Template:
 
 
 def _format_passages(chunks: list[Chunk]) -> str:
-    lines: list[str] = []
-    for index, (representative, _) in enumerate(_group_chunks_for_grading(chunks), start=1):
-        text = chunk_context_text(representative).strip().replace("\n", " ")
-        lines.append(f"[{index}] chunk_id={representative.id}\n{text}")
-    return "\n\n".join(lines)
+    return format_passages_for_llm(chunks, normalize_newlines=True)
 
 
 def parse_relevance_grading(text: str) -> RelevanceGradingOutput:

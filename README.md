@@ -14,6 +14,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Explainable retrieval (T-143):** Optional per-source explanations on `POST /chat/full?explain=true` — after generation, an LLM explains why each cited chunk was retrieved and how it relates to the question (using the same `chunk_context_text` the generator saw). Default `explain=false` adds no extra LLM calls. Omitted when CRAG refines context to a web-only passage, or when explanation generation fails. See [Explainable Retrieval (T-143)](#explainable-retrieval-t-143).
 
+> **Source highlighting (T-144):** Optional per-source supporting spans on `POST /chat/full?highlights=true` (or globally via `quality.source_highlighting.enabled` in `configs/retrieval.yaml`). Spans are verbatim substrings of `chunk_context_text` — the LLM-facing passage text, not always `Chunk.text` when parent context or contextual headers apply. Default off; omitted on failure. See [Source Highlighting (T-144)](#source-highlighting-t-144).
+
 ---
 
 ## Table of Contents
@@ -300,7 +302,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
@@ -603,6 +605,21 @@ Explanations use the same passage text the generator saw — `chunk_context_text
 | LLM or parse failure | `explanations` omitted; answer still returned |
 
 See [Explainable Retrieval (T-143)](#explainable-retrieval-t-143) in Retrieval Pipeline Details for the full flow diagram and implementation notes.
+
+#### Source highlighting in standard chat (T-144)
+
+`POST /chat/full` accepts `?highlights=true` per request, or you can enable highlighting for all `/chat/full` calls via `quality.source_highlighting.enabled: true` in `configs/retrieval.yaml`. After generation, one structured LLM call identifies supporting sentence spans in each cited passage.
+
+**Passage text contract:** spans are validated as substrings of `chunk_context_text()` — the same text the generator and highlight prompt see (parent context, RSE merges, CCH `raw_text`). They are keyed by citation chunk ID but may not appear in `Chunk.text` when sibling children share expanded parent context. UI clients must search spans in `chunk_context_text`, not embedded slice text alone.
+
+| Condition | Behavior |
+|---|---|
+| `highlights=false` and config disabled (default) | No extra LLM call; `highlights` omitted |
+| `highlights=true` or config enabled, sources present | One batched LLM call → span lists per source chunk |
+| CRAG refines context (web merge, not fallback) | Highlights omitted — same gate as explanations |
+| LLM or parse failure | `highlights` omitted; answer still returned |
+
+See [Source Highlighting (T-144)](#source-highlighting-t-144) in Retrieval Pipeline Details.
 
 **Python client:**
 ```python
@@ -1264,7 +1281,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 |---|---|---|
 | `GET` | `/health` | Server status and model load state |
 | `POST` | `/chat` | Stream answer as Server-Sent Events; optional `document_ids`, `metadata_filters`, `min_score` (T-134) |
-| `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat`; optional `?explain=true` for per-source retrieval explanations (T-143) |
+| `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat`; optional `?explain=true` for per-source retrieval explanations (T-143); optional `?highlights=true` or `quality.source_highlighting.enabled` for supporting spans (T-144) |
 | `POST` | `/chat/agent` | Agentic RAG — multistep retrieval, streaming answer (`max_iterations` 1–5) |
 | `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
@@ -1899,6 +1916,31 @@ Passage groups mirror Reliable RAG (T-140) and `join_chunk_context` deduplicatio
 
 ```bash
 curl -X POST "http://localhost:8000/chat/full?explain=true" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was Q3 revenue?"}'
+```
+
+##### Source Highlighting (T-144)
+
+Source highlighting is an optional **post-generation** step on `POST /chat/full`. When `highlights=true` or `quality.source_highlighting.enabled` is set, `extract_highlights()` runs one structured LLM call (`src/prompts/quality/source_highlighting.txt`) and returns verbatim supporting spans keyed by citation chunk ID.
+
+**Pipeline position:** retrieval → optional CRAG → generation → optional explain and/or highlights (does not affect answer text). When both explain and highlights run, `resolve_chunks_for_sources()` is shared; explain prompts normalize newlines for readability while highlight prompts preserve passage formatting for verbatim span validation.
+
+**Structured LLM output:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `chunk_id` | string | Passage representative ID from the prompt |
+| `spans` | string[] | Verbatim substrings of `chunk_context_text` supporting the answer |
+
+**Passage text contract:** spans must be findable in `chunk_context_text()`, not necessarily in `Chunk.text`. Parent-context siblings receive the same spans under each child citation ID because generation saw the shared parent body.
+
+**CRAG interaction:** same gate as T-143 — omitted when CRAG refines to a web-only passage.
+
+**Trade-offs:** one extra LLM call when enabled (included in `latency_ms`). Failures are logged and omitted; the answer is never blocked. Not available on streaming `/chat` or agent endpoints.
+
+```bash
+curl -X POST "http://localhost:8000/chat/full?highlights=true" \
   -H "Content-Type: application/json" \
   -d '{"question": "What was Q3 revenue?"}'
 ```
