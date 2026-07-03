@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -367,6 +368,24 @@ class TestQdrantFeedbackScore:
         with pytest.raises(VectorStoreError, match="not found"):
             store.set_feedback_score("missing", 1.0)
 
+    def test_get_feedback_scores_empty_ids_returns_empty(self, store, mock_client):
+        assert store.get_feedback_scores([]) == {}
+        mock_client.retrieve.assert_not_called()
+
+    def test_try_set_feedback_score_if_current_rejects_stale_expected(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 2.0}}
+        mock_client.retrieve.return_value = [point]
+        assert (
+            store._try_set_feedback_score_if_current(
+                "chunk-a",
+                expected=1.0,
+                feedback_score=3.0,
+            )
+            is False
+        )
+        mock_client.set_payload.assert_not_called()
+
     def test_get_feedback_scores_batch(self, store, mock_client):
         point_a = MagicMock()
         point_a.id = "chunk-a"
@@ -383,6 +402,64 @@ class TestQdrantFeedbackScore:
             with_payload=True,
             with_vectors=False,
         )
+
+    def test_accumulate_feedback_score_adds_delta(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 1.0}}
+        mock_client.retrieve.return_value = [point]
+
+        def set_payload_side_effect(**kwargs: object) -> None:
+            payload = kwargs["payload"]
+            assert isinstance(payload, dict)
+            point.payload = payload
+
+        mock_client.set_payload.side_effect = set_payload_side_effect
+        result = store.accumulate_feedback_score("chunk-a", 0.5)
+        assert result == 1.5
+        mock_client.set_payload.assert_called_once_with(
+            collection_name="test_col",
+            payload={"metadata": {"feedback_score": 1.5}},
+            points=["chunk-a"],
+        )
+
+    def test_accumulate_feedback_score_missing_chunk_raises(self, store, mock_client):
+        mock_client.retrieve.return_value = []
+        with pytest.raises(VectorStoreError, match="not found"):
+            store.accumulate_feedback_score("missing", 1.0)
+
+    def test_accumulate_feedback_score_serializes_concurrent_updates(self, store, mock_client):
+        current = {"value": 0.0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            point = MagicMock()
+            point.payload = {"metadata": {"feedback_score": current["value"]}}
+            return [point]
+
+        def set_payload_side_effect(**kwargs: object) -> None:
+            payload = kwargs["payload"]
+            assert isinstance(payload, dict)
+            metadata = payload["metadata"]
+            assert isinstance(metadata, dict)
+            current["value"] = float(metadata["feedback_score"])
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.set_payload.side_effect = set_payload_side_effect
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(
+                pool.map(lambda _: store.accumulate_feedback_score("chunk-a", 1.0), range(10))
+            )
+
+        assert current["value"] == 10.0
+        assert sorted(results) == list(range(1, 11))
+
+    def test_accumulate_feedback_score_raises_after_retry_exhaustion(self, store, mock_client):
+        point = MagicMock()
+        point.payload = {"metadata": {"feedback_score": 0.0}}
+        mock_client.retrieve.return_value = [point]
+
+        with pytest.raises(VectorStoreError, match="Failed to accumulate feedback"):
+            store.accumulate_feedback_score("chunk-a", 1.0)
 
 
 # ── embedding model validation ─────────────────────────────────────────────────
@@ -456,7 +533,7 @@ class TestEmbeddingModelValidation:
         store._collection_ready = True
 
         store.validate_embedding_model()
-        assert store._model_validated is True
+        assert store._model_validated
 
 
 class TestQdrantMisc:
@@ -466,7 +543,7 @@ class TestQdrantMisc:
         store._collection_ready = True
         store.drop_collection()
         mock_client.delete_collection.assert_called_once_with("test_col")
-        assert store._collection_ready is False
+        assert not store._collection_ready
 
     def test_get_collection_embedding_model_when_missing(self, mock_client: MagicMock):
         mock_client.collection_exists.return_value = False
@@ -506,7 +583,7 @@ class TestQdrantMisc:
         store.validate_embedding_model()
 
         mock_client.scroll.assert_not_called()
-        assert store._model_validated is True
+        assert store._model_validated
 
     def test_search_dense_wraps_error(self, store: QdrantVectorStore, mock_client: MagicMock):
         mock_client.query_points.side_effect = RuntimeError("search failed")

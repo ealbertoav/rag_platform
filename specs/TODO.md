@@ -1731,6 +1731,58 @@
   - Chunks with positive feedback receive RRF rank boost (configurable multiplier)
   - Feedback endpoint returns 204 on success
   - No feedback → retrieval behavior unchanged
+- **Notes:** Production hardening gaps (multi-replica concurrency, rate limiting, atomic storage) tracked in **T-146**.
+
+---
+
+### T-146 · Feedback Loop Production Hardening _(follow-up to T-145)_
+- **Status:** `[~]`
+- **Goal:** Close production gaps in the T-145 feedback loop identified during Bugbot review and multi-replica deployment analysis — without blocking local/single-replica usage.
+- **Inputs:** T-145 (feedback API + boost), T-013 (Qdrant), T-032 (API), T-095 (Helm HPA), T-160 (rate limiting, optional)
+- **Outputs:** Documented gap tracker, hardened feedback persistence for horizontal scale, and CI/load-test coverage before HPA ≥ 2.
+- **Motivation:** Bugbot flagged per-request BM25 disk writes and non-atomic feedback accumulation. Code review further identified per-pod BM25 drift and missing `/feedback` rate limits under Helm defaults (`replicaCount.api: 2`, HPA min 2).
+- **Gap tracker:**
+
+  | Gap | Severity | Status | Trigger to address | Owner task |
+  |---|---|---|---|---|
+  | Full BM25 JSON rewrite on every `POST /feedback` | High | **Fixed** — deferred to lifespan `save_indexes()` | — | T-145 hardening |
+  | Non-atomic read-modify-write on `feedback_score` | Medium | **Fixed** — Qdrant CAS retry in `accumulate_feedback_score` | — | T-145 hardening |
+  | Per-pod BM25 metadata drift under multi-replica | Medium | **Fixed** — Qdrant is write source of truth; boost reads `vector_store.get_feedback_scores` | — | T-145 hardening |
+  | CAS retry insufficient under extreme same-chunk contention | Low | **Open** | Feedback drives ranking in prod **and** load tests show lost increments | T-146 |
+  | No rate limit on `/feedback` | Medium | **Open** | Public API or abuse observed | **T-160** (add `/feedback` to protected routes) |
+  | No multi-pod feedback load test / baseline | Low | **Open** | Before enabling Helm HPA in prod | **T-172** (add scenario 5) |
+  | Shared BM25 PVC last-writer-wins on shutdown save | Low | **Open** | Multiple API replicas share BM25 persistence volume | T-146 or **T-165** |
+  | True atomic increment (Redis / Postgres) | Low | **Deferred** | Business-critical feedback under heavy multi-pod load | T-146 (optional backend) |
+
+- **Files:**
+  - `src/infrastructure/vectordb/qdrant.py` — `accumulate_feedback_score`, `_try_set_feedback_score_if_current` _(done)_
+  - `src/rag/quality/feedback_loop.py` — Qdrant-only `record_feedback` _(done)_
+  - `src/api/routers/feedback.py` — remove BM25 coupling _(done)_
+  - `tests/unit/test_qdrant.py` — CAS retry + concurrent accumulation tests _(done)_
+  - `tests/unit/test_feedback_loop.py` — updated feedback tests _(done)_
+  - `src/infrastructure/vectordb/feedback_store.py` — _(optional)_ Redis or Postgres atomic increment backend
+  - `src/core/settings.py` — _(optional)_ `quality.feedback.backend: qdrant \| redis \| postgres`
+  - `configs/app.yaml` — _(optional)_ feedback backend + Redis URL
+  - `tests/benchmarks/test_feedback_concurrency.py` — multi-process lost-increment regression _(pending)_
+  - `docs/operations/feedback-multi-replica.md` — deployment guidance _(pending)_
+- **Remaining work:**
+  1. **Before prod HPA (min ≥ 2):** document single-writer vs multi-replica semantics in `docs/operations/feedback-multi-replica.md`; add concurrent feedback scenario to **T-172** infra benchmark.
+  2. **With T-160:** include `/feedback` in rate-limited routes when `api.rate_limit.enabled=true`.
+  3. **Optional (high-contention prod):** pluggable `FeedbackStore` with Redis `HINCRBYFLOAT` or Postgres `UPDATE … SET score = score + $1` behind `accumulate_feedback_score`.
+  4. **Shared BM25 PVC:** skip BM25 feedback metadata on shutdown when unchanged, or reload BM25 from Qdrant on pod startup (coordinate with **T-165** if disk-backed BM25 lands).
+- **Acceptance Criteria:**
+  - [x] No `bm25_index.save()` on feedback path
+  - [x] `accumulate_feedback_score` uses compare-and-set retries (not process-local lock only)
+  - [x] `record_feedback` writes Qdrant only; retrieval boost reads live Qdrant scores
+  - [ ] `docs/operations/feedback-multi-replica.md` documents safe deployment modes (1 replica, HPA ≥ 2 with CAS, optional Redis backend)
+  - [ ] **T-160** updated to rate-limit `/feedback` when enabled
+  - [ ] **T-172** adds scenario: 10 concurrent `POST /feedback` on same `chunk_id` across simulated pods — zero lost increments
+  - [ ] _(Optional)_ Redis/Postgres feedback backend selectable via settings; default remains Qdrant CAS
+- **Safe without closing T-146:**
+  - Local dev, Docker Compose single `api` container, `uvicorn --workers 1`
+  - Production with `replicaCount.api: 1` and normal human feedback volume
+- **Do not deploy without T-146 + T-160 progress:**
+  - Public-facing API with Helm HPA (`minReplicas ≥ 2`) and business-critical feedback-driven ranking
 
 ---
 
@@ -1815,7 +1867,7 @@
 
 ### T-160 · API Rate Limiting Middleware
 - **Status:** `[ ]`
-- **Goal:** Protect sensitive endpoints (`/ingest`, `/chat`, `/chat/agent`, `/evals/run`) from abuse with configurable per-IP or per-API-key rate limits — closes the gap flagged in the code analysis security checklist.
+- **Goal:** Protect sensitive endpoints (`/ingest`, `/chat`, `/chat/agent`, `/evals/run`, `/feedback`) from abuse with configurable per-IP or per-API-key rate limits — closes the gap flagged in the code analysis security checklist. `/feedback` inclusion closes **T-146** gap tracker item.
 - **Inputs:** T-032 (`src/api/security.py`, routers), T-051 (Prometheus metrics)
 - **Outputs:** FastAPI middleware that returns `429 Too Many Requests` when limits are exceeded; metrics counter for throttled requests.
 - **Files:**
@@ -1987,8 +2039,8 @@
 
 ### T-172 · Performance Baseline & Regression Benchmark
 - **Status:** `[ ]`
-- **Goal:** Establish baseline latency/throughput metrics for the infrastructure bottlenecks flagged in the code analysis (LLM streaming, BM25 memory, Neo4j sync) so Phase 16 optimizations can be measured.
-- **Inputs:** T-043 (`RAGBenchmark`), T-051 (Prometheus metrics), T-163–T-165 (optimization targets)
+- **Goal:** Establish baseline latency/throughput metrics for the infrastructure bottlenecks flagged in the code analysis (LLM streaming, BM25 memory, Neo4j sync, feedback concurrency) so Phase 16 optimizations can be measured.
+- **Inputs:** T-043 (`RAGBenchmark`), T-051 (Prometheus metrics), T-146 (feedback hardening), T-163–T-165 (optimization targets)
 - **Outputs:** Benchmark script and CI-optional regression check for p50/p95 latency under concurrent load.
 - **Files:**
   - `scripts/benchmark_infra.py` — concurrent chat + ingest load test
@@ -2001,6 +2053,7 @@
   2. 10 concurrent chats — event-loop health (no timeout failures)
   3. BM25 search on 100K chunk fixture — memory + latency
   4. Graph retrieval with Neo4j enabled — query latency
+  5. Concurrent feedback on same `chunk_id` across simulated API pods — zero lost increments (**T-146**)
 - **Acceptance Criteria:**
   - Baseline captured and committed after T-163–T-165 land
   - `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
@@ -2048,7 +2101,9 @@ T-011 ──► T-126
 T-140 ──► T-141 ──► T-142
 T-140 ──► T-144
 T-143 ──► T-144
-T-013 + T-117 ──► T-145
+T-013 + T-117 ──► T-145 ──► T-146
+T-146 + T-160 ──► (feedback rate limiting closed)
+T-146 + T-172 ──► (feedback concurrency baseline closed)
 T-043 + T-110..T-145 ──► T-150
 T-011 + T-043 ──► T-151
 T-040 + T-061 ──► T-152
@@ -2059,6 +2114,7 @@ T-111 + T-112 ──► T-164
 T-014 + T-015 ──► T-165
 T-060 + T-061 ──► T-170 ──► T-171
 T-043 + T-051 ──► T-172
+T-146 ──► T-172
 T-163 + T-164 + T-165 ──► T-172
 ```
 
@@ -2077,7 +2133,7 @@ T-163 + T-164 + T-165 ──► T-172
 11. **Phase 11 — Priority 1 (Wire Existing Code):** T-112 → T-110 → T-111 → T-113 → T-114 → T-115 → T-116 → T-117 _(~2 sessions)_
 12. **Phase 12 — Priority 2 (Index-Time Enrichment):** T-120 → T-121 → T-122 → T-123 → T-124 → T-125 → T-126 _(~3 sessions)_
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
-14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 _(~2 sessions)_
+14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 → T-151 → T-152 _(~1 session)_
-16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-161 → T-162 → T-160 → T-163 → T-164 → T-165 _(~2 sessions)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-146 (remaining) → T-161 → T-162 → T-160 → T-163 → T-164 → T-165 _(~2 sessions)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session)_

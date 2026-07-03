@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,11 +10,13 @@ from httpx import ASGITransport, AsyncClient
 from src.core.constants import FEEDBACK_SCORE_KEY
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
-from src.infrastructure.vectordb.bm25 import BM25Index
 from src.main import create_app
 from src.rag.quality.feedback_loop import (
     apply_feedback_boost,
+    feedback_score_from_metadata,
+    merge_chunk_views,
     record_feedback,
+    resolve_feedback_score,
     score_from_relevant,
 )
 
@@ -42,35 +42,41 @@ class TestScoreFromRelevant:
         assert score_from_relevant(False) == -1.0
 
 
+class TestFeedbackScoreFromMetadata:
+    def test_bool_metadata_returns_zero(self):
+        assert feedback_score_from_metadata({FEEDBACK_SCORE_KEY: True}) == 0.0
+
+
+class TestMergeChunkViews:
+    def test_preserves_negative_score_from_right_only(self):
+        left = _chunk("c0")
+        right = _chunk("c0", feedback_score=-1.0)
+        merged = merge_chunk_views(left, right)
+        assert merged.metadata[FEEDBACK_SCORE_KEY] == -1.0
+
+    def test_copies_missing_metadata_keys_from_right(self):
+        left = Chunk(id="c0", document_id="doc-1", text="sample", metadata={"source": "left"})
+        right = Chunk(id="c0", document_id="doc-1", text="sample", metadata={"section": "intro"})
+        merged = merge_chunk_views(left, right)
+        assert merged.metadata["source"] == "left"
+        assert merged.metadata["section"] == "intro"
+
+
+class TestResolveFeedbackScore:
+    def test_reads_score_from_bm25_index(self):
+        from src.infrastructure.vectordb.bm25 import BM25Index
+
+        index = BM25Index()
+        index.index([_chunk("c0", feedback_score=5.0)])
+        assert resolve_feedback_score(_chunk("c0"), bm25_index=index) == 5.0
+
+
 class TestRecordFeedback:
     def test_accumulates_and_persists_to_vector_store(self):
         store = MagicMock()
-        store.get_feedback_score.return_value = 1.0
+        store.accumulate_feedback_score.return_value = 2.0
         record_feedback(store, "query-1", "chunk-a", 1.0)
-        store.set_feedback_score.assert_called_once_with("chunk-a", 2.0)
-
-    def test_updates_bm25_metadata_when_index_provided(self, tmp_path: Path):
-        store = MagicMock()
-        store.get_feedback_score.return_value = 0.0
-        index = BM25Index(index_path=tmp_path / "bm25.json")
-        index.index([_chunk("chunk-a")])
-        record_feedback(store, "query-1", "chunk-a", 1.0, bm25_index=index)
-        updated = index.get_by_id("chunk-a")
-        assert updated is not None
-        assert updated.metadata[FEEDBACK_SCORE_KEY] == 1.0
-        reloaded = BM25Index(index_path=tmp_path / "bm25.json")
-        reloaded.load()
-        persisted = reloaded.get_by_id("chunk-a")
-        assert persisted is not None
-        assert persisted.metadata[FEEDBACK_SCORE_KEY] == 1.0
-
-    def test_missing_bm25_chunk_logs_warning(self, caplog):
-        store = MagicMock()
-        store.get_feedback_score.return_value = 0.0
-        index = BM25Index()
-        with caplog.at_level(logging.WARNING):
-            record_feedback(store, "query-1", "missing", 1.0, bm25_index=index)
-        assert "not found in BM25 index" in caplog.text
+        store.accumulate_feedback_score.assert_called_once_with("chunk-a", 1.0)
 
 
 class TestApplyFeedbackBoost:
@@ -110,7 +116,6 @@ class TestFeedbackApi:
     def app_client(self):
         app = create_app()
         app.state.models_loaded = True
-        app.state.bm25_index = BM25Index()
         return app
 
     @staticmethod
@@ -121,7 +126,7 @@ class TestFeedbackApi:
     async def test_submit_feedback_returns_204(self, app_client):
         with patch("src.api.routers.feedback.QdrantVectorStore.from_settings") as factory:
             store = MagicMock()
-            store.get_feedback_score.return_value = 0.0
+            store.accumulate_feedback_score.return_value = 1.0
             factory.return_value = store
             async with self._client(app_client) as client:
                 resp = await client.post(
@@ -129,14 +134,15 @@ class TestFeedbackApi:
                     json={"query_id": "q-1", "chunk_id": "chunk-a", "relevant": True},
                 )
         assert resp.status_code == 204
-        store.set_feedback_score.assert_called_once_with("chunk-a", 1.0)
+        store.accumulate_feedback_score.assert_called_once_with("chunk-a", 1.0)
 
     @pytest.mark.asyncio
     async def test_missing_chunk_returns_404(self, app_client):
         with patch("src.api.routers.feedback.QdrantVectorStore.from_settings") as factory:
             store = MagicMock()
-            store.get_feedback_score.return_value = 0.0
-            store.set_feedback_score.side_effect = VectorStoreError("Chunk 'missing' not found")
+            store.accumulate_feedback_score.side_effect = VectorStoreError(
+                "Chunk 'missing' not found"
+            )
             factory.return_value = store
             async with self._client(app_client) as client:
                 resp = await client.post(

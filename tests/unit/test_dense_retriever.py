@@ -84,6 +84,12 @@ class TestRetrieve:
         assert retriever.retrieve(_query(), top_k=5) == []
 
 
+class TestDenseRetrieverProperties:
+    def test_vector_store_property(self):
+        retriever, _, vector_store = _retriever()
+        assert retriever.vector_store is vector_store
+
+
 # ── embed_query ────────────────────────────────────────────────────────────────
 
 

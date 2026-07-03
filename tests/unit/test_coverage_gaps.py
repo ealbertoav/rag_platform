@@ -137,7 +137,7 @@ class TestFeedbackApi502:
         app.state.models_loaded = True
         with patch("src.api.routers.feedback.QdrantVectorStore.from_settings") as factory:
             store = MagicMock()
-            store.get_feedback_score.side_effect = VectorStoreError("Qdrant retrieve failed")
+            store.accumulate_feedback_score.side_effect = VectorStoreError("Qdrant retrieve failed")
             factory.return_value = store
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
@@ -398,6 +398,14 @@ class TestBm25Gaps:
         idx = BM25Index()
         idx.index([_chunk(0)])
         assert idx.update_chunk_metadata("missing", {"k": "v"}) is False
+
+    def test_update_chunk_metadata_merges_updates(self):
+        idx = BM25Index()
+        idx.index([_chunk(0)])
+        assert idx.update_chunk_metadata("c0", {"tag": "v1"}) is True
+        updated = idx.get_by_id("c0")
+        assert updated is not None
+        assert updated.metadata["tag"] == "v1"
 
     def test_load_invalid_chunks_format_raises(self, tmp_path: Path):
         path = tmp_path / "bm25.json"

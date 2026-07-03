@@ -265,6 +265,38 @@ class TestVectorStoreRepository:
     def test_delete_accepts_id_list(self):
         _VectorStore().delete(["id-1", "id-2"])  # must not raise
 
+    def test_accumulate_feedback_score_default_impl(self):
+        class _TrackingStore(_VectorStore):
+            def __init__(self) -> None:
+                self.scores: dict[str, float] = {}
+
+            def get_feedback_score(self, chunk_id: str) -> float:
+                return self.scores.get(chunk_id, 0.0)
+
+            def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+                self.scores[chunk_id] = feedback_score
+
+        store = _TrackingStore()
+        assert store.accumulate_feedback_score("chunk-a", 1.0) == 1.0
+        assert store.accumulate_feedback_score("chunk-a", 0.5) == 1.5
+
+    def test_get_feedback_scores_default_impl(self):
+        class _TrackingStore(_VectorStore):
+            def __init__(self) -> None:
+                self.scores = {"chunk-a": 2.0}
+
+            def get_feedback_score(self, chunk_id: str) -> float:
+                return self.scores.get(chunk_id, 0.0)
+
+            def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+                self.scores[chunk_id] = feedback_score
+
+        store = _TrackingStore()
+        assert store.get_feedback_scores(["chunk-a", "chunk-b", "chunk-a"]) == {
+            "chunk-a": 2.0,
+            "chunk-b": 0.0,
+        }
+
 
 # ── No infrastructure imports ──────────────────────────────────────────────────
 

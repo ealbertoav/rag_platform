@@ -258,6 +258,11 @@ class TestBM25Retriever:
         retriever.save()
         assert path.exists()
 
+    def test_bm25_index_property(self):
+        idx = BM25Index()
+        retriever = BM25Retriever(idx)
+        assert retriever.bm25_index is idx
+
 
 class TestBM25IndexErrors:
     def test_save_os_error_raises(self, tmp_path: Path):
@@ -461,8 +466,8 @@ class TestBM25DeferredRebuild:
         def concurrent_search() -> None:
             search_ready.set()
             added.wait(timeout=5)
-            results = idx.search("kubernetes deployment rollout", top_k=1)
-            if results and results[0][0].id == new_chunk.id:
+            hits = idx.search("kubernetes deployment rollout", top_k=1)
+            if hits and hits[0][0].id == new_chunk.id:
                 found_during_batch.set()
 
         ingest_thread = threading.Thread(target=batch_ingest)

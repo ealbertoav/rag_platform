@@ -33,6 +33,8 @@ _DENSE = "dense"
 _SPARSE = "sparse"
 _EXPANSION = 3  # multiplier for hybrid search candidate pool
 _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
+_FEEDBACK_SCORE_EPSILON = 1e-9
+_MAX_FEEDBACK_UPDATE_RETRIES = 5
 
 
 # ── RRF fusion (module-level so it can be tested independently) ────────────────
@@ -233,44 +235,75 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def get_feedback_score(self, chunk_id: str) -> float:
         """Return accumulated user feedback score stored in chunk metadata."""
-        self._ensure_collection()
-        try:
-            points = self._client.retrieve(
-                collection_name=self.collection,
-                ids=[chunk_id],
-                with_payload=True,
-                with_vectors=False,
-            )
-        except Exception as exc:
-            raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
+        points = self._retrieve_points([chunk_id])
         if not points:
             return 0.0
-        metadata = (points[0].payload or {}).get("metadata") or {}
-        value = metadata.get(FEEDBACK_SCORE_KEY)
-        if isinstance(value, bool):
-            return 0.0
-        if isinstance(value, int | float):
-            return float(value)
-        return 0.0
+        return self._feedback_score_from_metadata(self._metadata_from_point(points[0]))
 
     def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
         """Persist *feedback_score* under chunk metadata in the Qdrant payload."""
+        metadata = self._require_chunk_metadata(chunk_id)
+        metadata[FEEDBACK_SCORE_KEY] = feedback_score
+        self._set_chunk_metadata(chunk_id, metadata)
+
+    def accumulate_feedback_score(self, chunk_id: str, delta: float) -> float:
+        """Add *delta* to the stored feedback score with compare-and-set retries."""
+        for attempt in range(_MAX_FEEDBACK_UPDATE_RETRIES):
+            current = self.get_feedback_score(chunk_id)
+            updated = current + delta
+            if self._try_set_feedback_score_if_current(
+                chunk_id,
+                expected=current,
+                feedback_score=updated,
+            ) and self._feedback_scores_equal(self.get_feedback_score(chunk_id), updated):
+                return updated
+            logger.debug(
+                "Feedback accumulate conflict for chunk_id=%r attempt=%d",
+                chunk_id,
+                attempt + 1,
+            )
+        raise VectorStoreError(
+            "Failed to accumulate feedback for "
+            f"{chunk_id!r} after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
+        )
+
+    def _try_set_feedback_score_if_current(
+        self,
+        chunk_id: str,
+        *,
+        expected: float,
+        feedback_score: float,
+    ) -> bool:
+        """Persist *feedback_score* only when the stored value still equals *expected*."""
+        metadata = self._require_chunk_metadata(chunk_id)
+        actual = self._feedback_score_from_metadata(metadata)
+        if not self._feedback_scores_equal(actual, expected):
+            return False
+        metadata[FEEDBACK_SCORE_KEY] = feedback_score
+        self._set_chunk_metadata(chunk_id, metadata)
+        return True
+
+    def _retrieve_points(self, chunk_ids: list[str]) -> list[Any]:
         self._ensure_collection()
         try:
-            points = self._client.retrieve(
+            return self._client.retrieve(
                 collection_name=self.collection,
-                ids=[chunk_id],
+                ids=chunk_ids,
                 with_payload=True,
                 with_vectors=False,
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
+
+    def _require_chunk_metadata(self, chunk_id: str) -> dict[str, object]:
+        points = self._retrieve_points([chunk_id])
         if not points:
             raise VectorStoreError(
                 f"Chunk {chunk_id!r} not found in collection {self.collection!r}"
             )
-        metadata = dict((points[0].payload or {}).get("metadata") or {})
-        metadata[FEEDBACK_SCORE_KEY] = feedback_score
+        return dict(self._metadata_from_point(points[0]))
+
+    def _set_chunk_metadata(self, chunk_id: str, metadata: dict[str, object]) -> None:
         try:
             self._client.set_payload(
                 collection_name=self.collection,
@@ -280,29 +313,34 @@ class QdrantVectorStore(VectorStoreRepository):
         except Exception as exc:
             raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
 
+    @staticmethod
+    def _metadata_from_point(point: Any) -> dict[str, object]:
+        return dict((point.payload or {}).get("metadata") or {})
+
+    @staticmethod
+    def _feedback_score_from_metadata(metadata: dict[str, object]) -> float:
+        value = metadata.get(FEEDBACK_SCORE_KEY)
+        if isinstance(value, bool):
+            return 0.0
+        if isinstance(value, int | float):
+            return float(value)
+        return 0.0
+
+    @staticmethod
+    def _feedback_scores_equal(left: float, right: float) -> bool:
+        return abs(left - right) <= _FEEDBACK_SCORE_EPSILON
+
     def get_feedback_scores(self, chunk_ids: list[str]) -> dict[str, float]:
         """Return feedback scores for *chunk_ids* in a single retrieve call."""
         unique_ids = list(dict.fromkeys(chunk_ids))
         if not unique_ids:
             return {}
-        self._ensure_collection()
-        try:
-            points = self._client.retrieve(
-                collection_name=self.collection,
-                ids=unique_ids,
-                with_payload=True,
-                with_vectors=False,
-            )
-        except Exception as exc:
-            raise VectorStoreError("Qdrant retrieve failed", cause=exc) from exc
+        points = self._retrieve_points(unique_ids)
         scores = dict.fromkeys(unique_ids, 0.0)
         for point in points:
-            metadata = (point.payload or {}).get("metadata") or {}
-            value = metadata.get(FEEDBACK_SCORE_KEY)
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, int | float):
-                scores[str(point.id)] = float(value)
+            scores[str(point.id)] = self._feedback_score_from_metadata(
+                self._metadata_from_point(point)
+            )
         return scores
 
     # ── Internals ──────────────────────────────────────────────────────────────

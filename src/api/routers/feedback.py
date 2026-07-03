@@ -22,10 +22,9 @@ class FeedbackRequest(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_204_NO_CONTENT)
-async def submit_feedback(body: FeedbackRequest, request: Request) -> None:
+async def submit_feedback(body: FeedbackRequest, _request: Request) -> None:
     """Record user relevance feedback for a retrieved chunk."""
     vector_store = QdrantVectorStore.from_settings()
-    bm25_index = getattr(request.app.state, "bm25_index", None)
     score = score_from_relevant(body.relevant)
     try:
         record_feedback(
@@ -33,7 +32,6 @@ async def submit_feedback(body: FeedbackRequest, request: Request) -> None:
             body.query_id,
             body.chunk_id,
             score,
-            bm25_index=bm25_index,
         )
     except VectorStoreError as exc:
         if "not found" in str(exc).lower():
