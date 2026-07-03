@@ -421,37 +421,53 @@ class QdrantVectorStore(VectorStoreRepository):
         )
 
     def _ensure_feedback_fields_initialized(self, chunk_id: str) -> None:
-        """Backfill explicit feedback defaults so Qdrant payload filters can match them."""
-        metadata = self._require_chunk_metadata(chunk_id)
-        score = self._feedback_score_from_metadata(metadata)
-        revision = self._feedback_revision_from_metadata(metadata)
-        if (
-            metadata.get(FEEDBACK_SCORE_KEY) == score
-            and metadata.get(FEEDBACK_REVISION_KEY) == revision
-        ):
-            return
-        metadata[FEEDBACK_SCORE_KEY] = score
-        metadata[FEEDBACK_REVISION_KEY] = revision
-        self._set_chunk_metadata(chunk_id, metadata)
+        """Backfill explicit feedback defaults under compare-and-set."""
+        for attempt in range(_MAX_FEEDBACK_UPDATE_RETRIES):
+            metadata = self._require_chunk_metadata(chunk_id)
+            score = self._feedback_score_from_metadata(metadata)
+            revision = self._feedback_revision_from_metadata(metadata)
+            if (
+                metadata.get(FEEDBACK_SCORE_KEY) == score
+                and metadata.get(FEEDBACK_REVISION_KEY) == revision
+            ):
+                return
+            if self._try_set_feedback_score_if_current(
+                chunk_id,
+                expected_score=score,
+                expected_revision=revision,
+                feedback_score=score,
+                feedback_revision=revision,
+            ):
+                return
+            logger.debug(
+                "Feedback init conflict for chunk_id=%r attempt=%d",
+                chunk_id,
+                attempt + 1,
+            )
+        raise VectorStoreError(
+            f"Failed to initialize feedback fields for {chunk_id!r} "
+            f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
+        )
 
     def _update_existing_chunks(self, chunks: list[Chunk]) -> None:
         """Refresh vectors and non-feedback payload for points that already exist."""
+        for chunk in chunks:
+            self._update_existing_chunk(chunk)
+
+    def _update_existing_chunk(self, chunk: Chunk) -> None:
+        """Update one existing point; metadata CAS runs before vectors/payload change."""
+        self._set_existing_chunk_metadata_with_feedback_cas(chunk)
         self._client.update_vectors(
             collection_name=self.collection,
-            points=[
-                PointVectors(id=chunk.id, vector=self._vectors_from_chunk(chunk))
-                for chunk in chunks
-            ],
+            points=[PointVectors(id=chunk.id, vector=self._vectors_from_chunk(chunk))],
             wait=True,
         )
-        for chunk in chunks:
-            self._client.set_payload(
-                collection_name=self.collection,
-                payload=self._top_level_payload(chunk),
-                points=[chunk.id],
-                wait=True,
-            )
-            self._set_existing_chunk_metadata_with_feedback_cas(chunk)
+        self._client.set_payload(
+            collection_name=self.collection,
+            payload=self._top_level_payload(chunk),
+            points=[chunk.id],
+            wait=True,
+        )
 
     def _set_existing_chunk_metadata_with_feedback_cas(self, chunk: Chunk) -> None:
         """Replace chunk metadata while preserving live feedback fields under CAS."""

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -30,7 +32,8 @@ async def submit_feedback(
     """Record user relevance feedback for a retrieved chunk."""
     score = score_from_relevant(body.relevant)
     try:
-        record_feedback(
+        await asyncio.to_thread(
+            record_feedback,
             vector_store,
             body.query_id,
             body.chunk_id,

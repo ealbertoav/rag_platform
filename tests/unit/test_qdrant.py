@@ -412,6 +412,49 @@ class TestUpsert:
             store.upsert([chunk])
 
         assert metadata_writes["count"] == MAX_FEEDBACK_UPDATE_RETRIES
+        mock_client.update_vectors.assert_not_called()
+
+    def test_upsert_existing_chunk_updates_per_chunk_in_order(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk_a = _chunk(0)
+        chunk_b = _chunk(1)
+        existing_a = MagicMock()
+        existing_a.id = chunk_a.id
+        existing_a.payload = {"metadata": {"feedback_score": 1.0, "feedback_revision": 1}}
+        existing_b = MagicMock()
+        existing_b.id = chunk_b.id
+        existing_b.payload = {"metadata": {"feedback_score": 2.0, "feedback_revision": 2}}
+        points_by_id = {chunk_a.id: existing_a, chunk_b.id: existing_b}
+
+        def retrieve_side_effect(**kwargs: object) -> list[MagicMock]:
+            ids = kwargs.get("ids", [])
+            assert isinstance(ids, list)
+            return [
+                points_by_id[str(chunk_id)] for chunk_id in ids if str(chunk_id) in points_by_id
+            ]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+
+        def set_payload_side_effect(**set_payload_kwargs: object) -> None:
+            if set_payload_kwargs.get("key") != "metadata":
+                return
+            points = set_payload_kwargs["points"]
+            point_filter = _require_filter(points)
+            must_conditions = _require_list(point_filter.must)
+            id_match = _require_has_id_condition(must_conditions[0])
+            if id_match.has_id == [chunk_b.id]:
+                raise RuntimeError("metadata write failed for chunk-b")
+            point = points_by_id[chunk_a.id]
+            _merge_metadata_set_payload_side_effect(point)(**set_payload_kwargs)
+
+        mock_client.set_payload.side_effect = set_payload_side_effect
+
+        with pytest.raises(VectorStoreError, match="Qdrant upsert failed"):
+            store.upsert([chunk_a, chunk_b])
+
+        assert mock_client.update_vectors.call_count == 1
+        assert str(mock_client.update_vectors.call_args.kwargs["points"][0].id) == chunk_a.id
 
 
 class TestExistingChunkMetadataCas:
@@ -654,18 +697,55 @@ class TestQdrantFeedbackScore:
         point = MagicMock()
         point.payload = {"metadata": {"source": "doc.pdf"}}
         mock_client.retrieve.return_value = [point]
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
         store._ensure_feedback_fields_initialized("chunk-a")
-        mock_client.set_payload.assert_called_once_with(
-            collection_name="test_col",
-            payload={
-                "metadata": {
-                    "source": "doc.pdf",
-                    "feedback_score": 0.0,
-                    "feedback_revision": 0,
+        mock_client.set_payload.assert_called_once()
+        _, set_payload_args = mock_client.set_payload.call_args
+        assert set_payload_args["collection_name"] == "test_col"
+        assert set_payload_args["key"] == "metadata"
+        assert set_payload_args["payload"]["feedback_score"] == 0.0
+        assert set_payload_args["payload"]["feedback_revision"] == 0
+        assert "feedback_update_id" in set_payload_args["payload"]
+        points = _require_filter(set_payload_args["points"])
+        assert points.must is not None
+
+    def test_ensure_feedback_fields_initialized_retries_without_clobbering_score(
+        self, store, mock_client
+    ):
+        point = MagicMock()
+        point.payload = {"metadata": {"source": "doc.pdf"}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            if reads["count"] >= 3:
+                point.payload = {
+                    "metadata": {
+                        "source": "doc.pdf",
+                        "feedback_score": 2.0,
+                        "feedback_revision": 1,
+                    }
                 }
-            },
-            points=["chunk-a"],
-        )
+            return [point]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+        mock_client.set_payload.side_effect = _merge_metadata_set_payload_side_effect(point)
+        store._ensure_feedback_fields_initialized("chunk-a")
+        assert point.payload["metadata"][FEEDBACK_SCORE_KEY] == 2.0
+        assert point.payload["metadata"][FEEDBACK_REVISION_KEY] == 1
+
+    def test_ensure_feedback_fields_initialized_raises_after_retry_exhaustion(
+        self, store, mock_client
+    ):
+        point = MagicMock()
+        point.payload = {"metadata": {"source": "doc.pdf"}}
+        mock_client.retrieve.return_value = [point]
+        mock_client.set_payload.side_effect = lambda **_kwargs: None
+
+        with pytest.raises(VectorStoreError, match="Failed to initialize feedback fields"):
+            store._ensure_feedback_fields_initialized("chunk-a")
+
+        assert mock_client.set_payload.call_count == MAX_FEEDBACK_UPDATE_RETRIES
 
     def test_set_feedback_score_updates_metadata(self, store, mock_client):
         point = MagicMock()
