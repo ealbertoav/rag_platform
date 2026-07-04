@@ -1574,7 +1574,7 @@
 
 ## Phase 14 — Quality Gates & Explainability (Priority 4)
 
-> **Motivation:** Add runtime quality gates so the system refuses to hallucinate, self-corrects weak retrieval, and explains its decisions — inspired by RAG_Techniques **Reliable RAG**, **Self-RAG**, **CRAG**, and **explainable retrieval**.
+> **Motivation:** Add runtime quality gates so the system refuses to hallucinate, self-corrects weak retrieval, explains its decisions, and learns from user relevance feedback — inspired by RAG_Techniques **Reliable RAG**, **Self-RAG**, **CRAG**, **explainable retrieval**, and **retrieval with feedback loop**.
 >
 > **Reference techniques:**
 > - `reliable_rag.ipynb`
@@ -1716,28 +1716,40 @@
 - **Inputs:** T-013 (Qdrant payload updates), T-117 (SQLite metadata), T-032 (API)
 - **Outputs:** Feedback API + metadata-boosted retrieval scoring.
 - **Files:**
-  - `src/rag/quality/feedback_loop.py` — `record_feedback(query_id, chunk_id, score)`
-  - `src/api/routers/feedback.py` — `POST /feedback` endpoint
-  - `src/infrastructure/vectordb/qdrant.py` — update chunk payload `feedback_score`
-  - `src/rag/retrieval/hybrid_retriever.py` — boost chunks with positive feedback in RRF scoring
-  - `tests/unit/test_feedback_loop.py`
+  - `src/rag/quality/feedback_loop.py` — `record_feedback`, `apply_feedback_boost`, `score_from_relevant`, `merge_chunk_views`, `resolve_feedback_score`
+  - `src/api/routers/feedback.py` — `POST /feedback` endpoint (204 / 404 / 502)
+  - `src/infrastructure/vectordb/qdrant.py` — `accumulate_feedback_score` with CAS retries; upsert/rollback preserves `feedback_score` / `feedback_revision`
+  - `src/domain/repositories/vector_store_repository.py` — `get_feedback_score(s)`, `accumulate_feedback_score` ABCs
+  - `src/rag/retrieval/hybrid_retriever.py` — RRF boost + expanded candidate pool when boost enabled
+  - `src/rag/ranking/cross_encoder.py` — re-applies boost after reranking
+  - `src/domain/services/retrieval_service.py` — wires boost multiplier + vector store
+  - `src/rag/pipelines/retrieval_pipeline.py` — settings wiring
+  - `src/rag/ranking/score_fusion.py` — dedup merges non-feedback metadata only
+  - `configs/retrieval.yaml` — `quality.feedback_loop` block
+  - `src/core/settings.py` — `FeedbackLoopSettings`
+  - `src/core/constants.py` — `FEEDBACK_SCORE_KEY`, `FEEDBACK_REVISION_KEY`
+  - `tests/unit/test_feedback_loop.py`, `tests/unit/test_qdrant.py`, `tests/unit/test_repositories.py`, `tests/unit/test_hybrid_retriever.py`, `tests/unit/test_reranker.py`
 - **API contract:**
   ```
   POST /feedback
     Body: { "query_id": "...", "chunk_id": "...", "relevant": true }
   ```
 - **Acceptance Criteria:**
-  - Feedback persisted to Qdrant chunk payload (`feedback_score: float`)
-  - Chunks with positive feedback receive RRF rank boost (configurable multiplier)
-  - Feedback endpoint returns 204 on success
-  - No feedback → retrieval behavior unchanged
-- **Notes:** Production hardening gaps (multi-replica concurrency, rate limiting, atomic storage) tracked in **T-146**.
+  - Feedback persisted to Qdrant chunk payload (`feedback_score: float`, `feedback_revision: int`)
+  - Positive votes add `+1.0`; negative votes subtract `1.0` (accumulated score)
+  - Chunks with positive feedback receive additive RRF / reranker boost (`boost_multiplier × feedback_score`)
+  - Boost re-applied after cross-encoder so feedback survives reranking
+  - Feedback endpoint returns 204 on success; 404 when chunk missing; 502 on vector store errors
+  - No feedback boost configured → retrieval ranking unchanged (feedback may still be recorded)
+  - Qdrant is write source of truth; no BM25 disk write on feedback path
+  - Re-ingest upsert preserves existing feedback scores under CAS
+- **Notes:** Core multi-replica hardening (CAS accumulation, Qdrant-only writes, live score lookup) landed with T-145. Remaining production gaps (ops docs, rate limiting, concurrency benchmarks, optional Redis backend) tracked in **T-146**.
 
 ---
 
 ### T-146 · Feedback Loop Production Hardening _(follow-up to T-145)_
-- **Status:** `[~]`
-- **Goal:** Close production gaps in the T-145 feedback loop identified during Bugbot review and multi-replica deployment analysis — without blocking local/single-replica usage.
+- **Status:** `[~]` — core CAS + Qdrant-only persistence **done** in T-145; ops docs, rate limits, and benchmarks **pending**
+- **Goal:** Close remaining production gaps in the T-145 feedback loop identified during Bugbot review and multi-replica deployment analysis — without blocking local/single-replica usage.
 - **Inputs:** T-145 (feedback API + boost), T-013 (Qdrant), T-032 (API), T-095 (Helm HPA), T-160 (rate limiting, optional)
 - **Outputs:** Documented gap tracker, hardened feedback persistence for horizontal scale, and CI/load-test coverage before HPA ≥ 2.
 - **Motivation:** Bugbot flagged per-request BM25 disk writes and non-atomic feedback accumulation. Code review further identified per-pod BM25 drift and missing `/feedback` rate limits under Helm defaults (`replicaCount.api: 2`, HPA min 2).
@@ -1755,11 +1767,12 @@
   | True atomic increment (Redis / Postgres) | Low | **Deferred** | Business-critical feedback under heavy multi-pod load | T-146 (optional backend) |
 
 - **Files:**
-  - `src/infrastructure/vectordb/qdrant.py` — `accumulate_feedback_score`, `_try_set_feedback_score_if_current` _(done)_
-  - `src/rag/quality/feedback_loop.py` — Qdrant-only `record_feedback` _(done)_
-  - `src/api/routers/feedback.py` — remove BM25 coupling _(done)_
-  - `tests/unit/test_qdrant.py` — CAS retry + concurrent accumulation tests _(done)_
-  - `tests/unit/test_feedback_loop.py` — updated feedback tests _(done)_
+  - `src/infrastructure/vectordb/qdrant.py` — `accumulate_feedback_score`, `_try_set_feedback_score_if_current`, upsert feedback preservation _(done)_
+  - `src/rag/quality/feedback_loop.py` — Qdrant-only `record_feedback`; live `get_feedback_scores` at boost time _(done)_
+  - `src/api/routers/feedback.py` — remove BM25 coupling; require API key when configured _(done)_
+  - `tests/unit/test_qdrant.py` — CAS retry + concurrent accumulation + upsert/rollback tests _(done)_
+  - `tests/unit/test_feedback_loop.py` — feedback loop + boost tests _(done)_
+  - `README.md` — T-145 usage, API contract, pipeline position _(done)_
   - `src/infrastructure/vectordb/feedback_store.py` — _(optional)_ Redis or Postgres atomic increment backend
   - `src/core/settings.py` — _(optional)_ `quality.feedback.backend: qdrant \| redis \| postgres`
   - `configs/app.yaml` — _(optional)_ feedback backend + Redis URL
@@ -1774,6 +1787,7 @@
   - [x] No `bm25_index.save()` on feedback path
   - [x] `accumulate_feedback_score` uses compare-and-set retries (not process-local lock only)
   - [x] `record_feedback` writes Qdrant only; retrieval boost reads live Qdrant scores
+  - [x] README documents T-145 API contract, config, pipeline position, and T-146 deployment caveats
   - [ ] `docs/operations/feedback-multi-replica.md` documents safe deployment modes (1 replica, HPA ≥ 2 with CAS, optional Redis backend)
   - [ ] **T-160** updated to rate-limit `/feedback` when enabled
   - [ ] **T-172** adds scenario: 10 concurrent `POST /feedback` on same `chunk_id` across simulated pods — zero lost increments
@@ -1796,8 +1810,8 @@
 
 ### T-150 · Evaluation-Driven Technique Benchmark
 - **Status:** `[ ]`
-- **Goal:** Benchmark script that compares RAG techniques side-by-side (baseline vs expansion vs HyDE vs CCH vs Self-RAG) — inspired by RAG_Techniques `choose_chunk_size.py` and `evaluation/` notebooks.
-- **Inputs:** T-043 (`RAGBenchmark`), T-040 (golden dataset), Phases 11–14 technique flags
+- **Goal:** Benchmark script that compares RAG techniques side-by-side (baseline vs expansion vs HyDE vs CCH vs Self-RAG vs feedback loop) — inspired by RAG_Techniques `choose_chunk_size.py` and `evaluation/` notebooks.
+- **Inputs:** T-043 (`RAGBenchmark`), T-040 (golden dataset), Phases 11–14 technique flags (incl. T-145 `quality.feedback_loop`)
 - **Outputs:** Comparison table with Recall@5, Faithfulness, Relevance, and latency per technique configuration.
 - **Files:**
   - `scripts/benchmark_techniques.py` — CLI to run technique matrix
@@ -1807,13 +1821,14 @@
 - **Usage:**
   ```bash
   uv run python scripts/benchmark_techniques.py \
-    --techniques baseline,multi_query,hyde,cch,reliable_rag \
+    --techniques baseline,multi_query,hyde,cch,reliable_rag,feedback_loop \
     --max-samples 50
   ```
 - **Output:** `data/exports/technique_benchmark_{timestamp}.json` + Rich summary table
 - **Acceptance Criteria:**
   - Runs baseline with zero new techniques enabled
   - Each technique toggled independently via config override (no code changes between runs)
+  - `feedback_loop` technique pre-seeds chunk feedback scores and compares Recall@5 with boost on vs off
   - Skips gracefully when golden dataset contains only placeholders
   - `make benchmark-techniques` Makefile target added
 
@@ -1851,7 +1866,7 @@
   - `make evals` generates ≥ 20 QA pairs from ingested documents
   - `POST /evals/run` returns 200 (not 204) after evals
   - CI retrieval regression job runs when real golden data present
-  - README documents eval setup workflow
+  - README documents eval setup workflow and links to T-145 feedback loop for human-in-the-loop eval extensions
 
 ---
 
@@ -1890,6 +1905,7 @@
   - Disabled by default (`enabled=false`) — no behavior change for local dev
   - When enabled, exceeding limit returns `429` with `Retry-After` header
   - `/health` and `/metrics` exempt from rate limiting
+  - `/feedback` included in protected routes when rate limiting enabled (closes T-146 gap)
   - Redis unavailable → in-memory limiter with warning log (graceful degradation)
   - `pytest tests/unit/test_rate_limit.py` passes
 
@@ -2053,9 +2069,10 @@
   2. 10 concurrent chats — event-loop health (no timeout failures)
   3. BM25 search on 100K chunk fixture — memory + latency
   4. Graph retrieval with Neo4j enabled — query latency
-  5. Concurrent feedback on same `chunk_id` across simulated API pods — zero lost increments (**T-146**)
+  5. Concurrent feedback on same `chunk_id` across simulated API pods — zero lost increments (**T-146**; validates Qdrant CAS under load)
 - **Acceptance Criteria:**
   - Baseline captured and committed after T-163–T-165 land
+  - Scenario 5 runnable independently via `--scenario feedback` before full baseline commit
   - `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
   - `make benchmark-infra` documented in README
   - Results saved to `data/exports/infra_benchmark_{timestamp}.json`

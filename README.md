@@ -16,6 +16,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Source highlighting (T-144):** Optional per-source supporting spans on `POST /chat/full?highlights=true` (or globally via `quality.source_highlighting.enabled` in `configs/retrieval.yaml`). Spans are verbatim substrings of `chunk_context_text` — the LLM-facing passage text, not always `Chunk.text` when parent context or contextual headers apply. When both explain and highlights are requested, the pipeline tries one combined LLM call first, then falls back to dedicated paths for any missing side. Default off; omitted on failure. See [Source Highlighting (T-144)](#source-highlighting-t-144).
 
+> **Retrieval feedback loop (T-145):** Optional user relevance feedback via `POST /feedback` — clients vote on retrieved chunks (`relevant: true/false`); scores accumulate in Qdrant chunk metadata and additively boost future hybrid retrieval after RRF fusion and again after cross-encoder reranking. Configure via `quality.feedback_loop` in `configs/retrieval.yaml` (`enabled: false` by default). Qdrant is the write source of truth (compare-and-set accumulation); no BM25 disk writes on the feedback path. Multi-replica hardening gaps tracked in **T-146**. See [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145).
+
 ---
 
 ## Table of Contents
@@ -35,6 +37,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Corrective RAG in standard chat (T-142)](#corrective-rag-in-standard-chat-t-142)
     - [Explainable retrieval in standard chat (T-143)](#explainable-retrieval-in-standard-chat-t-143)
     - [Source highlighting in standard chat (T-144)](#source-highlighting-in-standard-chat-t-144)
+    - [Retrieval feedback (T-145)](#retrieval-feedback-t-145)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare Embedding Providers](#compare-embedding-providers)
@@ -266,6 +269,8 @@ QUALITY__SELF_RAG__ENABLED=false           # Self-RAG gates on agent endpoints (
 QUALITY__CRAG__ENABLED=false               # Corrective RAG web fallback on /chat* (T-142)
 QUALITY__CRAG__LOWER_THRESHOLD=0.3         # below → web-only correction
 QUALITY__CRAG__UPPER_THRESHOLD=0.7         # above → use retrieval as-is
+QUALITY__FEEDBACK_LOOP__ENABLED=false      # user relevance feedback + retrieval boost (T-145)
+QUALITY__FEEDBACK_LOOP__BOOST_MULTIPLIER=0.05  # additive boost per unit of positive feedback_score
 WEB_SEARCH__PROVIDER=none                  # none | duckduckgo | tavily (T-142)
 WEB_SEARCH__MAX_RESULTS=5
 WEB_SEARCH__TAVILY__API_KEY=               # required when provider=tavily
@@ -293,7 +298,7 @@ METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
 
 # API security (optional — local dev leaves API key empty)
-API__API_KEY=                          # when set, require X-API-Key on /ingest, /chat, /evals
+API__API_KEY=                          # when set, require X-API-Key on /ingest, /chat, /feedback, /evals
 API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 # API__INGEST_ALLOWED_ROOTS='["data/raw"]'  # JSON list; /ingest/path restricted to these dirs
 ```
@@ -304,7 +309,7 @@ API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop (T-145), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
@@ -336,7 +341,7 @@ With `chunking.strategy: parent_child`, both parent and child chunks are indexed
 **Security notes:**
 - `POST /ingest/path` only reads files under `api.ingest_allowed_roots` (default: `data/raw`). It cannot ingest arbitrary server paths such as `/etc/passwd`.
 - `POST /ingest/upload` reads uploads in bounded chunks (`api.max_upload_bytes`, default 10 MiB) and accepts only supported extensions.
-- Set `API__API_KEY` to require an `X-API-Key` header on `/ingest`, `/chat`, and `/evals/run`. `/health` and `/metrics` stay public.
+- Set `API__API_KEY` to require an `X-API-Key` header on `/ingest`, `/chat`, `/feedback`, and `/evals/run`. `/health` and `/metrics` stay public.
 
 #### Ingestion Flow
 
@@ -377,7 +382,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details). **Corrective RAG** (T-142) runs in the chat pipeline after retrieval returns and is documented in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142). **Explainable retrieval** (T-143) is opt-in via `?explain=true` on `/chat/full`; **source highlighting** (T-144) via `?highlights=true` or `quality.source_highlighting.enabled` — both documented in [Explainable Retrieval (T-143)](#explainable-retrieval-t-143) and [Source Highlighting (T-144)](#source-highlighting-t-144).
+Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140, **retrieval feedback loop** · T-145) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details). **Corrective RAG** (T-142) runs in the chat pipeline after retrieval returns and is documented in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142). **Explainable retrieval** (T-143) is opt-in via `?explain=true` on `/chat/full`; **source highlighting** (T-144) via `?highlights=true` or `quality.source_highlighting.enabled` — both documented in [Explainable Retrieval (T-143)](#explainable-retrieval-t-143) and [Source Highlighting (T-144)](#source-highlighting-t-144). **Retrieval feedback** (T-145) is a separate `POST /feedback` API documented in [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -654,6 +659,36 @@ quality:
 ```
 
 See [Source Highlighting (T-144)](#source-highlighting-t-144) in Retrieval Pipeline Details.
+
+#### Retrieval feedback (T-145)
+
+When `quality.feedback_loop.enabled=true`, clients can submit relevance votes on retrieved chunks via `POST /feedback`. Use `query_id` and source chunk IDs from a `/chat/full` response (`Answer.query_id`, `Answer.sources`). Positive votes add `+1.0` to the chunk's accumulated `feedback_score`; negative votes subtract `1.0`. Scores persist in Qdrant chunk metadata and boost future retrieval for that chunk (additive boost after RRF fusion and again after cross-encoder reranking so feedback survives reranking).
+
+| Condition | Behavior |
+|---|---|
+| `quality.feedback_loop.enabled=false` (default) | `POST /feedback` still records scores in Qdrant, but retrieval does not apply boosts |
+| Boost enabled, chunk has positive `feedback_score` | Fused RRF / reranker scores increased by `boost_multiplier × feedback_score` |
+| Chunk not found in Qdrant | `404` |
+| Vector store error | `502` |
+| Success | `204 No Content` |
+
+```yaml
+# configs/retrieval.yaml
+quality:
+  feedback_loop:
+    enabled: false         # set true to apply feedback boost during retrieval
+    boost_multiplier: 0.05 # additive boost per unit of positive feedback_score
+```
+
+```bash
+# After POST /chat/full — use query_id and a source chunk_id from the response
+curl -X POST http://localhost:8000/feedback \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -d '{"query_id": "<query_id>", "chunk_id": "<chunk_id>", "relevant": true}'
+```
+
+See [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) in Retrieval Pipeline Details. Production hardening for multi-replica deployments (rate limiting, concurrency benchmarks, ops docs) is tracked in **T-146**.
 
 **Python client:**
 ```python
@@ -1320,6 +1355,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 | `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
 | `POST` | `/ingest/upload` | Ingest an uploaded file (multipart) |
+| `POST` | `/feedback` | Record user relevance feedback on a retrieved chunk — body: `{query_id, chunk_id, relevant}`; returns `204` (T-145) |
 | `POST` | `/evals/run` | Run E2E benchmark — returns `204` until QA dataset is populated, `200` with Recall@5 / Faithfulness / Relevance / Context Precision report |
 | `GET` | `/metrics` | Prometheus metrics (text format) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
@@ -1404,7 +1440,7 @@ rag_implementation/
 │   ├── rag/                    # Chunkers, retrievers, pipelines
 │   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
-│   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141) · CRAG (T-142) · explainable retrieval (T-143) · source highlighting (T-144) · post_generation (combined explain+highlight)
+│   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141) · CRAG (T-142) · explainable retrieval (T-143) · source highlighting (T-144) · feedback loop (T-145) · post_generation (combined explain+highlight)
 │   │   ├── structured_output.py # Shared Pydantic JSON parsing for LLM structured output
 │   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
@@ -1541,8 +1577,10 @@ flowchart TD
     HRS -->|detail chunks only| RRF
     GS -->|entity-matched chunks| RRF
 
-    RRF --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
-    RR --> MMR["MMR Diversity<br/>relevance − similarity<br/>(optional · T-135)"]
+    RRF --> FB["Feedback Boost<br/>Qdrant feedback_score<br/>(optional · T-145)"]
+    FB --> RR["BGE-Reranker<br/>Cross-encoder scoring<br/>Top 10"]
+    RR --> FB2["Feedback Boost<br/>re-applied post-rerank<br/>(optional · T-145)"]
+    FB2 --> MMR["MMR Diversity<br/>relevance − similarity<br/>(optional · T-135)"]
     MMR --> RSE["RSE · Merge Adjacent<br/>consecutive chunk_index<br/>(optional · T-123)"]
     RSE --> PC["Parent Context<br/>child → parent text<br/>(optional · T-124)"]
     PC --> RRAG["Reliable RAG<br/>LLM relevancy grade<br/>filter by min_score<br/>(optional · T-140)"]
@@ -1556,7 +1594,7 @@ flowchart TD
     style CTX fill:#f0fff0,stroke:#66aa66
 ```
 
-**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. When **multi-faceted filters** (T-134) are set on the chat request, they attach to the `Query` entity at the start of the pipeline and constrain every hybrid leg before RRF — document scope and metadata on all retrievers; `min_score` on cosine-similarity legs only (dense, HyPE, HyDE, hierarchical), not BM25 or graph ranks. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional MMR diversity (T-135), optional RSE, optional parent context, optional Reliable RAG relevancy grading (T-140), and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
+**Multi-query fusion:** the query expander produces up to `query_expansion.n_variants` variants (overridden per category when adaptive strategies are enabled), plus an optional step-back query when `query_expansion.step_back.enabled: true` (T-133); hybrid retrieval runs for each variant and results are fused with RRF before reranking. When **multi-faceted filters** (T-134) are set on the chat request, they attach to the `Query` entity at the start of the pipeline and constrain every hybrid leg before RRF — document scope and metadata on all retrievers; `min_score` on cosine-similarity legs only (dense, HyPE, HyDE, hierarchical), not BM25 or graph ranks. Set `retrieval.hybrid_fusion: weighted_linear` in `configs/retrieval.yaml` to use dense/BM25 score blending instead (controlled by `hybrid_alpha`). `top_k_final` caps how many chunks reach generation after rerank, optional feedback boost (T-145), optional MMR diversity (T-135), optional RSE, optional parent context, optional Reliable RAG relevancy grading (T-140), and compression. Hybrid candidate pool size (`top_k` per variant) also follows the active adaptive strategy when enabled; when feedback boost is enabled the fusion pool expands (up to 150 candidates) so boosted chunks can enter the reranker window. When HyPE is enabled (`retrieval.hype.enabled: true`), it participates as an additional RRF list; when HyDE is enabled globally (`retrieval.hyde.enabled: true`) or per-category via adaptive strategies (`retrieval.adaptive.strategies.*.hyde: true`), hypothetical-passage dense search participates similarly; when hierarchical indexing is enabled (`chunking.hierarchical.enabled: true`), two-stage summary→detail search participates similarly. Weighted-linear fusion is not used if HyPE, HyDE, hierarchical, or graph retrieval is active.
 
 When **document augmentation** (T-121) is enabled, synthetic question hits from dense/BM25 search are mapped back to source chunks (via `source_chunk_id`) before fusion, so the generator always receives original passage text.
 
@@ -1800,6 +1838,9 @@ quality:
     enabled: false       # Corrective RAG web fallback on /chat* (see T-142)
     lower_threshold: 0.3 # below → discard retrieval, web search only
     upper_threshold: 0.7 # above → use retrieved context as-is
+  feedback_loop:
+    enabled: false       # user relevance feedback + retrieval boost (T-145)
+    boost_multiplier: 0.05
 ```
 
 ```yaml
@@ -2012,6 +2053,64 @@ curl -X POST "http://localhost:8000/chat/full?highlights=true" \
 curl -X POST "http://localhost:8000/chat/full?explain=true&highlights=true" \
   -H "Content-Type: application/json" \
   -d '{"question": "What was Q3 revenue?"}'
+```
+
+##### Retrieval Feedback Loop (T-145)
+
+The retrieval feedback loop is an optional **closed-loop retrieval quality** feature inspired by [retrieval with feedback loop](https://github.com/NirDiamant/RAG_Techniques) patterns. Clients submit relevance votes on retrieved chunks; scores accumulate in Qdrant and optionally boost future hybrid retrieval for positively rated chunks.
+
+**Pipeline position:** feedback is **not** part of the chat generation path — it is a separate write API (`POST /feedback`) plus an optional read-side boost during retrieval. When `quality.feedback_loop.enabled=true`, `apply_feedback_boost()` runs after RRF fusion in `HybridRetriever` and again after cross-encoder scoring in `CrossEncoder` so user signal survives reranking.
+
+**Storage model:**
+
+| Field | Location | Meaning |
+|---|---|---|
+| `feedback_score` | Qdrant chunk payload (`metadata.feedback_score`) | Accumulated signed score (`+1.0` per positive vote, `-1.0` per negative) |
+| `feedback_revision` | Qdrant chunk payload | Monotonic counter for compare-and-set updates |
+
+Qdrant is the **write source of truth** — `record_feedback()` calls `accumulate_feedback_score()` with CAS retries; BM25 is not updated on the feedback path. Boost reads live scores via `vector_store.get_feedback_scores()` at retrieval time (not stale in-memory BM25 metadata). Re-ingest upserts preserve existing feedback under CAS-protected updates.
+
+**API contract:**
+
+```json
+POST /feedback
+{
+  "query_id": "<from /chat/full Answer.query_id — used for audit logging>",
+  "chunk_id": "<source chunk ID from Answer.sources>",
+  "relevant": true
+}
+```
+
+| Response | Meaning |
+|---|---|
+| `204` | Feedback recorded |
+| `404` | Chunk ID not found in Qdrant |
+| `502` | Vector store error |
+
+Requires `X-API-Key` when `API__API_KEY` is set (same as `/ingest` and `/chat`).
+
+**Boost formula:** for each candidate with `feedback_score > 0`, fused or reranker score increases by `boost_multiplier × feedback_score`, then results are re-sorted. Only positive accumulated scores boost ranking; negative totals reduce the score but do not apply an additional penalty beyond the accumulated value.
+
+```yaml
+# configs/retrieval.yaml
+quality:
+  feedback_loop:
+    enabled: false         # set true to apply boost during retrieval
+    boost_multiplier: 0.05 # tune per deployment — higher = stronger feedback influence
+```
+
+**When to use:** human-in-the-loop QA UIs, internal knowledge bases where users can thumbs-up/down sources, or gradual corpus-specific ranking tuning without re-ingestion.
+
+**Trade-offs:** feedback affects ranking globally for a chunk across all future queries (not scoped per user or session). Under extreme concurrent votes on the same chunk, CAS retries may eventually fail — see **T-146** for multi-replica hardening, rate limiting (**T-160**), and concurrency benchmarks (**T-172**). Disabled boost (`enabled: false`) still accepts and persists feedback for later enablement.
+
+```bash
+QUALITY__FEEDBACK_LOOP__ENABLED=true
+QUALITY__FEEDBACK_LOOP__BOOST_MULTIPLIER=0.05
+
+curl -X POST http://localhost:8000/feedback \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -d '{"query_id": "abc-123", "chunk_id": "chunk-xyz", "relevant": true}'
 ```
 
 ##### Self-RAG and Reliable RAG together (T-141 + T-140)
