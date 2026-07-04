@@ -571,6 +571,24 @@ class QdrantVectorStore(VectorStoreRepository):
             raise VectorStoreError(f"Cannot snapshot existing chunks for rollback: {missing!r}")
         return snapshots
 
+    def _snapshot_with_current_feedback(
+        self,
+        snapshot: PointStruct,
+        current: Any | None,
+    ) -> PointStruct:
+        """Return *snapshot* with live feedback metadata merged in."""
+        if current is None:
+            return snapshot
+        payload = dict(snapshot.payload or {})
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(self._feedback_metadata_from_stored(self._metadata_from_point(current)))
+        payload["metadata"] = metadata
+        return PointStruct(
+            id=snapshot.id,
+            vector=snapshot.vector,
+            payload=payload,
+        )
+
     def _rollback_points(
         self,
         snapshots: dict[str, PointStruct],
@@ -581,9 +599,20 @@ class QdrantVectorStore(VectorStoreRepository):
         if not snapshots:
             return
         try:
+            current_by_id = {
+                str(point.id): point
+                for point in self._retrieve_points(list(snapshots), with_vectors=False)
+            }
+            points = [
+                self._snapshot_with_current_feedback(
+                    snapshots[chunk_id],
+                    current_by_id.get(chunk_id),
+                )
+                for chunk_id in snapshots
+            ]
             self._client.upsert(
                 collection_name=self.collection,
-                points=list(snapshots.values()),
+                points=points,
             )
         except Exception as exc:
             logger.error(
