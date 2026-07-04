@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _EXPANSION = 3  # candidate multiplier fed to each retriever before fusion
 _MAX_CANDIDATES = 50
+_MAX_CANDIDATES_FEEDBACK = 150  # allow pool growth when feedback can reorder results
 
 
 class HybridRetriever:
@@ -59,6 +60,11 @@ class HybridRetriever:
         self._fusion_mode = fusion_mode
         self._feedback_boost_multiplier = feedback_boost_multiplier
 
+    def _candidate_limit(self, top_k: int) -> int:
+        """Return the per-source candidate cap before fusion."""
+        cap = _MAX_CANDIDATES_FEEDBACK if self._feedback_boost_multiplier > 0 else _MAX_CANDIDATES
+        return min(top_k * _EXPANSION, cap)
+
     # ── Public ─────────────────────────────────────────────────────────────────
 
     async def retrieve(
@@ -73,7 +79,7 @@ class HybridRetriever:
         Uses a 3× candidate pool per source before RRF so that chunks that
         appear in both lists benefit from the rank-boost.
         """
-        expansion = min(top_k * _EXPANSION, _MAX_CANDIDATES)
+        expansion = self._candidate_limit(top_k)
 
         tasks = [
             asyncio.to_thread(self._dense.retrieve, query, expansion),
@@ -144,7 +150,7 @@ class HybridRetriever:
         hyde_active = self.hyde is not None and use_hyde
         fusion_top_k = top_k
         if self._feedback_boost_multiplier > 0:
-            fusion_top_k = min(top_k * _EXPANSION, _MAX_CANDIDATES)
+            fusion_top_k = self._candidate_limit(top_k)
         if (
             self._fusion_mode == "weighted_linear"
             and self.graph is None

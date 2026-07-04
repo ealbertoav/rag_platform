@@ -307,6 +307,19 @@ class TestHybridRetrieverGaps:
             await hr.retrieve(Query(text="q"), top_k=10)
             assert rrf.call_args.kwargs["top_k"] == 30
 
+    @pytest.mark.asyncio
+    async def test_feedback_boost_expands_beyond_default_cap(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        dense_mock.vector_store.get_feedback_scores.return_value = {}
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, feedback_boost_multiplier=0.1)
+        await hr.retrieve(Query(text="What is EKS?"), top_k=50)
+        dense_mock.retrieve.assert_called_once()
+        assert dense_mock.retrieve.call_args[0][1] == 150
+        bm25_mock.search.assert_called_once_with("What is EKS?", 150, filters=None)
+
     def test_optional_retriever_properties_exposed(self):
         graph, hype, hyde, hierarchical = MagicMock(), MagicMock(), MagicMock(), MagicMock()
         hr = HybridRetriever(
@@ -331,7 +344,7 @@ class TestRetrievalPipelineAdaptive:
                 "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
             ) as mock_llm,
             patch("src.infrastructure.embeddings.get_embedding_provider"),
-            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings") as qdrant,
             patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
             patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
             patch("src.rag.retrieval.dense_retriever.DenseRetriever"),
@@ -363,16 +376,19 @@ class TestRetrievalPipelineAdaptive:
             )
             mock_settings.compression = MagicMock(enabled=False)
             mock_settings.quality = MagicMock(
-                feedback_loop=MagicMock(enabled=False),
+                feedback_loop=MagicMock(enabled=True, boost_multiplier=0.05),
                 reliable_rag=MagicMock(enabled=False),
             )
             mock_settings.chunking = MagicMock(strategy="recursive")
+            qdrant.return_value = MagicMock()
             mock_llm.return_value = MagicMock()
             pipeline = RetrievalPipeline.from_settings()
         qc.assert_called_once()
         reg.assert_called_once()
         assert pipeline.service._classifier is qc.return_value
         assert pipeline.service._strategy_registry is reg.return_value
+        assert pipeline.service._feedback_boost_multiplier == pytest.approx(0.05)
+        assert pipeline.service._vector_store is qdrant.return_value
 
 
 # ── BM25 / Qdrant ──────────────────────────────────────────────────────────────

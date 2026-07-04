@@ -232,5 +232,11 @@ class RetrievalPipeline:
             reliable_rag_enabled=settings.quality.reliable_rag.enabled,
             reliable_rag_min_score=settings.quality.reliable_rag.min_score,
             llm=llm if settings.quality.reliable_rag.enabled else None,
+            feedback_boost_multiplier=(
+                settings.quality.feedback_loop.boost_multiplier
+                if settings.quality.feedback_loop.enabled
+                else 0.0
+            ),
+            vector_store=(vector_store if settings.quality.feedback_loop.enabled else None),
         )
         return cls(service=service)

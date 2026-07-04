@@ -35,14 +35,17 @@ class BGERerankerProvider(RerankerRepository):
 
     # ── RerankerRepository interface ───────────────────────────────────────────
 
-    def rerank(self, query: str, chunks: list[Chunk], top_k: int) -> list[Chunk]:
-        """Return up to *top_k* chunks sorted by cross-encoder relevance score."""
+    def score(self, query: str, chunks: list[Chunk]) -> list[tuple[Chunk, float]]:
+        """Return cross-encoder relevance scores for each chunk (input order)."""
         if not chunks:
             return []
-
         pairs = [(query, c.text) for c in chunks]
         scores = self._score_pairs(pairs)
-        ranked = sorted(zip(chunks, scores, strict=True), key=lambda x: x[1], reverse=True)
+        return list(zip(chunks, scores, strict=True))
+
+    def rerank(self, query: str, chunks: list[Chunk], top_k: int) -> list[Chunk]:
+        """Return up to *top_k* chunks sorted by cross-encoder relevance score."""
+        ranked = sorted(self.score(query, chunks), key=lambda x: x[1], reverse=True)
         logger.debug("Reranked %d chunks → keeping top %d", len(chunks), top_k)
         return [c for c, _ in ranked[:top_k]]
 

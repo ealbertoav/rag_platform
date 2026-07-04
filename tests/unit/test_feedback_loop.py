@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -10,6 +10,8 @@ from httpx import ASGITransport, AsyncClient
 from src.core.constants import FEEDBACK_SCORE_KEY
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.query import Query
+from src.domain.services.retrieval_service import RetrievalService
 from src.main import create_app
 from src.rag.quality.feedback_loop import (
     apply_feedback_boost,
@@ -171,3 +173,56 @@ class TestFeedbackApi:
                 json={"query_id": "q-1", "chunk_id": "missing", "relevant": False},
             )
         assert resp.status_code == 404
+
+
+class TestRetrievalServiceFeedbackLoop:
+    @staticmethod
+    def _chunk(chunk_id: str, *, feedback_score: float | None = None) -> Chunk:
+        metadata: dict[str, object] = {}
+        if feedback_score is not None:
+            metadata[FEEDBACK_SCORE_KEY] = feedback_score
+        return Chunk(id=chunk_id, document_id="doc", text=f"text {chunk_id}", metadata=metadata)
+
+    @pytest.mark.asyncio
+    async def test_rerank_applies_feedback_boost(self):
+        from src.rag.ranking.cross_encoder import CrossEncoder
+
+        low = self._chunk("low")
+        high = self._chunk("high", feedback_score=5.0)
+        reranker = CrossEncoder(reranker=MagicMock(), top_k=2)
+        reranker._reranker.score.return_value = [(low, 0.9), (high, 0.1)]  # type: ignore[attr-defined]
+        svc = RetrievalService(
+            dense_retriever=MagicMock(),
+            hybrid_retriever=MagicMock(),
+            reranker=reranker,
+            top_k_rerank=2,
+            feedback_boost_multiplier=0.2,
+        )
+        result = svc._rerank("query", [low, high])
+        assert result[0].id == "high"
+
+    @pytest.mark.asyncio
+    async def test_multi_query_fusion_reapplies_feedback_boost(self):
+        from src.domain.services.retrieval_service import RetrievalService
+
+        low = self._chunk("low")
+        high = self._chunk("high", feedback_score=4.0)
+        hybrid = MagicMock()
+        hybrid.retrieve = AsyncMock(
+            side_effect=[
+                [(low, 0.9)],
+                [(high, 0.8)],
+            ]
+        )
+        dense = MagicMock()
+        dense.embed_query.side_effect = lambda q: q.model_copy(update={"embedding": [0.1]})
+        svc = RetrievalService(
+            dense_retriever=dense,
+            hybrid_retriever=hybrid,
+            top_k_retrieval=5,
+            top_k_rerank=5,
+            feedback_boost_multiplier=0.1,
+        )
+        query = Query(text="q", expanded_texts=["variant"])
+        results = await svc._retrieve_variants(query)
+        assert results[0][0].id == "high"

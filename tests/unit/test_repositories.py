@@ -56,6 +56,9 @@ class _Embedder(EmbeddingRepository):
 
 
 class _Reranker(RerankerRepository):
+    def score(self, query: str, chunks: list[Chunk]) -> list[tuple[Chunk, float]]:
+        return [(chunk, float(len(chunks) - index)) for index, chunk in enumerate(chunks)]
+
     def rerank(self, query: str, chunks: list[Chunk], top_k: int) -> list[Chunk]:
         return chunks[:top_k]
 
@@ -179,12 +182,18 @@ class TestRerankerRepository:
 
     def test_incomplete_subclass_cannot_be_instantiated(self):
         class _Incomplete(RerankerRepository, ABC):  # pyright: ignore[reportAbstractUsage]
-            pass  # rerank missing
+            pass  # score and rerank missing
 
         _assert_abstract_instantiation_fails(_Incomplete)
 
     def test_complete_subclass_instantiates(self):
         assert isinstance(_Reranker(), RerankerRepository)
+
+    def test_score_returns_pairs(self):
+        chunks = [Chunk(document_id="d", text=f"chunk {i}") for i in range(3)]
+        scored = _Reranker().score("query", chunks)
+        assert len(scored) == 3
+        assert scored[0][1] == pytest.approx(3.0)
 
     def test_rerank_returns_list_of_chunks(self):
         chunks = [Chunk(document_id="d", text=f"chunk {i}") for i in range(5)]
