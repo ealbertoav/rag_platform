@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.domain.repositories import (
     DenseVector,
     EmbeddingRepository,
@@ -27,6 +28,12 @@ from src.domain.repositories import (
 )
 
 # ── Helpers — minimal concrete implementations ─────────────────────────────────
+
+
+def _assert_abstract_instantiation_fails(cls: type) -> None:
+    """Assert ABCs and incomplete subclasses raise TypeError on instantiation."""
+    with pytest.raises(TypeError):
+        cls()  # pyright: ignore[reportAbstractUsage]
 
 
 class _LLM(LLMRepository):
@@ -49,6 +56,9 @@ class _Embedder(EmbeddingRepository):
 
 
 class _Reranker(RerankerRepository):
+    def score(self, query: str, chunks: list[Chunk]) -> list[tuple[Chunk, float]]:
+        return [(chunk, float(len(chunks) - index)) for index, chunk in enumerate(chunks)]
+
     def rerank(self, query: str, chunks: list[Chunk], top_k: int) -> list[Chunk]:
         return chunks[:top_k]
 
@@ -87,24 +97,28 @@ class _VectorStore(VectorStoreRepository):
     def count(self) -> int:
         return 0
 
+    def get_feedback_score(self, chunk_id: str) -> float:
+        return 0.0
+
+    def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+        pass
+
 
 # ── LLMRepository ──────────────────────────────────────────────────────────────
 
 
 class TestLLMRepository:
     def test_abc_cannot_be_instantiated(self):
-        with pytest.raises(TypeError):
-            LLMRepository()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(LLMRepository)
 
     def test_incomplete_subclass_cannot_be_instantiated(self):
-        class _Incomplete(LLMRepository, ABC):  # type: ignore[abstract]
+        class _Incomplete(LLMRepository, ABC):  # pyright: ignore[reportAbstractUsage]
             def generate(self, prompt: str, context: str, **kwargs: Any) -> str:
                 return ""
 
             # generate_stream missing
 
-        with pytest.raises(TypeError):
-            _Incomplete()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(_Incomplete)
 
     def test_complete_subclass_instantiates(self):
         llm = _LLM()
@@ -123,18 +137,16 @@ class TestLLMRepository:
 
 class TestEmbeddingRepository:
     def test_abc_cannot_be_instantiated(self):
-        with pytest.raises(TypeError):
-            EmbeddingRepository()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(EmbeddingRepository)
 
     def test_incomplete_subclass_cannot_be_instantiated(self):
-        class _Incomplete(EmbeddingRepository, ABC):  # type: ignore[abstract]
+        class _Incomplete(EmbeddingRepository, ABC):  # pyright: ignore[reportAbstractUsage]
             def embed(self, texts: list[str]) -> list[DenseVector]:
                 return []
 
             # embed_sparse missing
 
-        with pytest.raises(TypeError):
-            _Incomplete()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(_Incomplete)
 
     def test_complete_subclass_instantiates(self):
         assert isinstance(_Embedder(), EmbeddingRepository)
@@ -166,18 +178,22 @@ class TestEmbeddingRepository:
 
 class TestRerankerRepository:
     def test_abc_cannot_be_instantiated(self):
-        with pytest.raises(TypeError):
-            RerankerRepository()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(RerankerRepository)
 
     def test_incomplete_subclass_cannot_be_instantiated(self):
-        class _Incomplete(RerankerRepository, ABC):  # type: ignore[abstract]
-            pass  # rerank missing
+        class _Incomplete(RerankerRepository, ABC):  # pyright: ignore[reportAbstractUsage]
+            pass  # score and rerank missing
 
-        with pytest.raises(TypeError):
-            _Incomplete()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(_Incomplete)
 
     def test_complete_subclass_instantiates(self):
         assert isinstance(_Reranker(), RerankerRepository)
+
+    def test_score_returns_pairs(self):
+        chunks = [Chunk(document_id="d", text=f"chunk {i}") for i in range(3)]
+        scored = _Reranker().score("query", chunks)
+        assert len(scored) == 3
+        assert scored[0][1] == pytest.approx(3.0)
 
     def test_rerank_returns_list_of_chunks(self):
         chunks = [Chunk(document_id="d", text=f"chunk {i}") for i in range(5)]
@@ -195,44 +211,49 @@ class TestRerankerRepository:
 
 class TestVectorStoreRepository:
     def test_abc_cannot_be_instantiated(self):
-        with pytest.raises(TypeError):
-            VectorStoreRepository()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(VectorStoreRepository)
 
     def test_incomplete_subclass_missing_count(self):
-        class _Incomplete(VectorStoreRepository, ABC):  # type: ignore[abstract]
+        class _Incomplete(VectorStoreRepository, ABC):  # pyright: ignore[reportAbstractUsage]
             def upsert(self, chunks: list[Chunk]) -> None:
                 pass
 
             def search_dense(
                 self,
-                qv: DenseVector,
+                query_vector: DenseVector,
                 top_k: int,
                 *,
                 type_equals: str | None = None,
                 exclude_types: frozenset[str] | None = None,
                 document_ids: frozenset[str] | None = None,
+                filters: RetrievalFilter | None = None,
             ) -> list[SearchResult]:
                 return []
 
-            def search_sparse(self, qs: SparseVector, top_k: int) -> list[SearchResult]:
+            def search_sparse(self, query_sparse: SparseVector, top_k: int) -> list[SearchResult]:
                 return []
 
-            def search_hybrid(  # noqa: E704
+            def search_hybrid(
                 self,
-                qv: DenseVector,
-                qs: SparseVector,
+                query_vector: DenseVector,
+                query_sparse: SparseVector,
                 alpha: float,
                 top_k: int,
             ) -> list[SearchResult]:
                 return []
 
-            def delete(self, ids: list[str]) -> None:
+            def delete(self, chunk_ids: list[str]) -> None:
+                pass
+
+            def get_feedback_score(self, chunk_id: str) -> float:
+                return 0.0
+
+            def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
                 pass
 
             # count missing
 
-        with pytest.raises(TypeError):
-            _Incomplete()  # type: ignore[abstract]
+        _assert_abstract_instantiation_fails(_Incomplete)
 
     def test_complete_subclass_instantiates(self):
         assert isinstance(_VectorStore(), VectorStoreRepository)
@@ -252,6 +273,38 @@ class TestVectorStoreRepository:
 
     def test_delete_accepts_id_list(self):
         _VectorStore().delete(["id-1", "id-2"])  # must not raise
+
+    def test_accumulate_feedback_score_default_impl(self):
+        class _TrackingStore(_VectorStore):
+            def __init__(self) -> None:
+                self.scores: dict[str, float] = {}
+
+            def get_feedback_score(self, chunk_id: str) -> float:
+                return self.scores.get(chunk_id, 0.0)
+
+            def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+                self.scores[chunk_id] = feedback_score
+
+        store = _TrackingStore()
+        assert store.accumulate_feedback_score("chunk-a", 1.0) == 1.0
+        assert store.accumulate_feedback_score("chunk-a", 0.5) == 1.5
+
+    def test_get_feedback_scores_default_impl(self):
+        class _TrackingStore(_VectorStore):
+            def __init__(self) -> None:
+                self.scores = {"chunk-a": 2.0}
+
+            def get_feedback_score(self, chunk_id: str) -> float:
+                return self.scores.get(chunk_id, 0.0)
+
+            def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+                self.scores[chunk_id] = feedback_score
+
+        store = _TrackingStore()
+        assert store.get_feedback_scores(["chunk-a", "chunk-b", "chunk-a"]) == {
+            "chunk-a": 2.0,
+            "chunk-b": 0.0,
+        }
 
 
 # ── No infrastructure imports ──────────────────────────────────────────────────

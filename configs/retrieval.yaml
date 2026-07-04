@@ -88,3 +88,6 @@ quality:
     upper_threshold: 0.7         # above → use retrieved context as-is
   source_highlighting:
     enabled: false               # T-144 post-generation span extraction on /chat/full
+  feedback_loop:
+    enabled: false               # user relevance feedback + RRF boost (T-145)
+    boost_multiplier: 0.05       # additive RRF boost per unit of positive feedback_score

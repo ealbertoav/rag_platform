@@ -10,6 +10,8 @@ from __future__ import annotations
 from uuid import NAMESPACE_DNS, uuid5
 
 import pytest
+from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from src.domain.entities.chunk import Chunk
 
@@ -24,11 +26,9 @@ def _chunk_id(i: int) -> str:
 
 def _reachable() -> bool:
     try:
-        from qdrant_client import QdrantClient
-
         QdrantClient(url=_QDRANT_URL, timeout=2, check_compatibility=False).get_collections()
         return True
-    except Exception:
+    except (OSError, TimeoutError, ResponseHandlingException):
         return False
 
 
@@ -97,3 +97,58 @@ class TestQdrantIntegration:
         results = store.search_dense(c.embedding, top_k=1)  # type: ignore[arg-type]
         assert results[0][0].text == c.text
         assert results[0][0].document_id == c.document_id
+
+    def test_upsert_preserves_feedback_metadata(self, store):
+        chunk = _chunk(50)
+        store.upsert([chunk])
+        store.accumulate_feedback_score(chunk.id, 2.0)
+        store.accumulate_feedback_score(chunk.id, 1.5)
+        assert store.get_feedback_score(chunk.id) == 3.5
+        assert store.get_feedback_revision(chunk.id) == 2
+
+        reindexed = _chunk(50)
+        store.upsert([reindexed])
+
+        assert store.get_feedback_score(chunk.id) == 3.5
+        assert store.get_feedback_revision(chunk.id) == 2
+
+    def test_accumulate_feedback_score_is_linearizable(self, store):
+        chunk = _chunk(51)
+        # Upsert preserves feedback metadata — drop any stale point from prior runs.
+        store.delete([chunk.id])
+        store.upsert([chunk])
+        assert store.get_feedback_score(chunk.id) == 0.0
+        assert store.get_feedback_revision(chunk.id) == 0
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(
+                pool.map(lambda _: store.accumulate_feedback_score(chunk.id, 1.0), range(10))
+            )
+
+        assert store.get_feedback_score(chunk.id) == 10.0
+        assert store.get_feedback_revision(chunk.id) == 10
+        assert sorted(results) == list(range(1, 11))
+
+    def test_upsert_during_feedback_accumulation_preserves_scores(self, store):
+        chunk = _chunk(52)
+        store.delete([chunk.id])
+        store.upsert([chunk])
+        from concurrent.futures import ThreadPoolExecutor
+
+        def reindex() -> None:
+            for _ in range(5):
+                store.upsert([_chunk(52)])
+
+        def accumulate() -> None:
+            for _ in range(5):
+                store.accumulate_feedback_score(chunk.id, 1.0)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            reindex_future = pool.submit(reindex)
+            accumulate_future = pool.submit(accumulate)
+            reindex_future.result()
+            accumulate_future.result()
+
+        assert store.get_feedback_score(chunk.id) == 5.0
+        assert store.get_feedback_revision(chunk.id) == 5

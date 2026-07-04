@@ -213,7 +213,7 @@ class TestChatPipelineStream:
     async def test_chat_calls_retrieval(self):
         p = _pipeline()
         await p.chat("question")
-        p._retrieval.retrieve.assert_called_once()  # type: ignore[attr-defined]
+        p.retrieval.retrieve.assert_called_once()
 
 
 class TestChatPipelineFull:
@@ -380,14 +380,16 @@ class TestChatPipelineFull:
         _assert_both_post_gen(result, llm, call_count=4)
 
 
-class TestChatPipelineProperties:
-    def test_retrieval_property(self):
-        p = _pipeline()
-        assert p.retrieval is p._retrieval
+class TestChatPipelineAttributes:
+    def test_retrieval_attribute(self):
+        retrieval = _retrieval_mock()
+        p = ChatPipeline(retrieval=retrieval, generation=_service())
+        assert p.retrieval is retrieval
 
-    def test_generation_property(self):
-        p = _pipeline()
-        assert p.generation is p._generation
+    def test_generation_attribute(self):
+        generation = _service()
+        p = ChatPipeline(retrieval=_retrieval_mock(), generation=generation)
+        assert p.generation is generation
 
 
 class TestChatPipelineBenchmark:

@@ -18,6 +18,10 @@ class BM25Retriever:
     def __init__(self, index: BM25Index) -> None:
         self._index = index
 
+    @property
+    def bm25_index(self) -> BM25Index:
+        return self._index
+
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod

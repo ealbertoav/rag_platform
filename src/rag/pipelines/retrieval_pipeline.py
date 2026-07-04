@@ -12,6 +12,7 @@ from src.domain.services.retrieval_service import RetrievalResult, RetrievalServ
 from src.observability.metrics import record_retrieval
 
 if TYPE_CHECKING:
+    from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.infrastructure.vectordb.bm25 import BM25Index
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ def _build_graph_retriever(
 
 def _build_hype_retriever(
     embedder: object,
-    vector_store: object,
+    vector_store: VectorStoreRepository,
     bm25: object,
 ) -> object | None:
     """Return a HyPERetriever when HyPE is enabled, else None."""
@@ -47,7 +48,7 @@ def _build_hype_retriever(
 
         return HyPERetriever(
             embedder=embedder,  # type: ignore[arg-type]
-            vector_store=vector_store,  # type: ignore[arg-type]
+            vector_store=vector_store,
             chunk_lookup=bm25,
         )
     except Exception as exc:
@@ -58,7 +59,7 @@ def _build_hype_retriever(
 def _build_hyde_retriever(
     llm: LLMRepository,
     embedder: object,
-    vector_store: object,
+    vector_store: VectorStoreRepository,
     *,
     enabled: bool | None = None,
 ) -> object | None:
@@ -73,7 +74,7 @@ def _build_hyde_retriever(
         return HyDERetriever(
             llm=llm,
             embedder=embedder,  # type: ignore[arg-type]
-            vector_store=vector_store,  # type: ignore[arg-type]
+            vector_store=vector_store,
         )
     except Exception as exc:
         logger.warning("HyDE retriever unavailable (continuing without it): %s", exc)
@@ -82,7 +83,7 @@ def _build_hyde_retriever(
 
 def _build_hierarchical_retriever(
     embedder: object,
-    vector_store: object,
+    vector_store: VectorStoreRepository,
 ) -> object | None:
     """Return a HierarchicalRetriever when hierarchical indexing is enabled, else None."""
     if not settings.chunking.hierarchical.enabled:
@@ -92,7 +93,7 @@ def _build_hierarchical_retriever(
 
         return HierarchicalRetriever(
             embedder=embedder,  # type: ignore[arg-type]
-            vector_store=vector_store,  # type: ignore[arg-type]
+            vector_store=vector_store,
             summary_top_k=settings.chunking.hierarchical.summary_top_k,
         )
     except Exception as exc:
@@ -108,17 +109,13 @@ class RetrievalPipeline:
     """
 
     def __init__(self, service: RetrievalService) -> None:
-        self._service = service
-
-    @property
-    def service(self) -> RetrievalService:
-        return self._service
+        self.service = service
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
     async def retrieve(self, query: Query) -> RetrievalResult:
         with _tracer.start_as_current_span("retrieval") as span:
-            result = await self._service.retrieve(query)
+            result = await self.service.retrieve(query)
             span.set_attribute("chunk_count", len(result.chunks))
             span.set_attribute("context_chars", len(result.context))
             span.set_attribute("latency_ms", round(result.latency_ms, 1))
@@ -138,6 +135,7 @@ class RetrievalPipeline:
         cls,
         llm: LLMRepository | None = None,
         bm25_index: BM25Index | None = None,
+        vector_store: VectorStoreRepository | None = None,
     ) -> RetrievalPipeline:
         """Build the full retrieval pipeline from settings.
 
@@ -164,7 +162,8 @@ class RetrievalPipeline:
 
         cfg = settings.retrieval
         embedder = get_embedding_provider()
-        vector_store = QdrantVectorStore.from_settings()
+        if vector_store is None:
+            vector_store = QdrantVectorStore.from_settings()
         bm25_index = bm25_index or BM25Index.load_or_create()
         bm25 = BM25Retriever(bm25_index)
 
@@ -188,6 +187,11 @@ class RetrievalPipeline:
             hyde_retriever=hyde,  # type: ignore[arg-type]
             hierarchical_retriever=hierarchical,  # type: ignore[arg-type]
             fusion_mode=cfg.hybrid_fusion,
+            feedback_boost_multiplier=(
+                settings.quality.feedback_loop.boost_multiplier
+                if settings.quality.feedback_loop.enabled
+                else 0.0
+            ),
         )
 
         expander = None
@@ -228,5 +232,11 @@ class RetrievalPipeline:
             reliable_rag_enabled=settings.quality.reliable_rag.enabled,
             reliable_rag_min_score=settings.quality.reliable_rag.min_score,
             llm=llm if settings.quality.reliable_rag.enabled else None,
+            feedback_boost_multiplier=(
+                settings.quality.feedback_loop.boost_multiplier
+                if settings.quality.feedback_loop.enabled
+                else 0.0
+            ),
+            vector_store=(vector_store if settings.quality.feedback_loop.enabled else None),
         )
         return cls(service=service)

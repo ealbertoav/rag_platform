@@ -12,13 +12,13 @@ description = "Local enterprise RAG platform — Clean Architecture, Hybrid Sear
 requires-python = ">=3.11"
 dependencies = [
     # API
-    "fastapi>=0.115.0",
+    "fastapi>=0.139.0",
     "uvicorn[standard]>=0.30.0",
     "python-multipart>=0.0.9",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     # LLM
-    "llama-cpp-python>=0.2.90",
+    "llama-cpp-python>=0.3.32",
     # Embeddings & Reranking
     "numpy>=1.26.0",
     "sentence-transformers>=3.0.0",
@@ -37,23 +37,88 @@ dependencies = [
     "python-dotenv>=1.0.1",
     # Observability
     "prometheus-client>=0.20.0",
-    "opentelemetry-sdk>=1.25.0",
-    "opentelemetry-exporter-otlp>=1.25.0",
+    "opentelemetry-sdk>=1.43.0",
+    "opentelemetry-exporter-otlp>=1.43.0",
     # Storage / cache
     "aiosqlite>=0.20.0",
     "redis>=5.0.0",
     # Utilities
-    "tenacity>=9.0.0",  # 9.1.4 conflicts with opentelemetry-sdk<=1.42.1
+    # Match deepeval<=2.x (tenacity<=9.0.0) and langchain/llama-index (tenacity<10).
+    "tenacity>=9.0.0,<9.1",
     "httpx>=0.27.0",
     "tqdm>=4.66.0",
     "rich>=15.0.0",
-    # diskcache (transitive via llama-cpp-python): CVE-2025-69872 (CVSS 9.8).
-    # No fixed version is available on PyPI as of 2025-06-23 — track upstream.
-    "diskcache>=5.6.3",
-    "opentelemetry-instrumentation-openai>=0.61.0",
+    # Patched diskcache fork for CVE-2025-69872 (provides the `diskcache` module).
+    "diskcache-weave>=5.6.3.post1",
+    "opentelemetry-instrumentation-openai>=0.62.1",
     "numpy>=2.4.6",
     "pyrefly>=0.60.0",
-    "basedpyright>=1.39.8",
+    "basedpyright>=1.39.9",
+    "starlette>=1.3.1",
+]
+
+[tool.uv]
+# Transitive deps declare `diskcache` (CVE-2025-69872); redirect to the weave fork.
+dependency-metadata = [
+    { name = "llama-cpp-python", requires-dist = [
+        "typing-extensions>=4.5.0",
+        "numpy>=1.20.0",
+        "diskcache-weave>=5.6.3.post1",
+        "jinja2>=2.11.3",
+    ]},
+    { name = "ragas", requires-dist = [
+        "appdirs",
+        "datasets",
+        "diskcache-weave>=5.6.3.post1",
+        "instructor",
+        "langchain",
+        "langchain-community",
+        "langchain-core",
+        "langchain-openai",
+        "nest-asyncio",
+        "networkx",
+        "numpy",
+        "openai",
+        "pillow",
+        "pydantic",
+        "rich",
+        "scikit-network",
+        "tiktoken",
+        "tqdm",
+        "typer",
+    ]},
+    { name = "deepeval", requires-dist = [
+        "requests",
+        "tqdm",
+        "pytest",
+        "tabulate",
+        "typer",
+        "rich",
+        "protobuf",
+        "pydantic",
+        "sentry-sdk",
+        "pytest-repeat",
+        "pytest-xdist",
+        "portalocker",
+        "langchain",
+        "llama-index",
+        "langchain-core",
+        "langchain_openai",
+        "langchain-community",
+        "docx2txt~=0.8",
+        "importlib-metadata>=6.0.2",
+        "tenacity>=8.0.0,<=10.0.0",
+        "opentelemetry-api<2.0.0,>=1.24.0",
+        "opentelemetry-sdk<2.0.0,>=1.24.0",
+        "opentelemetry-exporter-otlp-proto-grpc<2.0.0,>=1.24.0",
+        "grpcio<2.0.0,>=1.67.1",
+        "nest-asyncio",
+        "datasets",
+        "ollama",
+    ]},
+]
+override-dependencies = [
+    "tenacity>=9.0.0,<9.1",
 ]
 
 [project.optional-dependencies]
@@ -78,7 +143,7 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
-    "ruff>=0.5.0",
+    "ruff>=0.15.20",
     "mypy>=1.10.0",
     "types-PyYAML>=6.0.0",
     "pre-commit>=3.7.0",
@@ -104,6 +169,22 @@ reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownParameterType = false
 reportUnknownMemberType = false
+
+[tool.pyrefly]
+search-path = ["src", "scripts"]
+# Optional runtime deps — install via uv sync --extra api-embeddings / graph / evals.
+ignore-missing-imports = [
+    "cohere",
+    "cohere.*",
+    "openai",
+    "openai.*",
+    "voyageai",
+    "voyageai.*",
+    "google",
+    "google.*",
+    "neo4j",
+    "neo4j.*",
+]
 
 [tool.mypy]
 python_version = "3.12"

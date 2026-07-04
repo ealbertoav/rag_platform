@@ -8,6 +8,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.domain.repositories.vector_store_repository import SearchResult
 from src.rag.enrichment.document_augmentation import resolve_synthetic_questions
+from src.rag.quality.feedback_loop import apply_feedback_boost
 from src.rag.ranking.score_fusion import rrf_fuse, weighted_linear_fuse
 from src.rag.retrieval.bm25_retriever import BM25Retriever
 from src.rag.retrieval.dense_retriever import DenseRetriever
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _EXPANSION = 3  # candidate multiplier fed to each retriever before fusion
 _MAX_CANDIDATES = 50
+_MAX_CANDIDATES_FEEDBACK = 150  # allow pool growth when feedback can reorder results
 
 
 class HybridRetriever:
@@ -46,15 +48,22 @@ class HybridRetriever:
         hyde_retriever: HyDERetriever | None = None,
         hierarchical_retriever: HierarchicalRetriever | None = None,
         fusion_mode: str = "rrf",
+        feedback_boost_multiplier: float = 0.0,
     ) -> None:
         self._dense = dense
         self._bm25 = bm25
         self.alpha = alpha
-        self._graph = graph_retriever
-        self._hype = hype_retriever
-        self._hyde = hyde_retriever
-        self._hierarchical = hierarchical_retriever
+        self.graph = graph_retriever
+        self.hype = hype_retriever
+        self.hyde = hyde_retriever
+        self.hierarchical = hierarchical_retriever
         self._fusion_mode = fusion_mode
+        self._feedback_boost_multiplier = feedback_boost_multiplier
+
+    def _candidate_limit(self, top_k: int) -> int:
+        """Return the per-source candidate cap before fusion."""
+        cap = _MAX_CANDIDATES_FEEDBACK if self._feedback_boost_multiplier > 0 else _MAX_CANDIDATES
+        return min(top_k * _EXPANSION, cap)
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -70,27 +79,27 @@ class HybridRetriever:
         Uses a 3× candidate pool per source before RRF so that chunks that
         appear in both lists benefit from the rank-boost.
         """
-        expansion = min(top_k * _EXPANSION, _MAX_CANDIDATES)
+        expansion = self._candidate_limit(top_k)
 
         tasks = [
             asyncio.to_thread(self._dense.retrieve, query, expansion),
             asyncio.to_thread(self._bm25.search, query.text, expansion, filters=query.filters),
         ]
-        if self._graph is not None:
+        if self.graph is not None:
             tasks.append(
                 asyncio.to_thread(
-                    self._graph.search,
+                    self.graph.search,
                     query.text,
                     expansion,
                     filters=query.filters,
                 )
             )
-        if self._hype is not None:
-            tasks.append(asyncio.to_thread(self._hype.retrieve, query, expansion))
-        if self._hyde is not None and use_hyde:
-            tasks.append(asyncio.to_thread(self._hyde.retrieve, query, expansion))
-        if self._hierarchical is not None:
-            tasks.append(asyncio.to_thread(self._hierarchical.retrieve, query, expansion))
+        if self.hype is not None:
+            tasks.append(asyncio.to_thread(self.hype.retrieve, query, expansion))
+        if self.hyde is not None and use_hyde:
+            tasks.append(asyncio.to_thread(self.hyde.retrieve, query, expansion))
+        if self.hierarchical is not None:
+            tasks.append(asyncio.to_thread(self.hierarchical.retrieve, query, expansion))
 
         gathered = await asyncio.gather(*tasks)
 
@@ -108,21 +117,21 @@ class HybridRetriever:
         )
         graph_idx = 2
         graph_results: list[SearchResult] = []
-        if self._graph is not None:
+        if self.graph is not None:
             graph_results = apply_chunk_filters(
                 resolve_synthetic_questions(gathered[graph_idx], lookup),
                 query.filters,
             )
             graph_idx += 1
         hype_results: list[SearchResult] = []
-        if self._hype is not None:
+        if self.hype is not None:
             hype_results = apply_min_score(
                 apply_chunk_filters(gathered[graph_idx], query.filters),
                 query.filters,
             )
             graph_idx += 1
         hyde_results: list[SearchResult] = []
-        if self._hyde is not None and use_hyde:
+        if self.hyde is not None and use_hyde:
             hyde_results = apply_min_score(
                 apply_chunk_filters(
                     resolve_synthetic_questions(gathered[graph_idx], lookup),
@@ -132,21 +141,26 @@ class HybridRetriever:
             )
             graph_idx += 1
         hierarchical_results: list[SearchResult] = []
-        if self._hierarchical is not None:
+        if self.hierarchical is not None:
             hierarchical_results = apply_min_score(
                 apply_chunk_filters(gathered[graph_idx], query.filters),
                 query.filters,
             )
 
-        hyde_active = self._hyde is not None and use_hyde
+        hyde_active = self.hyde is not None and use_hyde
+        fusion_top_k = top_k
+        if self._feedback_boost_multiplier > 0:
+            fusion_top_k = self._candidate_limit(top_k)
         if (
             self._fusion_mode == "weighted_linear"
-            and self._graph is None
-            and self._hype is None
+            and self.graph is None
+            and self.hype is None
             and not hyde_active
-            and self._hierarchical is None
+            and self.hierarchical is None
         ):
-            fused = weighted_linear_fuse(dense_results, bm25_results, alpha=self.alpha, top_k=top_k)
+            fused = weighted_linear_fuse(
+                dense_results, bm25_results, alpha=self.alpha, top_k=fusion_top_k
+            )
         else:
             fused = rrf_fuse(
                 dense_results,
@@ -155,8 +169,14 @@ class HybridRetriever:
                 hype_results,
                 hyde_results,
                 hierarchical_results,
-                top_k=top_k,
+                top_k=fusion_top_k,
             )
+        fused = apply_feedback_boost(
+            fused,
+            boost_multiplier=self._feedback_boost_multiplier,
+            vector_store=self._dense.vector_store if self._feedback_boost_multiplier > 0 else None,
+        )
+        fused = fused[:top_k]
         logger.debug(
             (
                 "Hybrid retrieval: %d dense + %d bm25 + %d graph + %d hype "
@@ -175,19 +195,3 @@ class HybridRetriever:
     def retrieve_sync(self, query: Query, top_k: int) -> list[SearchResult]:
         """Synchronous wrapper for contexts that cannot await."""
         return asyncio.run(self.retrieve(query, top_k))
-
-    @property
-    def graph(self) -> GraphRetriever | None:
-        return self._graph
-
-    @property
-    def hype(self) -> HyPERetriever | None:
-        return self._hype
-
-    @property
-    def hyde(self) -> HyDERetriever | None:
-        return self._hyde
-
-    @property
-    def hierarchical(self) -> HierarchicalRetriever | None:
-        return self._hierarchical

@@ -27,6 +27,10 @@ class DenseRetriever:
         self._embedder = embedder
         self._vector_store = vector_store
 
+    @property
+    def vector_store(self) -> VectorStoreRepository:
+        return self._vector_store
+
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def retrieve(self, query: Query, top_k: int) -> list[SearchResult]:

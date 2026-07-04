@@ -63,6 +63,14 @@ class TestBGERerankerProvider:
     def test_empty_chunks_returns_empty(self):
         assert _provider().rerank("q", [], top_k=5) == []
 
+    def test_score_returns_chunk_score_pairs(self):
+        chunks = [_chunk(0), _chunk(1)]
+        scored = _provider([0.9, 0.3]).score("q", chunks)
+        assert scored == [(chunks[0], 0.9), (chunks[1], 0.3)]
+
+    def test_score_empty_chunks_returns_empty(self):
+        assert _provider().score("q", []) == []
+
     def test_calls_compute_score_with_pairs(self):
         p, mock = _provider_and_mock([0.8])
         chunks = [_chunk(0, text="relevant passage")]
@@ -135,12 +143,31 @@ class TestCrossEncoder:
         result = ce.rerank("q", _chunks(3), top_k=1)
         assert len(result) == 1
 
-    def test_delegates_to_reranker(self):
+    def test_empty_chunks_returns_empty(self):
+        assert self._ce([0.9, 0.5]).rerank("q", []) == []
+
+    def test_delegates_to_reranker_score(self):
         mock_reranker = MagicMock()
-        mock_reranker.rerank.return_value = [_chunk(0)]
+        chunks = _chunks(5)
+        mock_reranker.score.return_value = [(chunk, 0.5) for chunk in chunks]
         ce = CrossEncoder(reranker=mock_reranker, top_k=3)
-        ce.rerank("query", _chunks(5))
-        mock_reranker.rerank.assert_called_once_with("query", _chunks(5), top_k=3)
+        result = ce.rerank("query", chunks)
+        mock_reranker.score.assert_called_once_with("query", chunks)
+        assert len(result) == 3
+
+    def test_feedback_boost_promotes_chunk_after_rerank(self):
+        from src.core.constants import FEEDBACK_SCORE_KEY
+
+        low = Chunk(id="low", document_id="doc", text="low")
+        high = Chunk(
+            id="high",
+            document_id="doc",
+            text="high",
+            metadata={FEEDBACK_SCORE_KEY: 5.0},
+        )
+        ce = CrossEncoder(reranker=_provider([0.9, 0.1]), top_k=2)
+        result = ce.rerank("q", [low, high], boost_multiplier=0.2)
+        assert result[0].id == "high"
 
     def test_from_settings_returns_instance(self):
         # BGERerankerProvider uses lazy model loading, so no download happens here.

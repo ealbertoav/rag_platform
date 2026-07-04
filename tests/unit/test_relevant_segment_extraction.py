@@ -271,7 +271,7 @@ class TestRetrievalServiceRSE:
             rse_enabled=False,
         )
         svc._dense.embed_query.side_effect = lambda q: q.model_copy(update={"embedding": [0.1]})
-        svc._hybrid.retrieve = AsyncMock(return_value=[(c, 0.9) for c in chunks])
+        svc.hybrid.retrieve = AsyncMock(return_value=[(c, 0.9) for c in chunks])
 
         result = await svc.retrieve(Query(text="test"))
         assert len(result.chunks) == 2
@@ -289,7 +289,7 @@ class TestRetrievalServiceRSE:
             rse_max_segment_tokens=500,
         )
         svc._dense.embed_query.side_effect = lambda q: q.model_copy(update={"embedding": [0.1]})
-        svc._hybrid.retrieve = AsyncMock(return_value=[(c, 0.9) for c in chunks])
+        svc.hybrid.retrieve = AsyncMock(return_value=[(c, 0.9) for c in chunks])
 
         result = await svc.retrieve(Query(text="test"))
         assert len(result.chunks) == 1
@@ -308,7 +308,7 @@ class TestRetrievalServiceRSE:
             rse_enabled=True,
         )
         svc._dense.embed_query.side_effect = lambda q: q.model_copy(update={"embedding": [0.1]})
-        svc._hybrid.retrieve = AsyncMock(return_value=[(c, 0.9) for c in chunks])
+        svc.hybrid.retrieve = AsyncMock(return_value=[(c, 0.9) for c in chunks])
 
         await svc.retrieve(Query(text="test"))
         compressor.compress.assert_called_once()

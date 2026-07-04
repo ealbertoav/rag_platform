@@ -140,7 +140,7 @@ class TestRetrievalServiceExpansion:
         svc = _service(with_expander=True, n_chunks=2)
         await svc.retrieve(_query())
         # original + 1 variant → 2 hybrid calls
-        assert svc._hybrid.retrieve.call_count == 2  # type: ignore[union-attr]
+        assert svc.hybrid.retrieve.call_count == 2  # type: ignore[union-attr]
 
 
 class TestRetrievalServiceTopKFinal:

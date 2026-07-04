@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.core.constants import CHUNK_TYPE_KEY, CHUNK_TYPE_SYNTHETIC, SOURCE_CHUNK_ID_KEY
+from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
@@ -96,6 +97,19 @@ class TestHybridRetrieverAsync:
     async def test_empty_results_returns_empty(self):
         hr = _retriever(dense_results=[], bm25_results=[])
         assert await hr.retrieve(_query(), top_k=5) == []
+
+    @pytest.mark.asyncio
+    async def test_feedback_lookup_failure_still_returns_fused_results(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        dense_mock.vector_store.get_feedback_scores.side_effect = VectorStoreError(
+            "Qdrant retrieve failed"
+        )
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, feedback_boost_multiplier=0.1)
+        results = await hr.retrieve(_query(), top_k=2)
+        assert len(results) == 2
 
     @pytest.mark.asyncio
     async def test_resolves_synthetic_question_to_source(self):

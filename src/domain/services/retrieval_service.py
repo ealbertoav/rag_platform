@@ -18,21 +18,23 @@ from src.rag.enrichment.parent_context_resolver import (
     enrich_with_parent_context,
 )
 from src.rag.enrichment.relevant_segment_extraction import merge_adjacent
+from src.rag.quality.feedback_loop import apply_feedback_boost
 from src.rag.ranking.cross_encoder import CrossEncoder
 from src.rag.ranking.diversity import mmr_select
 from src.rag.ranking.score_fusion import rrf_fuse
 from src.rag.retrieval.dense_retriever import DenseRetriever
-from src.rag.retrieval.hybrid_retriever import HybridRetriever
 from src.rag.retrieval.query_expansion import QueryExpander
 
 if TYPE_CHECKING:
     from src.domain.repositories.embedding_repository import EmbeddingRepository
     from src.domain.repositories.llm_repository import LLMRepository
+    from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
     from src.rag.retrieval.adaptive.strategies import (
         AdaptiveStrategyRegistry,
         RetrievalStrategyParams,
     )
+    from src.rag.retrieval.hybrid_retriever import HybridRetriever
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
@@ -60,6 +62,8 @@ class RetrievalService:
     - no "reliable_rag"   → all reranked/enriched chunks reach compression
     """
 
+    hybrid: HybridRetriever
+
     def __init__(
         self,
         dense_retriever: DenseRetriever,
@@ -83,9 +87,11 @@ class RetrievalService:
         reliable_rag_enabled: bool = False,
         reliable_rag_min_score: float = 0.5,
         llm: LLMRepository | None = None,
+        feedback_boost_multiplier: float = 0.0,
+        vector_store: VectorStoreRepository | None = None,
     ) -> None:
         self._dense = dense_retriever
-        self._hybrid = hybrid_retriever
+        self.hybrid = hybrid_retriever
         self._expander = query_expander
         self._classifier = query_classifier
         self._strategy_registry = strategy_registry
@@ -104,10 +110,8 @@ class RetrievalService:
         self._reliable_rag_enabled = reliable_rag_enabled
         self._reliable_rag_min_score = reliable_rag_min_score
         self._llm = llm
-
-    @property
-    def hybrid(self) -> HybridRetriever:
-        return self._hybrid
+        self._feedback_boost_multiplier = feedback_boost_multiplier
+        self._vector_store = vector_store
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -248,12 +252,12 @@ class RetrievalService:
         variants = self._query_variants(query)
         if len(variants) == 1:
             embedded = self._dense.embed_query(query)
-            return await self._hybrid.retrieve(embedded, top_k=top_k, use_hyde=use_hyde)
+            return await self.hybrid.retrieve(embedded, top_k=top_k, use_hyde=use_hyde)
 
         async def _search_variant(text: str) -> list[tuple[Chunk, float]]:
             variant_query = query.model_copy(update={"text": text, "embedding": None})
             variant_embedded = await asyncio.to_thread(self._dense.embed_query, variant_query)
-            return await self._hybrid.retrieve(
+            return await self.hybrid.retrieve(
                 variant_embedded,
                 top_k=top_k,
                 use_hyde=use_hyde,
@@ -262,12 +266,25 @@ class RetrievalService:
         gathered = await asyncio.gather(*[_search_variant(text) for text in variants])
         if len(gathered) == 1:
             return gathered[0]
-        return rrf_fuse(*gathered, top_k=top_k)
+        fused = rrf_fuse(*gathered, top_k=top_k)
+        if self._feedback_boost_multiplier > 0:
+            fused = apply_feedback_boost(
+                fused,
+                boost_multiplier=self._feedback_boost_multiplier,
+                vector_store=self._vector_store,
+            )
+        return fused[:top_k]
 
     def _rerank(self, query_text: str, chunks: list[Chunk]) -> list[Chunk]:
         if self._reranker is None or not chunks:
             return chunks
-        return self._reranker.rerank(query_text, chunks, top_k=self._top_k_rerank)
+        return self._reranker.rerank(
+            query_text,
+            chunks,
+            top_k=self._top_k_rerank,
+            boost_multiplier=self._feedback_boost_multiplier,
+            vector_store=self._vector_store,
+        )
 
     def _apply_relevance_grading(
         self,
