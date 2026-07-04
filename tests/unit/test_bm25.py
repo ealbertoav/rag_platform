@@ -491,3 +491,42 @@ class TestBM25DeferredRebuild:
         assert found_during_batch.is_set()
         results = idx.search("kubernetes deployment rollout", top_k=1)
         assert results[0][0].id == new_chunk.id
+
+    def test_save_preserves_dirty_when_mutated_during_write(self, tmp_path: Path):
+        """Concurrent mutations during save must not drop unsaved changes."""
+        import threading
+        import time
+
+        path = tmp_path / "bm25.json"
+        idx = BM25Index(index_path=path)
+        idx.index(_CORPUS)
+        extra = _chunk("concurrent mutation term zzz", idx=100)
+        write_started = threading.Event()
+        mutation_done = threading.Event()
+
+        original_open = Path.open
+
+        def slow_open(path_obj: Path, *args, **kwargs):
+            handle = original_open(path_obj, *args, **kwargs)
+            if path_obj == path.with_suffix(f"{path.suffix}.tmp"):
+                write_started.set()
+                mutation_done.wait(timeout=5)
+                time.sleep(0.01)
+            return handle
+
+        def mutate_during_save() -> None:
+            write_started.wait(timeout=5)
+            idx.add([extra])
+            mutation_done.set()
+
+        with patch.object(Path, "open", slow_open):
+            mutator = threading.Thread(target=mutate_during_save)
+            mutator.start()
+            idx.save()
+            mutator.join(timeout=5)
+
+        assert idx._dirty is True
+        idx.save()
+        loaded = BM25Index(index_path=path)
+        loaded.load()
+        assert loaded.get_by_id(extra.id) is not None

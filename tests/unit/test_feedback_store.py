@@ -158,6 +158,7 @@ class TestSqlFeedbackStore:
 class TestFeedbackDelegatingVectorStore:
     def test_routes_feedback_ops(self):
         inner = MagicMock()
+        inner.chunk_exists.return_value = True
         feedback = MagicMock()
         feedback.accumulate.return_value = 3.0
         feedback.get_scores.return_value = {"c0": 3.0}
@@ -169,11 +170,40 @@ class TestFeedbackDelegatingVectorStore:
         assert wrapped.get_feedback_score("c0") == 3.0
         wrapped.set_feedback_score("c0", 2.0)
         feedback.set_score.assert_called_once_with("c0", 2.0)
+        inner.chunk_exists.assert_called_with("c0")
         wrapped.count()
         inner.count.assert_called_once()
 
+    def test_accumulate_rejects_missing_chunk(self):
+        inner = MagicMock()
+        inner.chunk_exists.return_value = False
+        inner.collection = "test-collection"
+        feedback = MagicMock()
+        wrapped = FeedbackDelegatingVectorStore(inner, feedback)
+        with pytest.raises(VectorStoreError, match="not found"):
+            wrapped.accumulate_feedback_score("missing", 1.0)
+        feedback.accumulate.assert_not_called()
+
+    def test_set_feedback_rejects_missing_chunk(self):
+        inner = MagicMock()
+        inner.chunk_exists.return_value = False
+        inner.collection = "test-collection"
+        feedback = MagicMock()
+        wrapped = FeedbackDelegatingVectorStore(inner, feedback)
+        with pytest.raises(VectorStoreError, match="not found"):
+            wrapped.set_feedback_score("missing", 1.0)
+        feedback.set_score.assert_not_called()
+
+    def test_chunk_exists_delegates_to_inner(self):
+        inner = MagicMock()
+        inner.chunk_exists.return_value = True
+        wrapped = FeedbackDelegatingVectorStore(inner, MagicMock())
+        assert wrapped.chunk_exists("chunk-a") is True
+        inner.chunk_exists.assert_called_once_with("chunk-a")
+
     def test_delegates_vector_operations(self):
         inner = MagicMock()
+        inner.chunk_exists.return_value = True
         feedback = MagicMock()
         wrapped = FeedbackDelegatingVectorStore(inner, feedback)
         chunks = [MagicMock()]

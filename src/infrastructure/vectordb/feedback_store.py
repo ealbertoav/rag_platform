@@ -199,6 +199,11 @@ class FeedbackDelegatingVectorStore(VectorStoreRepository):
         self._inner = inner
         self._feedback = feedback
 
+    def _require_chunk(self, chunk_id: str) -> None:
+        if not self._inner.chunk_exists(chunk_id):
+            collection = getattr(self._inner, "collection", "vector store")
+            raise VectorStoreError(f"Chunk {chunk_id!r} not found in collection {collection!r}")
+
     def upsert(self, chunks: list[Chunk]) -> None:
         self._inner.upsert(chunks)
 
@@ -239,13 +244,18 @@ class FeedbackDelegatingVectorStore(VectorStoreRepository):
     def count(self) -> int:
         return self._inner.count()
 
+    def chunk_exists(self, chunk_id: str) -> bool:
+        return self._inner.chunk_exists(chunk_id)
+
     def get_feedback_score(self, chunk_id: str) -> float:
         return self._feedback.get_score(chunk_id)
 
     def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
+        self._require_chunk(chunk_id)
         self._feedback.set_score(chunk_id, feedback_score)
 
     def accumulate_feedback_score(self, chunk_id: str, delta: float) -> float:
+        self._require_chunk(chunk_id)
         return self._feedback.accumulate(chunk_id, delta)
 
     def get_feedback_scores(self, chunk_ids: list[str]) -> dict[str, float]:

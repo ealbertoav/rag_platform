@@ -71,6 +71,7 @@ class BM25Index:
         self._defer_rebuild_depth = 0
         self._needs_rebuild = False
         self._dirty = False
+        self._mutation_generation = 0
 
     # ── Indexing ───────────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ class BM25Index:
             self._chunks = list(chunks)
             self._rebuild()
             self._needs_rebuild = False
-            self._dirty = True
+            self._mark_dirty()
         logger.debug("BM25 index built: %d chunks", len(self._chunks))
 
     def add(self, chunks: list[Chunk]) -> None:
@@ -93,7 +94,7 @@ class BM25Index:
             self._chunks = [c for c in self._chunks if c.id not in incoming_ids]
             self._chunks.extend(chunks)
             self._schedule_rebuild()
-            self._dirty = True
+            self._mark_dirty()
         logger.debug("BM25 index updated: +%d chunks, total %d", len(chunks), len(self._chunks))
 
     def remove_by_ids(self, chunk_ids: list[str]) -> None:
@@ -105,7 +106,7 @@ class BM25Index:
             before = len(self._chunks)
             self._chunks = [c for c in self._chunks if c.id not in remove]
             self._schedule_rebuild()
-            self._dirty = True
+            self._mark_dirty()
         logger.debug("BM25 index removed %d chunks", before - len(self._chunks))
 
     def rebuild(self) -> None:
@@ -174,6 +175,7 @@ class BM25Index:
                 return
             self._ensure_built()
             chunks = list(self._chunks)
+            generation_at_snapshot = self._mutation_generation
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": _INDEX_FORMAT_VERSION,
@@ -187,7 +189,8 @@ class BM25Index:
                 os.fsync(fh.fileno())
             tmp_path.replace(self._path)
             with self._lock:
-                self._dirty = False
+                if self._mutation_generation == generation_at_snapshot:
+                    self._dirty = False
             logger.info("BM25 index saved to %s", self._path)
         except OSError as exc:
             tmp_path.unlink(missing_ok=True)
@@ -275,6 +278,10 @@ class BM25Index:
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+        self._mutation_generation += 1
+
     def _migrate_legacy_pickle(self, legacy_path: Path) -> None:
         """Migrate a legacy pickle index to JSON under an exclusive file lock."""
         lock_path = self._path.with_suffix(f"{self._path.suffix}.lock")
@@ -302,7 +309,7 @@ class BM25Index:
             self._chunks = list(chunks)
             self._rebuild()
             self._needs_rebuild = False
-            self._dirty = True
+            self._mark_dirty()
         logger.info("BM25 legacy pickle loaded from %s (%d chunks)", path, len(self._chunks))
 
     def _ensure_built(self) -> None:

@@ -1519,6 +1519,14 @@ class TestDeleteAndCount:
         with pytest.raises(VectorStoreError):
             store.count()
 
+    def test_chunk_exists_true(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.retrieve.return_value = [MagicMock()]
+        assert store.chunk_exists("chunk-a") is True
+
+    def test_chunk_exists_false(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.retrieve.return_value = []
+        assert store.chunk_exists("missing") is False
+
 
 class TestQdrantFeedbackScore:
     def test_get_feedback_score_reads_metadata(self, store, mock_client):
