@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.rate_limit import RateLimitHTTPMiddleware, configure_rate_limit
 from src.api.routers import chat, evals, feedback, health, ingest
 from src.api.routers.metrics_router import router as metrics_router
 from src.core.logging import configure_logging
@@ -45,14 +46,26 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting RAG platform (lifespan startup)")
 
     # Build pipeline objects — actual model loading is lazy (on first request).
+    from src.core.constants import ROOT
+    from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.infrastructure.vectordb.bm25 import BM25Index
+    from src.infrastructure.vectordb.feedback_store import wrap_vector_store_with_feedback
     from src.infrastructure.vectordb.qdrant import QdrantVectorStore
     from src.rag.pipelines.agent_pipeline import AgentPipeline
     from src.rag.pipelines.chat_pipeline import ChatPipeline
     from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
 
     bm25 = BM25Index.load_or_create()
-    vector_store = QdrantVectorStore.from_settings()
+    base_vector_store = QdrantVectorStore.from_settings()
+    feedback_cfg = settings.quality.feedback_loop
+    vector_store: VectorStoreRepository = wrap_vector_store_with_feedback(
+        base_vector_store,
+        backend=feedback_cfg.backend,
+        redis_url=settings.redis.url,
+        redis_password=settings.redis.password.get_secret_value(),
+        postgres_url=feedback_cfg.postgres_url,
+        default_sqlite_path=ROOT / "data" / "processed" / "feedback.db",
+    )
     _app.state.bm25_index = bm25
     _app.state.vector_store = vector_store
     _app.state.chat_pipeline = ChatPipeline.from_settings(
@@ -87,6 +100,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    configure_rate_limit()
+    _app.add_middleware(RateLimitHTTPMiddleware)
     _app.add_middleware(
         _cors_middleware_factory,
         allow_origins=settings.api.cors_origins,

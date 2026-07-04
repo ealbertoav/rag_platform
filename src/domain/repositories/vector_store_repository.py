@@ -67,6 +67,10 @@ class VectorStoreRepository(ABC):
         """Return the total number of chunks currently stored."""
 
     @abstractmethod
+    def chunk_exists(self, chunk_id: str) -> bool:
+        """Return True when *chunk_id* is stored in the vector index."""
+
+    @abstractmethod
     def get_feedback_score(self, chunk_id: str) -> float:
         """Return the accumulated feedback score for *chunk_id* (0.0 when unset)."""
 

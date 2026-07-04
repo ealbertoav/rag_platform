@@ -16,7 +16,11 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Source highlighting (T-144):** Optional per-source supporting spans on `POST /chat/full?highlights=true` (or globally via `quality.source_highlighting.enabled` in `configs/retrieval.yaml`). Spans are verbatim substrings of `chunk_context_text` — the LLM-facing passage text, not always `Chunk.text` when parent context or contextual headers apply. When both explain and highlights are requested, the pipeline tries one combined LLM call first, then falls back to dedicated paths for any missing side. Default off; omitted on failure. See [Source Highlighting (T-144)](#source-highlighting-t-144).
 
-> **Retrieval feedback loop (T-145):** Optional user relevance feedback via `POST /feedback` — clients vote on retrieved chunks (`relevant: true/false`); scores accumulate in Qdrant chunk metadata and additively boost future hybrid retrieval after RRF fusion and again after cross-encoder reranking. Configure via `quality.feedback_loop` in `configs/retrieval.yaml` (`enabled: false` by default). Qdrant is the write source of truth (compare-and-set accumulation); no BM25 disk writes on the feedback path. Multi-replica hardening gaps tracked in **T-146**. See [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145).
+> **Retrieval feedback loop (T-145):** Optional user relevance feedback via `POST /feedback` — clients vote on retrieved chunks (`relevant: true/false`); scores accumulate in chunk metadata and additively boost future hybrid retrieval after RRF fusion and again after cross-encoder reranking. Configure via `quality.feedback_loop` in `configs/retrieval.yaml` (`enabled: false` by default). Default backend is Qdrant compare-and-set accumulation; no BM25 disk writes on the feedback path. See [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145).
+
+> **Feedback production hardening (T-146):** Multi-replica deployments can select `quality.feedback_loop.backend: qdrant | redis | postgres` for atomic score increments, skip unchanged BM25 saves on shutdown, and follow the ops guide in [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). Concurrency regression coverage lives in `tests/benchmarks/test_feedback_concurrency.py`. See [Multi-Replica Feedback (T-146)](#multi-replica-feedback-t-146).
+
+> **API rate limiting (T-160):** Optional sliding-window middleware protects `/ingest`, `/chat`, `/chat/agent`, `/evals/run`, and `/feedback` — Redis-backed when available, in-memory fallback otherwise. Disabled by default (`api.rate_limit.enabled: false`). Returns `429` with `Retry-After` when exceeded. See [API Rate Limiting (T-160)](#api-rate-limiting-t-160).
 
 ---
 
@@ -47,6 +51,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Ingestion via Docker](#ingestion-via-docker)
 - [Kubernetes & Production](#kubernetes--production)
   - [Helm Chart](#helm-chart)
+  - [Multi-Replica Feedback (T-146)](#multi-replica-feedback-t-146)
+  - [API Rate Limiting (T-160)](#api-rate-limiting-t-160)
   - [EKS Setup](#eks-setup)
 - [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag)
 - [Agentic RAG](#agentic-rag)
@@ -271,6 +277,8 @@ QUALITY__CRAG__LOWER_THRESHOLD=0.3         # below → web-only correction
 QUALITY__CRAG__UPPER_THRESHOLD=0.7         # above → use retrieval as-is
 QUALITY__FEEDBACK_LOOP__ENABLED=false      # user relevance feedback + retrieval boost (T-145)
 QUALITY__FEEDBACK_LOOP__BOOST_MULTIPLIER=0.05  # additive boost per unit of positive feedback_score
+QUALITY__FEEDBACK_LOOP__BACKEND=qdrant     # qdrant | redis | postgres — atomic backend (T-146)
+QUALITY__FEEDBACK_LOOP__POSTGRES_URL=      # SQLite file path or DSN when backend=postgres
 WEB_SEARCH__PROVIDER=none                  # none | duckduckgo | tavily (T-142)
 WEB_SEARCH__MAX_RESULTS=5
 WEB_SEARCH__TAVILY__API_KEY=               # required when provider=tavily
@@ -300,16 +308,21 @@ METADATA__DB_PATH=data/processed/metadata.db
 # API security (optional — local dev leaves API key empty)
 API__API_KEY=                          # when set, require X-API-Key on /ingest, /chat, /feedback, /evals
 API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
+API__CORS_ORIGINS='["*"]'              # JSON list of allowed browser origins
+API__RATE_LIMIT__ENABLED=false         # sliding-window limit on sensitive routes (T-160)
+API__RATE_LIMIT__REQUESTS_PER_MINUTE=60
+API__RATE_LIMIT__BURST=10
 # API__INGEST_ALLOWED_ROOTS='["data/raw"]'  # JSON list; /ingest/path restricted to these dirs
 ```
 
 | File | Purpose |
 |---|---|
+| `configs/app.yaml` | API host/port, CORS origins, API key, upload limits, rate limiting (T-160) |
 | `configs/llm/qwen3-30b.yaml` | Default LLM profile (llama.cpp + Qwen3-30B) |
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop (T-145), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds and dataset paths |
@@ -342,6 +355,7 @@ With `chunking.strategy: parent_child`, both parent and child chunks are indexed
 - `POST /ingest/path` only reads files under `api.ingest_allowed_roots` (default: `data/raw`). It cannot ingest arbitrary server paths such as `/etc/passwd`.
 - `POST /ingest/upload` reads uploads in bounded chunks (`api.max_upload_bytes`, default 10 MiB) and accepts only supported extensions.
 - Set `API__API_KEY` to require an `X-API-Key` header on `/ingest`, `/chat`, `/feedback`, and `/evals/run`. `/health` and `/metrics` stay public.
+- Enable `API__RATE_LIMIT__ENABLED=true` for public or multi-replica deployments — limits apply per `X-API-Key` when set, otherwise per client IP (`X-Forwarded-For` or direct connection). `/health` and `/metrics` are exempt.
 
 #### Ingestion Flow
 
@@ -678,6 +692,8 @@ quality:
   feedback_loop:
     enabled: false         # set true to apply feedback boost during retrieval
     boost_multiplier: 0.05 # additive boost per unit of positive feedback_score
+    backend: qdrant        # qdrant | redis | postgres (T-146)
+    postgres_url: ""       # SQLite file path when backend=postgres
 ```
 
 ```bash
@@ -688,7 +704,7 @@ curl -X POST http://localhost:8000/feedback \
   -d '{"query_id": "<query_id>", "chunk_id": "<chunk_id>", "relevant": true}'
 ```
 
-See [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) in Retrieval Pipeline Details. Production hardening for multi-replica deployments (rate limiting, concurrency benchmarks, ops docs) is tracked in **T-146**.
+See [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [Multi-Replica Feedback (T-146)](#multi-replica-feedback-t-146) in Retrieval Pipeline Details. Enable [API Rate Limiting (T-160)](#api-rate-limiting-t-160) before exposing `/feedback` on a public API with HPA ≥ 2.
 
 **Python client:**
 ```python
@@ -921,7 +937,7 @@ make docker-down
 | `api` | 8000 | FastAPI — built from `docker/Dockerfile.api` |
 | `qdrant` | 6333 / 6334 | Vector DB |
 | `ollama` | 11434 | LLM server (replaces llama.cpp in Docker) |
-| `redis` | 6379 | Cache |
+| `redis` | 6379 | Embedding cache, feedback backend (T-146), rate-limit counter (T-160) |
 | `prometheus` | 9090 | Scrapes `api:8000/metrics` |
 | `otel-collector` | 4317 / 4318 | OTLP gRPC / HTTP |
 
@@ -1023,6 +1039,112 @@ resources:
       memory: "8Gi"
       nvidia.com/gpu: "1"
 ```
+
+### Multi-Replica Feedback (T-146)
+
+When running multiple API replicas (Helm HPA defaults to `minReplicas: 2`), feedback scores must stay consistent across pods. The platform addresses this with:
+
+| Concern | Mitigation |
+|---|---|
+| BM25 rewrite on every vote | Feedback path never touches BM25; shutdown save skips unchanged indexes (`BM25Index._dirty`) |
+| Non-atomic score updates | Pluggable `FeedbackStore` — Qdrant CAS (default), Redis `HINCRBYFLOAT`, or SQL `UPSERT … score += delta` |
+| Stale in-pod metadata | Boost reads live scores via `vector_store.get_feedback_scores()` at retrieval time |
+| Abuse under scale | Enable `api.rate_limit.enabled` — `/feedback` is a protected route (**T-160**) |
+
+**Backend selection** (`quality.feedback_loop.backend` in `configs/retrieval.yaml`):
+
+| Backend | Storage | Multi-replica |
+|---|---|---|
+| `qdrant` (default) | Chunk payload `feedback_score` + CAS `feedback_revision` | CAS retries (20 attempts) |
+| `redis` | Hash `rag:feedback:scores` | Truly atomic `HINCRBYFLOAT` — use under heavy same-chunk contention |
+| `postgres` | SQLite file (`data/processed/feedback.db`) or future DSN | Single-node SQLite only; use Redis for pods |
+
+```yaml
+# configs/retrieval.yaml — HPA ≥ 2 with business-critical feedback ranking
+quality:
+  feedback_loop:
+    enabled: true
+    backend: redis
+    boost_multiplier: 0.05
+
+# configs/app.yaml — public-facing API
+api:
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+```
+
+```mermaid
+flowchart TD
+    FB["POST /feedback"] --> RL{"Rate limit enabled?<br/>(T-160)"}
+    RL -->|429| REJ["429 + Retry-After"]
+    RL -->|allowed| CHK["chunk_exists()"]
+    CHK -->|missing| NF["404"]
+    CHK --> ACC["accumulate_feedback_score()"]
+    ACC --> BE{"backend"}
+    BE -->|qdrant| QCAS["Qdrant CAS<br/>metadata.feedback_score"]
+    BE -->|redis| RINCR["Redis HINCRBYFLOAT<br/>rag:feedback:scores"]
+    BE -->|postgres| SQL["SQL UPSERT<br/>score += delta"]
+
+    subgraph READ["Retrieval boost (when enabled)"]
+        RET["HybridRetriever / CrossEncoder"] --> GET["get_feedback_scores()"]
+        GET --> BOOST["+ boost_multiplier × score"]
+    end
+
+    QCAS --> GET
+    RINCR --> GET
+    SQL --> GET
+```
+
+Full deployment modes, gap tracker, and pre-HPA checklist: **[docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md)**.
+
+Run the concurrency regression before enabling HPA in production:
+
+```bash
+uv run pytest tests/benchmarks/test_feedback_concurrency.py -v
+```
+
+### API Rate Limiting (T-160)
+
+Sliding-window rate limiting middleware protects sensitive routes from abuse. It runs on every request before routing; `OPTIONS` preflight and exempt paths (`/health`, `/metrics`) pass through unchanged.
+
+**Protected routes:** `/ingest`, `/chat`, `/chat/agent`, `/evals/run`, `/feedback` (prefix match — subpaths included).
+
+**Client identity:** `X-API-Key` header when present, else first `X-Forwarded-For` hop, else direct client IP.
+
+**Backend:** tries Redis sorted-set sliding window (`rag:rate_limit:*` keys); falls back to per-process in-memory limiter with a warning log if Redis is unreachable.
+
+```yaml
+# configs/app.yaml
+api:
+  rate_limit:
+    enabled: false               # no behavior change for local dev
+    requests_per_minute: 60
+    burst: 10                    # effective limit = rpm + burst per 60 s window
+```
+
+```bash
+API__RATE_LIMIT__ENABLED=true
+API__RATE_LIMIT__REQUESTS_PER_MINUTE=60
+API__RATE_LIMIT__BURST=10
+```
+
+```mermaid
+flowchart LR
+    REQ["HTTP request"] --> MW["RateLimitHTTPMiddleware"]
+    MW --> EX{"/health or /metrics?"}
+    EX -->|yes| PASS["Pass through"]
+    EX -->|no| PROT{"Protected route?"}
+    PROT -->|no| PASS
+    PROT -->|yes| LIM{"Under limit?"}
+    LIM -->|yes| PASS
+    LIM -->|no| R429["429 + Retry-After<br/>rag_rate_limit_rejected_total"]
+    PASS --> CORS["CORSMiddleware"]
+    CORS --> ROUTE["FastAPI router"]
+```
+
+Rejected requests increment `rag_rate_limit_rejected_total{path="..."}` on `/metrics`.
 
 ### EKS Setup
 
@@ -1355,10 +1477,12 @@ Legacy collections without metadata fall back to the first tagged point payload;
 | `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
 | `POST` | `/ingest/upload` | Ingest an uploaded file (multipart) |
-| `POST` | `/feedback` | Record user relevance feedback on a retrieved chunk — body: `{query_id, chunk_id, relevant}`; returns `204` (T-145) |
+| `POST` | `/feedback` | Record user relevance feedback on a retrieved chunk — body: `{query_id, chunk_id, relevant}`; returns `204` / `404` / `502` (T-145); subject to rate limit when enabled (T-160) |
 | `POST` | `/evals/run` | Run E2E benchmark — returns `204` until QA dataset is populated, `200` with Recall@5 / Faithfulness / Relevance / Context Precision report |
 | `GET` | `/metrics` | Prometheus metrics (text format) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
+
+Protected routes (`/ingest`, `/chat`, `/chat/agent`, `/evals/run`, `/feedback`) return **`429 Too Many Requests`** with a `Retry-After` header when `api.rate_limit.enabled=true` and the client exceeds the configured window (T-160).
 
 ---
 
@@ -1367,6 +1491,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 ```
 rag_implementation/
 ├── configs/                    # YAML configuration
+│   ├── app.yaml                # API host, CORS, rate limiting (T-160)
 │   ├── llm/                    # Per-model LLM profiles (switch with --llm-config)
 │   │   ├── qwen3-30b.yaml      # llama.cpp · Qwen3-30B (default baseline)
 │   │   ├── qwen3-14b.yaml      # llama.cpp · Qwen3-14B
@@ -1405,6 +1530,9 @@ rag_implementation/
 │       ├── ingress.yaml        # AWS ALB Ingress (toggle: ingress.enabled)
 │       ├── pvc-qdrant.yaml     # 50 Gi gp3 for Qdrant
 │       └── pvc-models.yaml     # 30 Gi ReadOnlyMany for model files (EFS on EKS)
+├── docs/
+│   └── operations/
+│       └── feedback-multi-replica.md  # T-146 deployment guide (HPA, backends, rate limits)
 ├── infra/
 │   └── eks/
 │       └── README.md           # EKS cluster setup guide + Lens integration
@@ -1422,14 +1550,15 @@ rag_implementation/
 ├── specs/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
 ├── src/
-│   ├── api/                    # FastAPI routers + DI
+│   ├── api/                    # FastAPI routers + DI + rate_limit middleware (T-160)
 │   ├── core/                   # Settings, logging, exceptions
 │   ├── domain/                 # Entities, repository ABCs, services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · BenchmarkReport
-│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, Neo4j, SQLite metadata, llama.cpp, web search
+│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, feedback_store (T-146), Redis client, Neo4j, SQLite metadata, llama.cpp, web search
+│   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   │   └── search/             # DuckDuckGo · Tavily · Null web search providers (T-142)
 │   ├── observability/          # OTel tracing, Prometheus metrics
@@ -1546,7 +1675,7 @@ uv run pytest tests/integration/test_qdrant.py -v
 uv run pytest tests/benchmarks/ -v -s
 ```
 
-**Test coverage:** 97 source files · 40+ test files · 847 tests (32 skipped without models/services).
+**Test coverage:** 97+ source files · 45+ test files · 1682 tests (32 skipped without models/services).
 
 Integration tests auto-skip when models or Qdrant are absent (CI runs them but does not start Docker services).
 
@@ -2063,12 +2192,20 @@ The retrieval feedback loop is an optional **closed-loop retrieval quality** fea
 
 **Storage model:**
 
-| Field | Location | Meaning |
+| Field / key | Location | Meaning |
 |---|---|---|
-| `feedback_score` | Qdrant chunk payload (`metadata.feedback_score`) | Accumulated signed score (`+1.0` per positive vote, `-1.0` per negative) |
-| `feedback_revision` | Qdrant chunk payload | Monotonic counter for compare-and-set updates |
+| `feedback_score` | Backend-specific (see below) | Accumulated signed score (`+1.0` per positive vote, `-1.0` per negative) |
+| `feedback_revision` | Qdrant chunk payload only | Monotonic counter for compare-and-set updates (`backend=qdrant`) |
 
-Qdrant is the **write source of truth** — `record_feedback()` calls `accumulate_feedback_score()` with CAS retries; BM25 is not updated on the feedback path. Boost reads live scores via `vector_store.get_feedback_scores()` at retrieval time (not stale in-memory BM25 metadata). Re-ingest upserts preserve existing feedback under CAS-protected updates.
+**Backends** (`quality.feedback_loop.backend` — **T-146**):
+
+| Backend | Write path | Read path at boost time |
+|---|---|---|
+| `qdrant` (default) | `accumulate_feedback_score()` with CAS retries on chunk payload | `get_feedback_scores()` via Qdrant |
+| `redis` | `HINCRBYFLOAT` on hash `rag:feedback:scores` | Same hash via `RedisFeedbackStore` |
+| `postgres` | SQL `UPSERT … score += delta` (SQLite file for local dev) | Same store; not suitable for multi-pod SQLite |
+
+BM25 is **never** updated on the feedback path. Shutdown persistence skips the BM25 JSON rewrite when the in-memory index is unchanged (`BM25Index._dirty`). Boost reads live scores via `vector_store.get_feedback_scores()` at retrieval time (not stale in-memory BM25 metadata). Re-ingest upserts preserve existing Qdrant feedback under CAS-protected updates when using the default backend.
 
 **API contract:**
 
@@ -2084,8 +2221,9 @@ POST /feedback
 | Response | Meaning |
 |---|---|
 | `204` | Feedback recorded |
-| `404` | Chunk ID not found in Qdrant |
-| `502` | Vector store error |
+| `404` | Chunk ID not found in vector store (`chunk_exists` check) |
+| `429` | Rate limit exceeded when `api.rate_limit.enabled=true` (**T-160**) |
+| `502` | Vector store / feedback backend error |
 
 Requires `X-API-Key` when `API__API_KEY` is set (same as `/ingest` and `/chat`).
 
@@ -2097,15 +2235,19 @@ quality:
   feedback_loop:
     enabled: false         # set true to apply boost during retrieval
     boost_multiplier: 0.05 # tune per deployment — higher = stronger feedback influence
+    backend: qdrant        # qdrant | redis | postgres (T-146)
+    postgres_url: ""       # path to SQLite file when backend=postgres
 ```
 
 **When to use:** human-in-the-loop QA UIs, internal knowledge bases where users can thumbs-up/down sources, or gradual corpus-specific ranking tuning without re-ingestion.
 
-**Trade-offs:** feedback affects ranking globally for a chunk across all future queries (not scoped per user or session). Under extreme concurrent votes on the same chunk, CAS retries may eventually fail — see **T-146** for multi-replica hardening, rate limiting (**T-160**), and concurrency benchmarks (**T-172**). Disabled boost (`enabled: false`) still accepts and persists feedback for later enablement.
+**Trade-offs:** feedback affects ranking globally for a chunk across all future queries (not scoped per user or session). Under extreme concurrent votes on the same chunk with `backend=qdrant`, CAS retries may eventually fail — switch to `backend=redis` for atomic increments. For public APIs with HPA ≥ 2, enable rate limiting (**T-160**) and follow [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). Disabled boost (`enabled: false`) still accepts and persists feedback for later enablement.
 
 ```bash
 QUALITY__FEEDBACK_LOOP__ENABLED=true
 QUALITY__FEEDBACK_LOOP__BOOST_MULTIPLIER=0.05
+QUALITY__FEEDBACK_LOOP__BACKEND=redis
+API__RATE_LIMIT__ENABLED=true
 
 curl -X POST http://localhost:8000/feedback \
   -H "Content-Type: application/json" \
@@ -2268,6 +2410,9 @@ On `POST /chat/full`, optional post-generation spans appear after `generation.ll
 | `rag_requests_total` | Counter | `status` |
 | `rag_retrieval_chunk_count` | Histogram | — |
 | `rag_llm_tokens_total` | Counter | — |
+| `rag_embedding_cache_hits_total` | Counter | — |
+| `rag_embedding_cache_misses_total` | Counter | — |
+| `rag_rate_limit_rejected_total` | Counter | `path` (T-160) |
 
 **Grafana scrape config:**
 ```yaml
@@ -2285,7 +2430,7 @@ scrape_configs:
 ```mermaid
 flowchart LR
     PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
-    L --> U["2️⃣ Unit Tests<br/>847 tests<br/>coverage upload"]
+    L --> U["2️⃣ Unit Tests<br/>1682 tests<br/>coverage upload"]
     U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
     U --> R["4️⃣ Retrieval Regression<br/>Recall@5 gate<br/>auto-skip if no golden data"]
 

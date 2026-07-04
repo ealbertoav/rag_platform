@@ -91,3 +91,5 @@ quality:
   feedback_loop:
     enabled: false               # user relevance feedback + RRF boost (T-145)
     boost_multiplier: 0.05       # additive RRF boost per unit of positive feedback_score
+    backend: qdrant              # qdrant | redis | postgres (T-146 multi-replica hardening)
+    postgres_url: ""             # SQL feedback store path or DSN when backend=postgres

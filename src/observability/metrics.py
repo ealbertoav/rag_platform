@@ -38,6 +38,12 @@ EMBEDDING_CACHE_MISSES = Counter(
     "Total embedding vectors computed (cache miss)",
 )
 
+RATE_LIMIT_REJECTED = Counter(
+    "rag_rate_limit_rejected_total",
+    "Total requests rejected by API rate limiting",
+    labelnames=["path"],
+)
+
 # ── Recording helpers ──────────────────────────────────────────────────────────
 
 
@@ -57,3 +63,8 @@ def record_generation(token_count: int, latency_seconds: float) -> None:
     """Record generation-specific metrics."""
     LLM_TOKENS_TOTAL.inc(token_count)
     REQUEST_LATENCY.labels(stage="generation").observe(latency_seconds)
+
+
+def record_rate_limit_rejection(path: str) -> None:
+    """Increment the rate-limit rejection counter for a *path*."""
+    RATE_LIMIT_REJECTED.labels(path=path).inc()

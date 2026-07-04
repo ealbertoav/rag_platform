@@ -311,6 +311,10 @@ class QdrantVectorStore(VectorStoreRepository):
         except Exception as exc:
             raise VectorStoreError("Qdrant count failed", cause=exc) from exc
 
+    def chunk_exists(self, chunk_id: str) -> bool:
+        """Return True when *chunk_id* is stored in the Qdrant collection."""
+        return bool(self._retrieve_points([chunk_id]))
+
     def get_feedback_score(self, chunk_id: str) -> float:
         """Return accumulated user feedback score stored in chunk metadata."""
         points = self._retrieve_points([chunk_id])
