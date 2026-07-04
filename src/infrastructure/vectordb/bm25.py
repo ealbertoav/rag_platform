@@ -6,7 +6,7 @@ import os
 import pickle
 import threading
 import types
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -33,7 +33,7 @@ fcntl = _fcntl
 
 
 @contextmanager
-def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
+def _exclusive_file_lock(lock_path: Path) -> Generator[None, None, None]:
     """Serialize index migration across processes on Unix-like systems."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
@@ -70,6 +70,7 @@ class BM25Index:
         self._bm25: BM25Okapi | None = None
         self._defer_rebuild_depth = 0
         self._needs_rebuild = False
+        self._dirty = False
 
     # ── Indexing ───────────────────────────────────────────────────────────────
 
@@ -79,6 +80,7 @@ class BM25Index:
             self._chunks = list(chunks)
             self._rebuild()
             self._needs_rebuild = False
+            self._dirty = True
         logger.debug("BM25 index built: %d chunks", len(self._chunks))
 
     def add(self, chunks: list[Chunk]) -> None:
@@ -91,6 +93,7 @@ class BM25Index:
             self._chunks = [c for c in self._chunks if c.id not in incoming_ids]
             self._chunks.extend(chunks)
             self._schedule_rebuild()
+            self._dirty = True
         logger.debug("BM25 index updated: +%d chunks, total %d", len(chunks), len(self._chunks))
 
     def remove_by_ids(self, chunk_ids: list[str]) -> None:
@@ -102,6 +105,7 @@ class BM25Index:
             before = len(self._chunks)
             self._chunks = [c for c in self._chunks if c.id not in remove]
             self._schedule_rebuild()
+            self._dirty = True
         logger.debug("BM25 index removed %d chunks", before - len(self._chunks))
 
     def rebuild(self) -> None:
@@ -111,7 +115,7 @@ class BM25Index:
             self._needs_rebuild = False
 
     @contextmanager
-    def deferred_rebuild(self) -> Iterator[BM25Index]:
+    def deferred_rebuild(self) -> Generator[BM25Index, None, None]:
         """Defer rebuilds until the context exits, then rebuild once if needed."""
         with self._lock:
             self._defer_rebuild_depth += 1
@@ -165,6 +169,9 @@ class BM25Index:
     def save(self) -> None:
         """Persist chunk metadata as JSON and rebuild BM25 on a load."""
         with self._lock:
+            if not self._dirty:
+                logger.debug("BM25 index unchanged — skipping save")
+                return
             self._ensure_built()
             chunks = list(self._chunks)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +186,8 @@ class BM25Index:
                 fh.flush()
                 os.fsync(fh.fileno())
             tmp_path.replace(self._path)
+            with self._lock:
+                self._dirty = False
             logger.info("BM25 index saved to %s", self._path)
         except OSError as exc:
             tmp_path.unlink(missing_ok=True)
@@ -202,35 +211,45 @@ class BM25Index:
             self._chunks = [Chunk.model_validate(item) for item in raw_chunks]
             self._rebuild()
             self._needs_rebuild = False
+            self._dirty = False
         logger.info("BM25 index loaded from %s (%d chunks)", self._path, len(self._chunks))
 
     @classmethod
     def load_or_create(cls, index_path: Path | None = None) -> BM25Index:
         """Return a loaded index if the file exists, otherwise an empty one."""
-        instance = cls(index_path)
-        json_path = instance._path
+        json_path = index_path or BM25_INDEX_PATH
         legacy_path = (
             BM25_LEGACY_PICKLE_PATH if index_path is None else json_path.with_suffix(".pkl")
         )
-
-        if json_path.exists():
-            instance.load()
-        elif legacy_path.exists():
-            instance._migrate_legacy_pickle(legacy_path)
+        instance = cls(index_path)
+        instance.bootstrap_from_disk(legacy_path)
         return instance
+
+    def bootstrap_from_disk(self, legacy_path: Path) -> None:
+        """Load JSON at the instance path or migrate a legacy pickle index."""
+        if self._path.exists():
+            self.load()
+        elif legacy_path.exists():
+            self._migrate_legacy_pickle(legacy_path)
 
     # ── Properties ─────────────────────────────────────────────────────────────
 
-    @property
-    def size(self) -> int:
+    def _read_size(self) -> int:
         with self._lock:
             return len(self._chunks)
 
-    @property
-    def chunks(self) -> list[Chunk]:
+    def _read_chunks(self) -> list[Chunk]:
         """Return a snapshot of all indexed chunks."""
         with self._lock:
             return list(self._chunks)
+
+    @property
+    def size(self) -> int:
+        return self._read_size()
+
+    @property
+    def chunks(self) -> list[Chunk]:
+        return self._read_chunks()
 
     def get_by_id(self, chunk_id: str) -> Chunk | None:
         """Return the chunk with *chunk_id*, or "None" if not indexed."""
@@ -283,6 +302,7 @@ class BM25Index:
             self._chunks = list(chunks)
             self._rebuild()
             self._needs_rebuild = False
+            self._dirty = True
         logger.info("BM25 legacy pickle loaded from %s (%d chunks)", path, len(self._chunks))
 
     def _ensure_built(self) -> None:

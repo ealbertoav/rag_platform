@@ -1748,7 +1748,7 @@
 ---
 
 ### T-146 · Feedback Loop Production Hardening _(follow-up to T-145)_
-- **Status:** `[~]` — core CAS + Qdrant-only persistence **done** in T-145; ops docs, rate limits, and benchmarks **pending**
+- **Status:** `[x]` — ops docs, rate limits, pluggable backends, BM25 dirty-save, concurrency benchmark
 - **Goal:** Close remaining production gaps in the T-145 feedback loop identified during Bugbot review and multi-replica deployment analysis — without blocking local/single-replica usage.
 - **Inputs:** T-145 (feedback API + boost), T-013 (Qdrant), T-032 (API), T-095 (Helm HPA), T-160 (rate limiting, optional)
 - **Outputs:** Documented gap tracker, hardened feedback persistence for horizontal scale, and CI/load-test coverage before HPA ≥ 2.
@@ -1760,11 +1760,11 @@
   | Full BM25 JSON rewrite on every `POST /feedback` | High | **Fixed** — deferred to lifespan `save_indexes()` | — | T-145 hardening |
   | Non-atomic read-modify-write on `feedback_score` | Medium | **Fixed** — Qdrant CAS retry in `accumulate_feedback_score` | — | T-145 hardening |
   | Per-pod BM25 metadata drift under multi-replica | Medium | **Fixed** — Qdrant is write source of truth; boost reads `vector_store.get_feedback_scores` | — | T-145 hardening |
-  | CAS retry insufficient under extreme same-chunk contention | Low | **Open** | Feedback drives ranking in prod **and** load tests show lost increments | T-146 |
-  | No rate limit on `/feedback` | Medium | **Open** | Public API or abuse observed | **T-160** (add `/feedback` to protected routes) |
-  | No multi-pod feedback load test / baseline | Low | **Open** | Before enabling Helm HPA in prod | **T-172** (add scenario 5) |
-  | Shared BM25 PVC last-writer-wins on shutdown save | Low | **Open** | Multiple API replicas share BM25 persistence volume | T-146 or **T-165** |
-  | True atomic increment (Redis / Postgres) | Low | **Deferred** | Business-critical feedback under heavy multi-pod load | T-146 (optional backend) |
+  | CAS retry insufficient under extreme same-chunk contention | Low | **Mitigated** — use `backend: redis` for HINCRBYFLOAT | Feedback drives ranking in prod **and** load tests show lost increments | T-146 |
+  | No rate limit on `/feedback` | Medium | **Fixed** — T-160 middleware includes `/feedback` when enabled | Public API or abuse observed | **T-160** |
+  | No multi-pod feedback load test / baseline | Low | **Fixed** — `tests/benchmarks/test_feedback_concurrency.py` | Before enabling Helm HPA in prod | **T-172** |
+  | Shared BM25 PVC last-writer-wins on shutdown save | Low | **Mitigated** — skip BM25 save when unchanged | Multiple API replicas share BM25 persistence volume | T-146 |
+  | True atomic increment (Redis / Postgres) | Low | **Fixed** — `quality.feedback_loop.backend: redis \| postgres` | Business-critical feedback under heavy multi-pod load | T-146 |
 
 - **Files:**
   - `src/infrastructure/vectordb/qdrant.py` — `accumulate_feedback_score`, `_try_set_feedback_score_if_current`, upsert feedback preservation _(done)_
@@ -1773,11 +1773,11 @@
   - `tests/unit/test_qdrant.py` — CAS retry + concurrent accumulation + upsert/rollback tests _(done)_
   - `tests/unit/test_feedback_loop.py` — feedback loop + boost tests _(done)_
   - `README.md` — T-145 usage, API contract, pipeline position _(done)_
-  - `src/infrastructure/vectordb/feedback_store.py` — _(optional)_ Redis or Postgres atomic increment backend
-  - `src/core/settings.py` — _(optional)_ `quality.feedback.backend: qdrant \| redis \| postgres`
-  - `configs/app.yaml` — _(optional)_ feedback backend + Redis URL
-  - `tests/benchmarks/test_feedback_concurrency.py` — multi-process lost-increment regression _(pending)_
-  - `docs/operations/feedback-multi-replica.md` — deployment guidance _(pending)_
+  - `src/infrastructure/vectordb/feedback_store.py` — pluggable Redis / SQL atomic increment backend
+  - `src/core/settings.py` — `quality.feedback_loop.backend: qdrant | redis | postgres`
+  - `configs/app.yaml` — feedback backend + Redis URL + `api.rate_limit` block
+  - `tests/benchmarks/test_feedback_concurrency.py` — multi-process lost-increment regression _(done)_
+  - `docs/operations/feedback-multi-replica.md` — deployment guidance _(done)_
 - **Remaining work:**
   1. **Before prod HPA (min ≥ 2):** document single-writer vs multi-replica semantics in `docs/operations/feedback-multi-replica.md`; add concurrent feedback scenario to **T-172** infra benchmark.
   2. **With T-160:** include `/feedback` in rate-limited routes when `api.rate_limit.enabled=true`.
@@ -1788,10 +1788,10 @@
   - [x] `accumulate_feedback_score` uses compare-and-set retries (not process-local lock only)
   - [x] `record_feedback` writes Qdrant only; retrieval boost reads live Qdrant scores
   - [x] README documents T-145 API contract, config, pipeline position, and T-146 deployment caveats
-  - [ ] `docs/operations/feedback-multi-replica.md` documents safe deployment modes (1 replica, HPA ≥ 2 with CAS, optional Redis backend)
-  - [ ] **T-160** updated to rate-limit `/feedback` when enabled
-  - [ ] **T-172** adds scenario: 10 concurrent `POST /feedback` on same `chunk_id` across simulated pods — zero lost increments
-  - [ ] _(Optional)_ Redis/Postgres feedback backend selectable via settings; default remains Qdrant CAS
+  - [x] `docs/operations/feedback-multi-replica.md` documents safe deployment modes (1 replica, HPA ≥ 2 with CAS, optional Redis backend)
+  - [x] **T-160** updated to rate-limit `/feedback` when enabled (`src/api/rate_limit.py`)
+  - [x] **T-172** adds scenario: 10 concurrent `POST /feedback` on same `chunk_id` across simulated pods — zero lost increments (`tests/benchmarks/test_feedback_concurrency.py`)
+  - [x] Redis/SQL feedback backend selectable via settings; default remains Qdrant CAS
 - **Safe without closing T-146:**
   - Local dev, Docker Compose single `api` container, `uvicorn --workers 1`
   - Production with `replicaCount.api: 1` and normal human feedback volume

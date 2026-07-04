@@ -210,6 +210,8 @@ class SourceHighlightingSettings(BaseModel):
 class FeedbackLoopSettings(BaseModel):
     enabled: bool = False
     boost_multiplier: float = Field(default=0.05, ge=0.0)
+    backend: Literal["qdrant", "redis", "postgres"] = "qdrant"
+    postgres_url: str = ""
 
 
 class QualitySettings(BaseModel):
@@ -275,6 +277,12 @@ class CompressionSettings(BaseModel):
     max_tokens: int = Field(default=1500, gt=0)
 
 
+class APIRateLimitSettings(BaseModel):
+    enabled: bool = False
+    requests_per_minute: int = Field(default=60, ge=1)
+    burst: int = Field(default=10, ge=0)
+
+
 class APISettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -283,6 +291,7 @@ class APISettings(BaseModel):
     api_key: SecretStr = SecretStr("")
     max_upload_bytes: int = Field(default=10_485_760, gt=0)  # 10 MiB
     ingest_allowed_roots: list[str] = Field(default_factory=lambda: [str(ROOT / "data" / "raw")])
+    rate_limit: APIRateLimitSettings = Field(default_factory=APIRateLimitSettings)
 
 
 class LoggingSettings(BaseModel):

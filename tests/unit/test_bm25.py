@@ -168,6 +168,18 @@ class TestBM25IndexPersistence:
         idx.save()
         assert path.exists()
 
+    def test_save_skips_when_unchanged(self, tmp_path: Path, caplog):
+        path = tmp_path / "bm25.pkl"
+        idx = BM25Index(index_path=path)
+        idx.index(_CORPUS)
+        idx.save()
+        mtime = path.stat().st_mtime
+        import time
+
+        time.sleep(0.01)
+        idx.save()
+        assert path.stat().st_mtime == mtime
+
     def test_load_restores_size(self, tmp_path: Path):
         path = tmp_path / "bm25.pkl"
         idx = BM25Index(index_path=path)

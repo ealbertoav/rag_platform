@@ -12,3 +12,7 @@ api:
   max_upload_bytes: 10485760     # 10 MiB upload cap for POST /ingest/upload
   ingest_allowed_roots:
     - data/raw                   # POST /ingest/path may only read under these directories
+  rate_limit:
+    enabled: false               # T-160 / T-146 — protect /ingest, /chat, /evals/run, /feedback
+    requests_per_minute: 60
+    burst: 10
