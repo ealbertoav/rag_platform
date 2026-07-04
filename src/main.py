@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.rate_limit import configure_rate_limit, rate_limit_middleware
+from src.api.rate_limit import RateLimitHTTPMiddleware, configure_rate_limit
 from src.api.routers import chat, evals, feedback, health, ingest
 from src.api.routers.metrics_router import router as metrics_router
 from src.core.logging import configure_logging
@@ -100,6 +100,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    configure_rate_limit()
+    _app.add_middleware(RateLimitHTTPMiddleware)
     _app.add_middleware(
         _cors_middleware_factory,
         allow_origins=settings.api.cors_origins,
@@ -107,8 +109,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    configure_rate_limit()
-    _app.middleware("http")(rate_limit_middleware)
 
     _app.include_router(health.router)
     _app.include_router(ingest.router)

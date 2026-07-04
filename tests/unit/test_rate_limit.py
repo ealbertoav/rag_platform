@@ -6,16 +6,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from httpx import ASGITransport, AsyncClient
 
 from src.api.rate_limit import (
     EXEMPT_PATHS,
     PROTECTED_PREFIXES,
     InMemoryRateLimiter,
+    RateLimitHTTPMiddleware,
+    RedisRateLimiter,
     client_key,
     configure_rate_limit,
     is_protected_path,
-    rate_limit_middleware,
+    should_rate_limit_request,
     try_build_redis_rate_limiter,
 )
 
@@ -26,10 +29,18 @@ def _app_with_middleware(
     rpm: int = 2,
     burst: int = 0,
     limiter: InMemoryRateLimiter | None = None,
+    cors_origins: list[str] | None = None,
 ) -> FastAPI:
     configure_rate_limit(enabled=enabled, requests_per_minute=rpm, burst=burst, limiter=limiter)
     app = FastAPI()
-    app.middleware("http")(rate_limit_middleware)
+    app.add_middleware(RateLimitHTTPMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins or ["http://localhost:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -41,6 +52,10 @@ def _app_with_middleware(
 
     @app.post("/feedback")
     async def feedback() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.options("/feedback")
+    async def feedback_options() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/chat")
@@ -74,6 +89,18 @@ class TestRateLimitHelpers:
     def test_constants_include_feedback(self):
         assert "/feedback" in PROTECTED_PREFIXES
         assert "/health" in EXEMPT_PATHS
+
+    def test_should_rate_limit_request_skips_options(self):
+        request = MagicMock()
+        request.method = "OPTIONS"
+        request.url.path = "/feedback"
+        assert should_rate_limit_request(request) is False
+
+    def test_should_rate_limit_request_protects_post(self):
+        request = MagicMock()
+        request.method = "POST"
+        request.url.path = "/feedback"
+        assert should_rate_limit_request(request) is True
 
     def test_client_key_prefers_api_key(self):
         request = MagicMock()
@@ -115,6 +142,34 @@ class TestInMemoryRateLimiter:
         assert limiter.allow("client-a")[0] is True
 
 
+class TestRedisRateLimiter:
+    def test_allow_returns_script_result(self):
+        mock_script = MagicMock(return_value=[1, 0])
+        mock_client = MagicMock()
+        mock_client.register_script.return_value = mock_script
+        limiter = RedisRateLimiter(mock_client, requests_per_minute=2, burst=0)
+        assert limiter.allow("client-a") == (True, 0)
+        mock_script.assert_called_once()
+
+    def test_allow_blocks_when_script_denies(self):
+        mock_script = MagicMock(return_value=[0, 42])
+        mock_client = MagicMock()
+        mock_client.register_script.return_value = mock_script
+        limiter = RedisRateLimiter(mock_client, requests_per_minute=1, burst=0)
+        assert limiter.allow("client-a") == (False, 42)
+
+    def test_allow_fails_open_on_redis_error(self, caplog):
+        import logging
+
+        mock_script = MagicMock(side_effect=OSError("redis down"))
+        mock_client = MagicMock()
+        mock_client.register_script.return_value = mock_script
+        limiter = RedisRateLimiter(mock_client, requests_per_minute=1, burst=0)
+        with caplog.at_level(logging.WARNING, logger="src.api.rate_limit"):
+            assert limiter.allow("client-a") == (True, 0)
+        assert "Redis rate limit check failed" in caplog.text
+
+
 @pytest.mark.asyncio
 class TestRateLimitMiddleware:
     async def test_disabled_passes_through(self):
@@ -131,6 +186,20 @@ class TestRateLimitMiddleware:
                 assert (await client.get("/health")).status_code == 200
                 assert (await client.get("/metrics")).status_code == 200
 
+    async def test_options_preflight_not_limited(self):
+        app = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/feedback")
+            for _ in range(5):
+                resp = await client.options(
+                    "/feedback",
+                    headers={
+                        "Origin": "http://localhost:3000",
+                        "Access-Control-Request-Method": "POST",
+                    },
+                )
+                assert resp.status_code != 429
+
     async def test_feedback_returns_429_with_retry_after(self):
         app = _app_with_middleware(enabled=True, rpm=1, burst=0)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -138,6 +207,17 @@ class TestRateLimitMiddleware:
             resp = await client.post("/feedback")
             assert resp.status_code == 429
             assert resp.headers.get("Retry-After") is not None
+
+    async def test_429_includes_cors_headers_for_cross_origin(self):
+        app = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/feedback")
+            resp = await client.post(
+                "/feedback",
+                headers={"Origin": "http://localhost:3000"},
+            )
+            assert resp.status_code == 429
+            assert resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
 
     async def test_records_metric_on_rejection(self):
         app = _app_with_middleware(enabled=True, rpm=1, burst=0)
@@ -159,14 +239,14 @@ class TestRedisRateLimiterFallback:
         ):
             assert try_build_redis_rate_limiter(60, 10) is None
 
-    def test_returns_limiter_when_redis_available(self):
+    def test_returns_redis_limiter_when_redis_available(self):
         mock_client = MagicMock()
         with patch(
             "src.api.rate_limit.build_redis_client",
             return_value=mock_client,
         ):
             limiter = try_build_redis_rate_limiter(60, 10)
-        assert isinstance(limiter, InMemoryRateLimiter)
+        assert isinstance(limiter, RedisRateLimiter)
         mock_client.ping.assert_called_once()
 
 
@@ -177,3 +257,20 @@ class TestRateLimitConfiguration:
         with caplog.at_level(logging.INFO, logger="src.api.rate_limit"):
             configure_rate_limit(enabled=True, requests_per_minute=30, burst=5)
         assert "API rate limiting enabled" in caplog.text
+
+    def test_prefers_redis_limiter_when_available(self):
+        mock_client = MagicMock()
+        with patch(
+            "src.api.rate_limit.build_redis_client",
+            return_value=mock_client,
+        ):
+            config = configure_rate_limit(enabled=True, requests_per_minute=30, burst=5)
+        assert isinstance(config.limiter, RedisRateLimiter)
+
+    def test_falls_back_to_in_memory_when_redis_unavailable(self):
+        with patch(
+            "src.api.rate_limit.build_redis_client",
+            side_effect=OSError("down"),
+        ):
+            config = configure_rate_limit(enabled=True, requests_per_minute=30, burst=5)
+        assert isinstance(config.limiter, InMemoryRateLimiter)
