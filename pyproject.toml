@@ -209,6 +209,7 @@ ignore_errors = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["scripts"]
 filterwarnings = [
     # qdrant-client version probe when Docker is not running (integration skip checks)
     "ignore:Failed to obtain server version:UserWarning:qdrant_client.qdrant_remote",

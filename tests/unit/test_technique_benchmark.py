@@ -25,6 +25,7 @@ from src.evals.e2e.technique_benchmark import (
     load_technique_configs,
     merge_technique_overrides,
     pre_seed_feedback_scores,
+    prepare_qa_pairs,
     reload_settings_module,
     run_technique_matrix,
     temporary_config,
@@ -114,6 +115,26 @@ class TestPlaceholderHelpers:
         ]
         filtered = filter_qa_pairs(pairs)
         assert len(filtered) == 1
+
+    def test_prepare_qa_pairs_filters_before_max_samples(self):
+        pairs: list[dict[str, object]] = [
+            {"question": "Placeholder 1?", "relevant_chunks": ["chunk_id_1"]},
+            {"question": "Placeholder 2?", "relevant_chunks": ["chunk_id_2"]},
+            _qa(question="Real 1?", relevant=["c0"]),
+            _qa(question="Real 2?", relevant=["c1"]),
+            _qa(question="Real 3?", relevant=["c2"]),
+        ]
+        prepared = prepare_qa_pairs(pairs, max_samples=2)
+        assert len(prepared) == 2
+        assert prepared[0]["question"] == "Real 1?"
+        assert prepared[1]["question"] == "Real 2?"
+
+    def test_prepare_qa_pairs_no_cap(self):
+        pairs: list[dict[str, object]] = [
+            _qa(),
+            {"question": "Placeholder?", "relevant_chunks": ["chunk_id_1"]},
+        ]
+        assert len(prepare_qa_pairs(pairs)) == 1
 
     def test_has_real_qa_data(self):
         assert has_real_qa_data([_qa()])
@@ -502,6 +523,28 @@ class TestTechniqueBenchmarkRun:
         mock_seed.assert_called_once()
         assert report.feedback_comparison is not None
         assert report.results[0].technique == "feedback_loop"
+
+    @pytest.mark.asyncio
+    async def test_feedback_loop_factory_exception_sets_error(self):
+        factory = MagicMock(side_effect=RuntimeError("feedback factory failed"))
+
+        with (
+            patch(
+                "src.evals.e2e.technique_benchmark.temporary_config",
+                side_effect=lambda *_args, **_kwargs: _noop_context(),
+            ),
+            patch("src.evals.e2e.technique_benchmark.pre_seed_feedback_scores"),
+        ):
+            report = await _benchmark().run(
+                [_qa(relevant=["c0"])],
+                ["feedback_loop"],
+                pipeline_factory=factory,
+            )
+
+        assert report.feedback_comparison is None
+        assert len(report.results) == 1
+        assert report.results[0].technique == "feedback_loop"
+        assert report.results[0].error == "feedback factory failed"
 
     @pytest.mark.asyncio
     async def test_self_rag_eval_uses_pipeline_context(self):

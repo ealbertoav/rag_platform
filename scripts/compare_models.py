@@ -125,6 +125,13 @@ async def run(args: argparse.Namespace) -> int:
     qa_pairs = resolve_qa_pairs(args.qa_dataset, args.max_samples)
     if qa_pairs is None:
         return 1
+    if not qa_pairs:
+        print(
+            "Error: no real QA pairs after filtering placeholders — populate "
+            "datasets/goldens/qa_dataset.json via T-040.",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"Comparing {len(args.configs)} model(s) on {len(qa_pairs)} QA pairs…\n")
 

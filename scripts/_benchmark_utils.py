@@ -35,10 +35,18 @@ def apply_llm_config(config_path: str) -> str:
     return str(llm_cfg.get("model_path", Path(config_path).stem))
 
 
-def resolve_qa_pairs(qa_dataset: str, max_samples: int | None) -> list[dict[str, object]] | None:
-    """Resolve, load, and cap QA pairs from the standard datasets location.
+def resolve_qa_pairs(
+    qa_dataset: str,
+    max_samples: int | None,
+    *,
+    filter_placeholders: bool = True,
+) -> list[dict[str, object]] | None:
+    """Resolve, load, and optionally cap QA pairs from the standard datasets location.
 
-    Returns "None" (and prints an error) when no pairs are found.
+    When *filter_placeholders* is True (default), placeholder rows are removed
+    before applying *max_samples*, so the cap applies to real golden rows only.
+
+    Returns "None" (and prints an error) when the file has no loadable pairs.
     """
     import sys
 
@@ -53,7 +61,11 @@ def resolve_qa_pairs(qa_dataset: str, max_samples: int | None) -> list[dict[str,
         print(f"Error: no QA pairs found in {qa_path}", file=sys.stderr)
         return None
 
-    if max_samples:
+    if filter_placeholders:
+        from src.evals.e2e.technique_benchmark import prepare_qa_pairs
+
+        pairs = prepare_qa_pairs(pairs, max_samples)
+    elif max_samples is not None and max_samples > 0:
         pairs = pairs[:max_samples]
 
     return pairs

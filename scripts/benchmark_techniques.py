@@ -25,17 +25,11 @@ def _parse_techniques(raw: str) -> list[str]:
 
 async def run(args: argparse.Namespace) -> int:
     from src.core.constants import EXPORTS_DIR
-    from src.evals.e2e.technique_benchmark import (
-        TechniqueBenchmark,
-        filter_qa_pairs,
-        has_real_qa_data,
-    )
+    from src.evals.e2e.technique_benchmark import TechniqueBenchmark, has_real_qa_data
 
     qa_pairs = resolve_qa_pairs(args.qa_dataset, args.max_samples)
     if qa_pairs is None:
         return 1
-
-    qa_pairs = filter_qa_pairs(qa_pairs)
     techniques = _parse_techniques(args.techniques)
 
     if not has_real_qa_data(qa_pairs):

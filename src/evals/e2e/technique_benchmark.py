@@ -179,6 +179,17 @@ def filter_qa_pairs(pairs: list[dict[str, object]]) -> list[dict[str, object]]:
     return filtered
 
 
+def prepare_qa_pairs(
+    pairs: list[dict[str, object]],
+    max_samples: int | None = None,
+) -> list[dict[str, object]]:
+    """Filter placeholders, then cap to *max_samples* real rows."""
+    filtered = filter_qa_pairs(pairs)
+    if max_samples is not None and max_samples > 0:
+        return filtered[:max_samples]
+    return filtered
+
+
 def load_qa_pairs(path: Path | None = None) -> list[dict[str, object]]:
     """Load and filter QA pairs from a *path* (defaults to golden QA dataset)."""
     qa_path = path or _DEFAULT_QA_PATH
@@ -392,20 +403,34 @@ class TechniqueBenchmark:
 
         for technique in techniques:
             if technique == "feedback_loop":
-                feedback_comparison, on_result = await self._run_feedback_comparison(
-                    qa_pairs,
-                    factory=factory,
-                    vector_store=vector_store,
-                )
-                if on_result is not None:
+                try:
+                    feedback_comparison, on_result = await self._run_feedback_comparison(
+                        qa_pairs,
+                        factory=factory,
+                        vector_store=vector_store,
+                    )
+                    if on_result is not None:
+                        results.append(
+                            TechniqueResult(
+                                technique="feedback_loop",
+                                total_samples=on_result.total_samples,
+                                mean_recall_at_5=on_result.mean_recall_at_5,
+                                mean_faithfulness=on_result.mean_faithfulness,
+                                mean_relevance=on_result.mean_relevance,
+                                mean_latency_ms=on_result.mean_latency_ms,
+                            )
+                        )
+                except Exception as exc:
+                    logger.exception("Technique %s failed", technique)
                     results.append(
                         TechniqueResult(
                             technique="feedback_loop",
-                            total_samples=on_result.total_samples,
-                            mean_recall_at_5=on_result.mean_recall_at_5,
-                            mean_faithfulness=on_result.mean_faithfulness,
-                            mean_relevance=on_result.mean_relevance,
-                            mean_latency_ms=on_result.mean_latency_ms,
+                            total_samples=0,
+                            mean_recall_at_5=0.0,
+                            mean_faithfulness=0.0,
+                            mean_relevance=0.0,
+                            mean_latency_ms=0.0,
+                            error=str(exc),
                         )
                     )
                 continue
