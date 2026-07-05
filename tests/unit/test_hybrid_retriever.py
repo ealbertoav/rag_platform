@@ -11,6 +11,7 @@ from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
+from tests.unit.hybrid_retriever_helpers import feedback_boost_retriever
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -100,14 +101,9 @@ class TestHybridRetrieverAsync:
 
     @pytest.mark.asyncio
     async def test_feedback_lookup_failure_still_returns_fused_results(self):
-        dense_mock = MagicMock()
-        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
-        dense_mock.vector_store.get_feedback_scores.side_effect = VectorStoreError(
-            "Qdrant retrieve failed"
+        hr, _, _ = feedback_boost_retriever(
+            feedback_scores_side_effect=VectorStoreError("Qdrant retrieve failed"),
         )
-        bm25_mock = MagicMock()
-        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
-        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, feedback_boost_multiplier=0.1)
         results = await hr.retrieve(_query(), top_k=2)
         assert len(results) == 2
 

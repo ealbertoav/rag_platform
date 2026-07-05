@@ -18,6 +18,7 @@ from src.evals.e2e.technique_benchmark import (
     TechniqueConfig,
     TechniqueResult,
     build_benchmark_pipeline,
+    build_feedback_boost_overrides,
     filter_qa_pairs,
     has_real_qa_data,
     is_placeholder_qa_pair,
@@ -175,6 +176,19 @@ class TestMergeTechniqueOverrides:
     def test_extra_overrides_merged(self):
         overrides = merge_technique_overrides("baseline", {"FOO": "bar"})
         assert overrides["FOO"] == "bar"
+
+    def test_feedback_loop_isolates_boost_from_pool_size(self):
+        overrides = merge_technique_overrides("feedback_loop")
+        assert overrides["QUALITY__FEEDBACK_LOOP__EXPAND_CANDIDATE_POOL"] == "false"
+
+    def test_build_feedback_boost_overrides(self):
+        off = build_feedback_boost_overrides(boost_enabled=False)
+        on = build_feedback_boost_overrides(boost_enabled=True)
+        assert off["QUALITY__FEEDBACK_LOOP__ENABLED"] == "false"
+        assert on["QUALITY__FEEDBACK_LOOP__ENABLED"] == "true"
+        assert off["QUALITY__FEEDBACK_LOOP__EXPAND_CANDIDATE_POOL"] == "false"
+        assert on["QUALITY__FEEDBACK_LOOP__EXPAND_CANDIDATE_POOL"] == "false"
+        assert off["QUERY_EXPANSION__ENABLED"] == "false"
 
 
 class TestLoadTechniqueConfigs:
@@ -511,7 +525,7 @@ class TestTechniqueBenchmarkRun:
             patch(
                 "src.evals.e2e.technique_benchmark.temporary_config",
                 side_effect=lambda *_args, **_kwargs: _noop_context(),
-            ),
+            ) as mock_cfg,
             patch("src.evals.e2e.technique_benchmark.pre_seed_feedback_scores") as mock_seed,
         ):
             report = await _benchmark().run(
@@ -523,6 +537,12 @@ class TestTechniqueBenchmarkRun:
         mock_seed.assert_called_once()
         assert report.feedback_comparison is not None
         assert report.results[0].technique == "feedback_loop"
+        assert len(mock_cfg.call_args_list) == 2
+        for call in mock_cfg.call_args_list:
+            applied = call.args[0]
+            assert applied["QUALITY__FEEDBACK_LOOP__EXPAND_CANDIDATE_POOL"] == "false"
+        assert mock_cfg.call_args_list[0].args[0]["QUALITY__FEEDBACK_LOOP__ENABLED"] == "false"
+        assert mock_cfg.call_args_list[1].args[0]["QUALITY__FEEDBACK_LOOP__ENABLED"] == "true"
 
     @pytest.mark.asyncio
     async def test_feedback_loop_factory_exception_sets_error(self):

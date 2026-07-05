@@ -199,6 +199,10 @@ class RetrievalPipeline:
                 if _settings().quality.feedback_loop.enabled
                 else 0.0
             ),
+            feedback_expand_pool=(
+                _settings().quality.feedback_loop.enabled
+                and _settings().quality.feedback_loop.expand_candidate_pool
+            ),
         )
 
         expander = None

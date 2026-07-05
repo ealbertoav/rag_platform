@@ -210,6 +210,7 @@ class SourceHighlightingSettings(BaseModel):
 class FeedbackLoopSettings(BaseModel):
     enabled: bool = False
     boost_multiplier: float = Field(default=0.05, ge=0.0)
+    expand_candidate_pool: bool = True
     backend: Literal["qdrant", "redis", "postgres"] = "qdrant"
     postgres_url: str = ""
 

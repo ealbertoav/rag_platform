@@ -50,7 +50,10 @@ _TECHNIQUE_DELTA_OVERRIDES: dict[str, dict[str, str]] = {
     "cch": {"COMPRESSION__ENABLED": "true"},
     "reliable_rag": {"QUALITY__RELIABLE_RAG__ENABLED": "true"},
     "self_rag": {"QUALITY__SELF_RAG__ENABLED": "true"},
-    "feedback_loop": {},
+    "feedback_loop": {
+        # Benchmark compares boost on vs. off at identical fusion pool size.
+        "QUALITY__FEEDBACK_LOOP__EXPAND_CANDIDATE_POOL": "false",
+    },
 }
 
 
@@ -219,6 +222,14 @@ def merge_technique_overrides(
     if extra:
         merged.update(extra)
     return merged
+
+
+def build_feedback_boost_overrides(*, boost_enabled: bool) -> dict[str, str]:
+    """Env overrides for feedback A/B: pre-seeded scores, same pool size, boost toggled."""
+    overrides = merge_technique_overrides("feedback_loop")
+    overrides["QUALITY__FEEDBACK_LOOP__ENABLED"] = "true" if boost_enabled else "false"
+    overrides["QUALITY__FEEDBACK_LOOP__EXPAND_CANDIDATE_POOL"] = "false"
+    return overrides
 
 
 def load_technique_configs(
@@ -471,15 +482,11 @@ class TechniqueBenchmark:
         """Pre-seed feedback scores and compare Recall@5 with boost off vs. on."""
         pre_seed_feedback_scores(qa_pairs, vector_store=vector_store)
 
-        boost_off = merge_technique_overrides("feedback_loop")
-        boost_off["QUALITY__FEEDBACK_LOOP__ENABLED"] = "false"
-        with temporary_config(boost_off):
+        with temporary_config(build_feedback_boost_overrides(boost_enabled=False)):
             pipeline_off = factory(self_rag=False)  # type: ignore[operator]
             off_result = await self._evaluate_technique("feedback_off", pipeline_off, qa_pairs)
 
-        boost_on = merge_technique_overrides("feedback_loop")
-        boost_on["QUALITY__FEEDBACK_LOOP__ENABLED"] = "true"
-        with temporary_config(boost_on):
+        with temporary_config(build_feedback_boost_overrides(boost_enabled=True)):
             pipeline_on = factory(self_rag=False)  # type: ignore[operator]
             on_result = await self._evaluate_technique("feedback_on", pipeline_on, qa_pairs)
 
