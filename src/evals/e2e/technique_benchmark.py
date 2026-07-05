@@ -19,6 +19,7 @@ from rich.table import Table
 from src.core.constants import DATASETS_DIR, EXPORTS_DIR, ROOT
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.evaluation import EvalSample
+from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.relevance import RelevanceMetric
 from src.evals.retrieval.recall_at_k import recall_at_k
@@ -309,20 +310,8 @@ def temporary_config(overrides: dict[str, str]) -> Generator[None]:
         reload_settings_module()
 
 
-def pre_seed_feedback_scores(
-    qa_pairs: list[dict[str, object]],
-    *,
-    vector_store: object | None = None,
-) -> int:
-    """Pre-seed positive feedback for all relevant chunk IDs in *qa_pairs*.
-
-    Returns the number of unique chunk IDs seeded successfully.
-    """
-    if vector_store is None:
-        from src.infrastructure.vectordb.qdrant import QdrantVectorStore
-
-        vector_store = QdrantVectorStore.from_settings()
-
+def _relevant_chunk_ids(qa_pairs: list[dict[str, object]]) -> set[str]:
+    """Collect unique relevant chunk IDs from *qa_pairs*."""
     chunk_ids: set[str] = set()
     for pair in qa_pairs:
         relevant = pair.get("relevant_chunks")
@@ -331,20 +320,83 @@ def pre_seed_feedback_scores(
         for chunk_id in relevant:
             if isinstance(chunk_id, str) and chunk_id:
                 chunk_ids.add(chunk_id)
+    return chunk_ids
 
+
+def _resolve_benchmark_vector_store(vector_store: object | None = None) -> VectorStoreRepository:
+    if vector_store is None:
+        from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+
+        return QdrantVectorStore.from_settings()
+    return vector_store  # type: ignore[return-value]
+
+
+def _snapshot_feedback_scores(
+    vector_store: VectorStoreRepository,
+    chunk_ids: set[str],
+) -> dict[str, float]:
+    """Capture current feedback scores before benchmark seeding."""
+    snapshots: dict[str, float] = {}
+    for chunk_id in sorted(chunk_ids):
+        try:
+            snapshots[chunk_id] = vector_store.get_feedback_score(chunk_id)
+        except VectorStoreError as exc:
+            logger.warning("Could not snapshot feedback for %s: %s", chunk_id, exc)
+    return snapshots
+
+
+def _seed_feedback_scores(
+    vector_store: VectorStoreRepository,
+    chunk_ids: set[str],
+    *,
+    seeded_ids: set[str],
+) -> int:
+    """Pre-seed positive feedback for *chunk_ids*; track successes in *seeded_ids*."""
     seeded = 0
     for chunk_id in sorted(chunk_ids):
         try:
             record_feedback(
-                vector_store,  # type: ignore[arg-type]
+                vector_store,
                 query_id="technique-benchmark-seed",
                 chunk_id=chunk_id,
                 score=score_from_relevant(True),
             )
+            seeded_ids.add(chunk_id)
             seeded += 1
         except VectorStoreError as exc:
             logger.warning("Could not seed feedback for %s: %s", chunk_id, exc)
     return seeded
+
+
+def _restore_feedback_scores(
+    vector_store: VectorStoreRepository,
+    snapshots: dict[str, float],
+    *,
+    seeded_ids: set[str],
+) -> None:
+    """Restore pre-benchmark feedback scores for chunks that were seeded."""
+    for chunk_id in sorted(seeded_ids):
+        try:
+            vector_store.set_feedback_score(chunk_id, snapshots[chunk_id])
+        except VectorStoreError as exc:
+            logger.warning("Could not restore feedback for %s: %s", chunk_id, exc)
+
+
+@contextmanager
+def temporary_feedback_seed(
+    qa_pairs: list[dict[str, object]],
+    *,
+    vector_store: object | None = None,
+) -> Generator[int]:
+    """Pre-seed positive feedback for benchmark, restoring originals on exit."""
+    store = _resolve_benchmark_vector_store(vector_store)
+    chunk_ids = _relevant_chunk_ids(qa_pairs)
+    snapshots = _snapshot_feedback_scores(store, chunk_ids)
+    seeded_ids: set[str] = set()
+    try:
+        yield _seed_feedback_scores(store, set(snapshots), seeded_ids=seeded_ids)
+    finally:
+        _restore_feedback_scores(store, snapshots, seeded_ids=seeded_ids)
 
 
 class _AgentBenchmarkAdapter:
@@ -480,15 +532,14 @@ class TechniqueBenchmark:
         vector_store: object | None,
     ) -> tuple[FeedbackComparison | None, TechniqueResult | None]:
         """Pre-seed feedback scores and compare Recall@5 with boost off vs. on."""
-        pre_seed_feedback_scores(qa_pairs, vector_store=vector_store)
+        with temporary_feedback_seed(qa_pairs, vector_store=vector_store):
+            with temporary_config(build_feedback_boost_overrides(boost_enabled=False)):
+                pipeline_off = factory(self_rag=False)  # type: ignore[operator]
+                off_result = await self._evaluate_technique("feedback_off", pipeline_off, qa_pairs)
 
-        with temporary_config(build_feedback_boost_overrides(boost_enabled=False)):
-            pipeline_off = factory(self_rag=False)  # type: ignore[operator]
-            off_result = await self._evaluate_technique("feedback_off", pipeline_off, qa_pairs)
-
-        with temporary_config(build_feedback_boost_overrides(boost_enabled=True)):
-            pipeline_on = factory(self_rag=False)  # type: ignore[operator]
-            on_result = await self._evaluate_technique("feedback_on", pipeline_on, qa_pairs)
+            with temporary_config(build_feedback_boost_overrides(boost_enabled=True)):
+                pipeline_on = factory(self_rag=False)  # type: ignore[operator]
+                on_result = await self._evaluate_technique("feedback_on", pipeline_on, qa_pairs)
 
         comparison = FeedbackComparison(
             recall_boost_off=off_result.mean_recall_at_5,

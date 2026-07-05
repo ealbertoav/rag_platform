@@ -25,11 +25,11 @@ from src.evals.e2e.technique_benchmark import (
     load_qa_pairs,
     load_technique_configs,
     merge_technique_overrides,
-    pre_seed_feedback_scores,
     prepare_qa_pairs,
     reload_settings_module,
     run_technique_matrix,
     temporary_config,
+    temporary_feedback_seed,
 )
 
 _DEFAULT_TECHNIQUE_NAMES = (
@@ -377,41 +377,98 @@ class TestTechniqueBenchmarkReport:
         assert "baseline" in capsys.readouterr().out
 
 
-# ── pre_seed_feedback ──────────────────────────────────────────────────────────
+# ── temporary_feedback_seed ────────────────────────────────────────────────────
 
 
-class TestPreSeedFeedback:
-    def test_seeds_unique_chunk_ids(self):
+class TestTemporaryFeedbackSeed:
+    def test_seeds_unique_chunk_ids_and_restores_on_exit(self):
         store = MagicMock()
-        count = pre_seed_feedback_scores([_qa(relevant=["c0", "c1", "c0"])], vector_store=store)
-        assert count == 2
-        assert store.accumulate_feedback_score.call_count == 2
+        store.get_feedback_score.side_effect = lambda cid: {"c0": 2.0, "c1": 0.0}[cid]
+        with temporary_feedback_seed(
+            [_qa(relevant=["c0", "c1", "c0"])], vector_store=store
+        ) as count:
+            assert count == 2
+            assert store.accumulate_feedback_score.call_count == 2
+        assert store.set_feedback_score.call_count == 2
+        store.set_feedback_score.assert_any_call("c0", 2.0)
+        store.set_feedback_score.assert_any_call("c1", 0.0)
 
-    def test_skips_on_vector_store_error(self):
+    def test_skips_seed_on_vector_store_error(self):
         from src.core.exceptions import VectorStoreError
 
         store = MagicMock()
+        store.get_feedback_score.return_value = 0.0
         store.accumulate_feedback_score.side_effect = VectorStoreError("missing")
-        count = pre_seed_feedback_scores([_qa(relevant=["missing"])], vector_store=store)
-        assert count == 0
+        with temporary_feedback_seed([_qa(relevant=["missing"])], vector_store=store) as count:
+            assert count == 0
+        store.set_feedback_score.assert_not_called()
 
     def test_resolves_vector_store_from_qdrant(self):
         store = MagicMock()
-        with patch(
-            "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
-            return_value=store,
+        store.get_feedback_score.return_value = 0.0
+        with (
+            patch(
+                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
+                return_value=store,
+            ),
+            temporary_feedback_seed([_qa(relevant=["c0"])]) as count,
         ):
-            count = pre_seed_feedback_scores([_qa(relevant=["c0"])])
-        assert count == 1
+            assert count == 1
 
     def test_skips_non_list_relevant_chunks(self):
         store = MagicMock()
         pairs: list[dict[str, object]] = [
             {"question": "Q?", "relevant_chunks": "not-a-list"},
         ]
-        count = pre_seed_feedback_scores(pairs, vector_store=store)
-        assert count == 0
+        with temporary_feedback_seed(pairs, vector_store=store) as count:
+            assert count == 0
         store.accumulate_feedback_score.assert_not_called()
+        store.set_feedback_score.assert_not_called()
+
+    def test_snapshot_failure_skips_seed_and_restore(self):
+        from src.core.exceptions import VectorStoreError
+
+        store = MagicMock()
+        store.get_feedback_score.side_effect = VectorStoreError("read failed")
+        with temporary_feedback_seed([_qa(relevant=["c0"])], vector_store=store) as count:
+            assert count == 0
+        store.accumulate_feedback_score.assert_not_called()
+        store.set_feedback_score.assert_not_called()
+
+    def test_restore_failure_is_logged_not_raised(self):
+        from src.core.exceptions import VectorStoreError
+
+        store = MagicMock()
+        store.get_feedback_score.return_value = 1.5
+        store.set_feedback_score.side_effect = VectorStoreError("write failed")
+        with temporary_feedback_seed([_qa(relevant=["c0"])], vector_store=store) as count:
+            assert count == 1
+
+    def test_restores_even_when_body_raises(self):
+        store = MagicMock()
+        store.get_feedback_score.return_value = 3.0
+        with (
+            pytest.raises(RuntimeError),
+            temporary_feedback_seed([_qa(relevant=["c0"])], vector_store=store),
+        ):
+            raise RuntimeError("benchmark failed")
+        store.set_feedback_score.assert_called_once_with("c0", 3.0)
+
+    def test_only_restores_successfully_seeded_chunks(self):
+        from src.core.exceptions import VectorStoreError
+
+        store = MagicMock()
+        store.get_feedback_score.side_effect = lambda cid: 0.0
+
+        def _accumulate(chunk_id: str, _delta: float) -> float:
+            if chunk_id == "bad":
+                raise VectorStoreError("missing")
+            return 1.0
+
+        store.accumulate_feedback_score.side_effect = _accumulate
+        with temporary_feedback_seed([_qa(relevant=["c0", "bad"])], vector_store=store) as count:
+            assert count == 1
+        store.set_feedback_score.assert_called_once_with("c0", 0.0)
 
 
 # ── pipeline adapters ──────────────────────────────────────────────────────────
@@ -526,7 +583,10 @@ class TestTechniqueBenchmarkRun:
                 "src.evals.e2e.technique_benchmark.temporary_config",
                 side_effect=lambda *_args, **_kwargs: _noop_context(),
             ) as mock_cfg,
-            patch("src.evals.e2e.technique_benchmark.pre_seed_feedback_scores") as mock_seed,
+            patch(
+                "src.evals.e2e.technique_benchmark.temporary_feedback_seed",
+                return_value=_noop_context(),
+            ) as mock_seed,
         ):
             report = await _benchmark().run(
                 [_qa(relevant=["c0"])],
@@ -545,6 +605,24 @@ class TestTechniqueBenchmarkRun:
         assert mock_cfg.call_args_list[1].args[0]["QUALITY__FEEDBACK_LOOP__ENABLED"] == "true"
 
     @pytest.mark.asyncio
+    async def test_feedback_loop_restores_scores_after_comparison(self):
+        store = MagicMock()
+        store.get_feedback_score.return_value = 4.0
+        pipeline = _pipeline_mock(sources=["c0"])
+        factory = MagicMock(return_value=pipeline)
+        bench = _benchmark()
+
+        report = await bench.run(
+            [_qa(relevant=["c0"])],
+            ["feedback_loop"],
+            pipeline_factory=factory,
+            vector_store=store,
+        )
+
+        assert report.feedback_comparison is not None
+        store.set_feedback_score.assert_called_once_with("c0", 4.0)
+
+    @pytest.mark.asyncio
     async def test_feedback_loop_factory_exception_sets_error(self):
         factory = MagicMock(side_effect=RuntimeError("feedback factory failed"))
 
@@ -553,7 +631,10 @@ class TestTechniqueBenchmarkRun:
                 "src.evals.e2e.technique_benchmark.temporary_config",
                 side_effect=lambda *_args, **_kwargs: _noop_context(),
             ),
-            patch("src.evals.e2e.technique_benchmark.pre_seed_feedback_scores"),
+            patch(
+                "src.evals.e2e.technique_benchmark.temporary_feedback_seed",
+                return_value=_noop_context(),
+            ),
         ):
             report = await _benchmark().run(
                 [_qa(relevant=["c0"])],
