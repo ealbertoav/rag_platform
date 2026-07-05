@@ -24,7 +24,7 @@ _SAMPLE_EXPLANATIONS = [
     {"chunk_id": "c0", "reason": "Mentions the topic."},
     {"chunk_id": "c1", "reason": "Adds supporting detail."},
 ]
-_SAMPLE_HIGHLIGHT_ITEMS = [
+_SAMPLE_HIGHLIGHT_ITEMS: list[dict[str, object]] = [
     {"chunk_id": "c0", "spans": ["relevant text 0"]},
     {"chunk_id": "c1", "spans": ["relevant text 1"]},
 ]
@@ -211,9 +211,14 @@ class TestChatPipelineStream:
 
     @pytest.mark.asyncio
     async def test_chat_calls_retrieval(self):
-        p = _pipeline()
+        retrieval = _retrieval_mock()
+        p = ChatPipeline(
+            retrieval=retrieval,
+            generation=_service(),
+            llm=_llm_mock(),
+        )
         await p.chat("question")
-        p.retrieval.retrieve.assert_called_once()
+        retrieval.retrieve.assert_called_once()
 
 
 class TestChatPipelineFull:
@@ -397,10 +402,11 @@ class TestChatPipelineBenchmark:
     async def test_benchmark_returns_answer_and_context_texts(self):
         chunks = [_chunk(0), _chunk(1)]
         p = _pipeline(chunks=chunks)
-        answer, context_texts = await p.benchmark("question")
-        assert answer.text == "LLM answer"
-        assert context_texts == [c.text for c in chunks]
-        assert set(answer.sources) == {"c0", "c1"}
+        run = await p.benchmark("question")
+        assert run.answer.text == "LLM answer"
+        assert run.context_texts == [c.text for c in chunks]
+        assert run.parametric_answer is False
+        assert set(run.answer.sources) == {"c0", "c1"}
 
 
 class TestChatPipelineFromSettings:

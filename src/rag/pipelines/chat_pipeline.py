@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from opentelemetry import trace
 
 from src.domain.entities.answer import Answer
+from src.domain.entities.evaluation import BenchmarkRun
 from src.domain.entities.query import Query
 from src.domain.services.generation_service import GenerationService
 from src.observability.metrics import record_generation, record_request
@@ -171,8 +172,8 @@ class ChatPipeline:
             }
         )
 
-    async def benchmark(self, question: str) -> tuple[Answer, list[str]]:
-        """Return (Answer, context_text_list) for benchmarking.
+    async def benchmark(self, question: str) -> BenchmarkRun:
+        """Return answer and eval context for benchmarking.
 
         The context list mirrors what generation used: raw chunk texts for
         standard retrieval, a single refined passage after CRAG refinement, or
@@ -193,7 +194,7 @@ class ChatPipeline:
                 "token_count": len(answer.text.split()),
             }
         )
-        return answer, resolution.eval_contexts
+        return BenchmarkRun(answer=answer, context_texts=resolution.eval_contexts)
 
     # ── Factory ────────────────────────────────────────────────────────────────
 

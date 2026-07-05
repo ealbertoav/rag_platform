@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.domain.entities.answer import Answer
+from src.domain.entities.evaluation import BenchmarkRun
 from src.evals.e2e.rag_benchmark import BenchmarkReport, RAGBenchmark
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -25,7 +26,9 @@ def _pipeline_mock(
         text=answer_text,
         sources=sources if sources is not None else ["c0", "c1"],
     )
-    m.benchmark = AsyncMock(return_value=(answer, context or ["Context chunk A."]))
+    m.benchmark = AsyncMock(
+        return_value=BenchmarkRun(answer=answer, context_texts=context or ["Context chunk A."])
+    )
     return m
 
 
@@ -232,6 +235,6 @@ class TestRAGBenchmarkRun:
     @pytest.mark.asyncio
     async def test_skips_empty_question(self):
         pipeline = _pipeline_mock()
-        pairs = [_qa(), {"question": "", "answer": "a", "relevant_chunks": []}]
+        pairs = [_qa(), _qa(question="", answer="a", relevant=[])]
         report = await _benchmark().run(pipeline, pairs, timestamp="T")
         assert report.total_samples == 1

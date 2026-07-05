@@ -77,6 +77,7 @@ class AgentRunResult:
     actions: list[AgentAction]
     self_rag_decisions: list[SelfRAGStepDecision] = dataclasses.field(default_factory=list)
     context_texts: list[str] = dataclasses.field(default_factory=list)
+    parametric_answer: bool = False
 
 
 @dataclasses.dataclass
@@ -177,6 +178,7 @@ class AgentPipeline:
                 actions=result.actions,
                 self_rag_decisions=result.self_rag_decisions,
                 context_texts=result.context_texts,
+                parametric_answer=result.parametric_answer,
             )
         run = await self._agentic_retrieve(question, max_iterations=max_iter)
         context = self._build_context(run.chunks)
@@ -247,7 +249,6 @@ class AgentPipeline:
                 step.retrieval_reasoning = ret_dec.reasoning
 
             if not step.need_retrieval:
-                context_texts = []
                 draft = self._pipeline.generation.generate_direct(question)
                 util = score_utility(question, draft.text, "", llm)
                 result, search_query = self._self_rag_handle_scored_utility(
@@ -261,6 +262,7 @@ class AgentPipeline:
                     actions,
                     decisions,
                     context_texts,
+                    parametric_answer=True,
                 )
                 if result is not None:
                     return result
@@ -382,12 +384,21 @@ class AgentPipeline:
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
         context_texts: list[str],
+        *,
+        parametric_answer: bool = False,
     ) -> tuple[AgentRunResult | None, str]:
         """Record utility, finish on accept/refuse, or advance search_query for reretrieve."""
         _record_utility_on_step(step, util)
         decisions.append(step)
         if finished := self._self_rag_finish_from_utility(
-            util, draft, question, iteration, actions, decisions, context_texts
+            util,
+            draft,
+            question,
+            iteration,
+            actions,
+            decisions,
+            context_texts,
+            parametric_answer=parametric_answer,
         ):
             return finished, search_query
         if iteration == max_iterations - 1 and step.supported is True:
@@ -415,6 +426,8 @@ class AgentPipeline:
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
         context_texts: list[str],
+        *,
+        parametric_answer: bool = False,
     ) -> AgentRunResult | None:
         if util.action == UtilityAction.ACCEPT:
             actions.append(AgentAction.ANSWER)
@@ -424,6 +437,7 @@ class AgentPipeline:
                 actions=actions,
                 self_rag_decisions=decisions,
                 context_texts=context_texts,
+                parametric_answer=parametric_answer,
             )
         if util.action == UtilityAction.REFUSE:
             actions.append(AgentAction.CLARIFY)

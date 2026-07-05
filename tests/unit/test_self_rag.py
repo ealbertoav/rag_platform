@@ -11,7 +11,10 @@ import pytest
 
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.evaluation import EvalSample
 from src.domain.repositories.llm_repository import LLMRepository
+from src.evals.generation import PARAMETRIC_ANSWER_DETAILS
+from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.rag.pipelines.agent_pipeline import AgentAction, AgentPipeline, AgentRunResult
 from src.rag.quality.self_rag import (
     RetrievalDecision,
@@ -258,6 +261,67 @@ def _empty_context_reretrieve_accept_responses(
     ]
 
 
+def _no_retrieval_accept_responses(
+    *,
+    retrieval_reasoning: str = "greeting",
+    utility_score: float = 0.95,
+    utility_reasoning: str = "fine greeting",
+) -> list[str]:
+    """Retrieval gate skips search; utility accepts the direct draft."""
+    return [
+        _retrieval_gate(need_retrieval=False, reasoning=retrieval_reasoning),
+        _utility_gate(
+            action="accept",
+            score=utility_score,
+            reasoning=utility_reasoning,
+        ),
+    ]
+
+
+def _empty_context_refuse_responses() -> list[str]:
+    """Empty retrieval index with utility refuse."""
+    return [
+        _retrieval_gate(need_retrieval=True, reasoning="needs docs"),
+        _utility_gate(
+            action="refuse",
+            score=0.0,
+            reasoning="no relevant documents",
+        ),
+    ]
+
+
+def _chat_with_empty_retrieval() -> MagicMock:
+    chat = _chat_mock()
+    chat.retrieval.retrieve = AsyncMock(return_value=_retrieval_result([], context=""))
+    return chat
+
+
+async def _run_no_retrieval_accept(
+    *,
+    question: str = "hello",
+    direct_answer: str = "Hello!",
+) -> tuple[MagicMock, AgentRunResult]:
+    chat = _chat_mock(direct_answer=direct_answer)
+    return await _run_self_rag(
+        _no_retrieval_accept_responses(),
+        question=question,
+        chat=chat,
+    )
+
+
+async def _run_empty_context_utility_refuse(
+    *,
+    question: str = "kubernetes",
+    max_iterations: int = 3,
+) -> tuple[MagicMock, AgentRunResult]:
+    return await _run_self_rag(
+        _empty_context_refuse_responses(),
+        question=question,
+        max_iterations=max_iterations,
+        chat=_chat_with_empty_retrieval(),
+    )
+
+
 async def _run_empty_context_reretrieve_accept(
     *,
     question: str = "k8s",
@@ -298,6 +362,8 @@ class TestAgentPipelineSelfRAG:
         assert result.self_rag_decisions[0].supported is True
         assert result.self_rag_decisions[0].utility_action == "accept"
         assert result.answer.text == "supported draft answer"
+        assert result.parametric_answer is False
+        assert result.context_texts == ["kubernetes deployment guide"]
 
     @pytest.mark.asyncio
     async def test_refuses_after_max_iterations_when_unsupported(self):
@@ -333,24 +399,12 @@ class TestAgentPipelineSelfRAG:
 
     @pytest.mark.asyncio
     async def test_no_retrieval_path(self):
-        chat = _chat_mock(direct_answer="Hello!")
-        side_effect = [
-            json.dumps({"need_retrieval": False, "reasoning": "greeting"}),
-            json.dumps(
-                {
-                    "score": 0.95,
-                    "action": "accept",
-                    "reasoning": "fine greeting",
-                    "refined_query": "",
-                }
-            ),
-        ]
-        chat.generation.call_llm.side_effect = side_effect
-        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True)
-        result = await pipeline.chat_full("hello")
+        chat, result = await _run_no_retrieval_accept()
         assert result.self_rag_decisions[0].need_retrieval is False
         assert result.answer.text == "Hello!"
         assert result.actions == [AgentAction.ANSWER]
+        assert result.parametric_answer is True
+        assert result.context_texts == []
         chat.generation.generate_direct.assert_called_once_with("hello")
         chat.generation.generate.assert_not_called()
         chat.retrieval.retrieve.assert_not_called()
@@ -551,22 +605,7 @@ class TestAgentPipelineSelfRAG:
 
     @pytest.mark.asyncio
     async def test_empty_context_with_utility_refuse_returns_no_info(self):
-        chat = _chat_mock()
-        chat.retrieval.retrieve = AsyncMock(return_value=_retrieval_result([], context=""))
-        side_effect = [
-            json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
-            json.dumps(
-                {
-                    "score": 0.0,
-                    "action": "refuse",
-                    "reasoning": "no relevant documents",
-                    "refined_query": "",
-                }
-            ),
-        ]
-        chat.generation.call_llm.side_effect = side_effect
-        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=3)
-        result = await pipeline.chat_full("kubernetes")
+        chat, result = await _run_empty_context_utility_refuse(max_iterations=3)
         assert result.answer.text == "I don't have information about this."
         assert result.actions == [AgentAction.CLARIFY]
         assert chat.retrieval.retrieve.await_count == 1
@@ -574,22 +613,7 @@ class TestAgentPipelineSelfRAG:
     @pytest.mark.asyncio
     async def test_empty_context_refuse_on_last_iteration_labels_clarify(self):
         """Utility refuse must win over last-iteration reretrieve exhaustion."""
-        chat = _chat_mock()
-        chat.retrieval.retrieve = AsyncMock(return_value=_retrieval_result([], context=""))
-        side_effect = [
-            json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
-            json.dumps(
-                {
-                    "score": 0.0,
-                    "action": "refuse",
-                    "reasoning": "no relevant documents",
-                    "refined_query": "",
-                }
-            ),
-        ]
-        chat.generation.call_llm.side_effect = side_effect
-        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=1)
-        result = await pipeline.chat_full("kubernetes")
+        _, result = await _run_empty_context_utility_refuse(max_iterations=1)
         assert result.answer.text == "I don't have information about this."
         assert result.actions == [AgentAction.CLARIFY]
         assert result.self_rag_decisions[-1].utility_action == "refuse"
@@ -700,6 +724,23 @@ class TestAgentPipelineSelfRAG:
         assert result.answer.text == "I don't have information about this."
         assert result.actions == [AgentAction.RETRIEVE_MORE]
         chat.retrieval.retrieve.assert_not_called()
+
+
+class TestSelfRAGParametricEval:
+    @pytest.mark.asyncio
+    async def test_no_retrieval_accept_is_not_penalized_by_faithfulness(self):
+        _, result = await _run_no_retrieval_accept()
+
+        sample = EvalSample(
+            question="hello",
+            expected_answer="Hi there!",
+            retrieved_chunks=result.context_texts,
+            generated_answer=result.answer.text,
+            parametric_answer=result.parametric_answer,
+        )
+        faith = FaithfulnessMetric().score(sample)
+        assert faith.score == pytest.approx(1.0)
+        assert faith.details == PARAMETRIC_ANSWER_DETAILS
 
 
 class TestAgentChatResponseSelfRAG:

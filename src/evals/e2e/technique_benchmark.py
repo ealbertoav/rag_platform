@@ -18,7 +18,7 @@ from rich.table import Table
 
 from src.core.constants import DATASETS_DIR, EXPORTS_DIR, ROOT
 from src.core.exceptions import VectorStoreError
-from src.domain.entities.evaluation import EvalSample
+from src.domain.entities.evaluation import BenchmarkRun, EvalSample
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.relevance import RelevanceMetric
@@ -59,7 +59,7 @@ _TECHNIQUE_DELTA_OVERRIDES: dict[str, dict[str, str]] = {
 
 
 class BenchmarkPipeline(Protocol):
-    async def benchmark(self, question: str) -> tuple[Any, list[str]]: ...
+    async def benchmark(self, question: str) -> BenchmarkRun: ...
 
 
 @dataclasses.dataclass(frozen=True)
@@ -405,9 +405,13 @@ class _AgentBenchmarkAdapter:
     def __init__(self, agent: object) -> None:
         self._agent = agent
 
-    async def benchmark(self, question: str) -> tuple[Any, list[str]]:
+    async def benchmark(self, question: str) -> BenchmarkRun:
         result = await self._agent.chat_full(question)  # type: ignore[attr-defined]
-        return result.answer, list(result.context_texts)
+        return BenchmarkRun(
+            answer=result.answer,
+            context_texts=list(result.context_texts),
+            parametric_answer=result.parametric_answer,
+        )
 
 
 def build_benchmark_pipeline(*, self_rag: bool = False) -> BenchmarkPipeline:
@@ -568,7 +572,7 @@ class TechniqueBenchmark:
 
             t0 = time.monotonic()
             try:
-                answer, context_texts = await pipeline.benchmark(question)
+                run = await pipeline.benchmark(question)
             except Exception as exc:
                 logger.error("Pipeline failed for %s / %r: %s", technique, question[:40], exc)
                 recalls.append(0.0)
@@ -577,6 +581,8 @@ class TechniqueBenchmark:
                 latencies.append((time.monotonic() - t0) * 1000)
                 continue
 
+            answer = run.answer
+            context_texts = run.context_texts
             retrieved_ids = list(answer.sources)
             recalls.append(recall_at_k(retrieved_ids, relevant_ids, k=self._k))
 
@@ -585,6 +591,7 @@ class TechniqueBenchmark:
                 expected_answer=expected,
                 retrieved_chunks=context_texts,
                 generated_answer=answer.text,
+                parametric_answer=run.parametric_answer,
             )
             faith_scores.append(self._faith.score(sample).score)
             relev_scores.append(self._relev.score(sample).score)

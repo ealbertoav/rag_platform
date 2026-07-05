@@ -812,6 +812,18 @@ class TestGenerationMetricPreChecks:
         checks = FaithfulnessMetric()._pre_checks(sample)
         assert checks[0].details == "No context provided"
 
+    def test_faithfulness_parametric_answer_guard(self):
+        sample = EvalSample(
+            question="q",
+            expected_answer="a",
+            generated_answer="answer",
+            retrieved_chunks=[],
+            parametric_answer=True,
+        )
+        checks = FaithfulnessMetric()._pre_checks(sample)
+        assert checks[0].score == pytest.approx(1.0)
+        assert "Parametric answer" in checks[0].details
+
     def test_hallucination_no_context_score(self):
         from src.evals.generation.hallucination import HallucinationMetric
 

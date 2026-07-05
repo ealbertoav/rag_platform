@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from src.domain.entities.answer import Answer
+from src.domain.entities.evaluation import BenchmarkRun
 from src.evals.e2e.technique_benchmark import (
     FeedbackComparison,
     TechniqueBenchmark,
@@ -73,7 +74,9 @@ def _pipeline_mock(
             sources=sources if sources is not None else ["c0"],
             latency_ms=latency_ms,
         )
-        pipeline.benchmark = AsyncMock(return_value=(answer, context or ["ctx"]))
+        pipeline.benchmark = AsyncMock(
+            return_value=BenchmarkRun(answer=answer, context_texts=context or ["ctx"])
+        )
     return pipeline
 
 
@@ -501,6 +504,7 @@ class TestBuildBenchmarkPipeline:
             return_value=MagicMock(
                 answer=answer,
                 context_texts=["EKS runs on AWS."],
+                parametric_answer=False,
                 iterations=1,
                 actions=[],
                 self_rag_decisions=[],
@@ -511,9 +515,10 @@ class TestBuildBenchmarkPipeline:
             return_value=agent,
         ):
             pipeline = build_benchmark_pipeline(self_rag=True)
-        result_answer, contexts = await pipeline.benchmark("question?")
-        assert result_answer is answer
-        assert contexts == ["EKS runs on AWS."]
+        run = await pipeline.benchmark("question?")
+        assert run.answer is answer
+        assert run.context_texts == ["EKS runs on AWS."]
+        assert run.parametric_answer is False
         agent.chat_full.assert_awaited_once_with("question?")
 
 
@@ -648,6 +653,45 @@ class TestTechniqueBenchmarkRun:
         assert report.results[0].error == "feedback factory failed"
 
     @pytest.mark.asyncio
+    async def test_self_rag_benchmark_propagates_parametric_flag(self):
+        agent = MagicMock()
+        answer = Answer(query_id="q", text="Hi", sources=[])
+        agent.chat_full = AsyncMock(
+            return_value=MagicMock(
+                answer=answer,
+                context_texts=[],
+                parametric_answer=True,
+                iterations=1,
+                actions=[],
+                self_rag_decisions=[],
+            )
+        )
+        faith = MagicMock()
+        faith.score.return_value = MagicMock(score=1.0)
+        relev = MagicMock()
+        relev.score.return_value = MagicMock(score=0.85)
+
+        with patch(
+            "src.rag.pipelines.agent_pipeline.AgentPipeline.from_settings",
+            return_value=agent,
+        ):
+            pipeline = build_benchmark_pipeline(self_rag=True)
+
+        with patch(
+            "src.evals.e2e.technique_benchmark.temporary_config",
+            return_value=_noop_context(),
+        ):
+            report = await TechniqueBenchmark(
+                faithfulness=faith,
+                relevance=relev,
+            ).run([_qa()], ["self_rag"], pipeline_factory=lambda **_kw: pipeline)
+
+        assert report.results[0].mean_faithfulness == pytest.approx(1.0)
+        sample = faith.score.call_args[0][0]
+        assert sample.parametric_answer is True
+        assert sample.retrieved_chunks == []
+
+    @pytest.mark.asyncio
     async def test_self_rag_eval_uses_pipeline_context(self):
         pipeline = _pipeline_mock(context=["EKS passage."])
         factory = MagicMock(return_value=pipeline)
@@ -696,7 +740,9 @@ class TestTechniqueBenchmarkRun:
         answer.text = "A"
         answer.sources = ["c0"]
         answer.latency_ms = None
-        pipeline.benchmark = AsyncMock(return_value=(answer, ["ctx"]))
+        pipeline.benchmark = AsyncMock(
+            return_value=BenchmarkRun(answer=answer, context_texts=["ctx"])
+        )
         factory = MagicMock(return_value=pipeline)
 
         with patch(
