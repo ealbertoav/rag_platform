@@ -15,3 +15,33 @@ evals:
   tools:
     ragas: true
     deepeval: true
+
+  technique_benchmark:
+    configs:
+      - name: baseline
+        description: No optional RAG techniques enabled
+        overrides: {}
+      - name: multi_query
+        description: Multi-query expansion (query_expansion.enabled)
+        overrides:
+          QUERY_EXPANSION__ENABLED: "true"
+          QUERY_EXPANSION__N_VARIANTS: "3"
+      - name: hyde
+        description: Hypothetical document embeddings at query time
+        overrides:
+          RETRIEVAL__HYDE__ENABLED: "true"
+      - name: cch
+        description: Contextual compression before generation
+        overrides:
+          COMPRESSION__ENABLED: "true"
+      - name: reliable_rag
+        description: LLM relevancy grading after rerank
+        overrides:
+          QUALITY__RELIABLE_RAG__ENABLED: "true"
+      - name: self_rag
+        description: Self-RAG retrieve/support/utility gates in agent pipeline
+        overrides:
+          QUALITY__SELF_RAG__ENABLED: "true"
+      - name: feedback_loop
+        description: User feedback RRF boost (pre-seeds scores; compares boost on vs off)
+        overrides: {}

@@ -1809,7 +1809,7 @@
 ---
 
 ### T-150 · Evaluation-Driven Technique Benchmark
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Benchmark script that compares RAG techniques side-by-side (baseline vs expansion vs HyDE vs CCH vs Self-RAG vs feedback loop) — inspired by RAG_Techniques `choose_chunk_size.py` and `evaluation/` notebooks.
 - **Inputs:** T-043 (`RAGBenchmark`), T-040 (golden dataset), Phases 11–14 technique flags (incl. T-145 `quality.feedback_loop`, T-146 backend selection)
 - **Outputs:** Comparison table with Recall@5, Faithfulness, Relevance, and latency per technique configuration.
