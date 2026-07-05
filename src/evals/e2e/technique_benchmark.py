@@ -324,11 +324,11 @@ def _relevant_chunk_ids(qa_pairs: list[dict[str, object]]) -> set[str]:
 
 
 def _resolve_benchmark_vector_store(vector_store: object | None = None) -> VectorStoreRepository:
-    if vector_store is None:
-        from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+    if vector_store is not None:
+        return vector_store  # type: ignore[return-value]
+    from src.infrastructure.vectordb.feedback_store import build_vector_store_from_settings
 
-        return QdrantVectorStore.from_settings()
-    return vector_store  # type: ignore[return-value]
+    return build_vector_store_from_settings()
 
 
 def _snapshot_feedback_scores(
@@ -414,15 +414,20 @@ class _AgentBenchmarkAdapter:
         )
 
 
-def build_benchmark_pipeline(*, self_rag: bool = False) -> BenchmarkPipeline:
+def build_benchmark_pipeline(
+    *,
+    self_rag: bool = False,
+    vector_store: VectorStoreRepository | None = None,
+) -> BenchmarkPipeline:
     """Construct a pipeline from the current (reloaded) settings."""
+    store = _resolve_benchmark_vector_store(vector_store)
     if self_rag:
         from src.rag.pipelines.agent_pipeline import AgentPipeline
 
-        return _AgentBenchmarkAdapter(AgentPipeline.from_settings())
+        return _AgentBenchmarkAdapter(AgentPipeline.from_settings(vector_store=store))
     from src.rag.pipelines.chat_pipeline import ChatPipeline
 
-    return ChatPipeline.from_settings()  # type: ignore[return-value]
+    return ChatPipeline.from_settings(vector_store=store)  # type: ignore[return-value]
 
 
 class TechniqueBenchmark:
@@ -536,13 +541,21 @@ class TechniqueBenchmark:
         vector_store: object | None,
     ) -> tuple[FeedbackComparison | None, TechniqueResult | None]:
         """Pre-seed feedback scores and compare Recall@5 with boost off vs. on."""
-        with temporary_feedback_seed(qa_pairs, vector_store=vector_store):
+        store = _resolve_benchmark_vector_store(vector_store)
+
+        def bound_factory(*, self_rag: bool = False) -> BenchmarkPipeline:
+            try:
+                return factory(self_rag=self_rag, vector_store=store)  # type: ignore[call-arg, operator]
+            except TypeError:
+                return factory(self_rag=self_rag)  # type: ignore[operator]
+
+        with temporary_feedback_seed(qa_pairs, vector_store=store):
             with temporary_config(build_feedback_boost_overrides(boost_enabled=False)):
-                pipeline_off = factory(self_rag=False)  # type: ignore[operator]
+                pipeline_off = bound_factory(self_rag=False)
                 off_result = await self._evaluate_technique("feedback_off", pipeline_off, qa_pairs)
 
             with temporary_config(build_feedback_boost_overrides(boost_enabled=True)):
-                pipeline_on = factory(self_rag=False)  # type: ignore[operator]
+                pipeline_on = bound_factory(self_rag=False)
                 on_result = await self._evaluate_technique("feedback_on", pipeline_on, qa_pairs)
 
         comparison = FeedbackComparison(

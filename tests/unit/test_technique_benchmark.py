@@ -406,12 +406,12 @@ class TestTemporaryFeedbackSeed:
             assert count == 0
         store.set_feedback_score.assert_not_called()
 
-    def test_resolves_vector_store_from_qdrant(self):
+    def test_resolves_vector_store_from_settings(self):
         store = MagicMock()
         store.get_feedback_score.return_value = 0.0
         with (
             patch(
-                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
+                "src.infrastructure.vectordb.feedback_store.build_vector_store_from_settings",
                 return_value=store,
             ),
             temporary_feedback_seed([_qa(relevant=["c0"])]) as count,
@@ -479,20 +479,33 @@ class TestTemporaryFeedbackSeed:
 
 class TestBuildBenchmarkPipeline:
     def test_chat_pipeline_by_default(self):
-        with patch("src.rag.pipelines.chat_pipeline.ChatPipeline.from_settings") as mock:
+        store = MagicMock()
+        with (
+            patch(
+                "src.evals.e2e.technique_benchmark._resolve_benchmark_vector_store",
+                return_value=store,
+            ),
+            patch("src.rag.pipelines.chat_pipeline.ChatPipeline.from_settings") as mock,
+        ):
             mock.return_value = MagicMock()
             pipeline = build_benchmark_pipeline(self_rag=False)
+        mock.assert_called_once_with(vector_store=store)
         assert pipeline is mock.return_value
 
     def test_agent_pipeline_for_self_rag(self):
+        store = MagicMock()
         with (
+            patch(
+                "src.evals.e2e.technique_benchmark._resolve_benchmark_vector_store",
+                return_value=store,
+            ),
             patch("src.rag.pipelines.agent_pipeline.AgentPipeline.from_settings") as mock_agent,
             patch("src.rag.pipelines.chat_pipeline.ChatPipeline.from_settings") as mock_chat,
         ):
             agent = MagicMock()
             mock_agent.return_value = agent
             pipeline = build_benchmark_pipeline(self_rag=True)
-        mock_agent.assert_called_once()
+        mock_agent.assert_called_once_with(vector_store=store)
         mock_chat.assert_not_called()
         assert pipeline is not agent
 
@@ -626,6 +639,48 @@ class TestTechniqueBenchmarkRun:
 
         assert report.feedback_comparison is not None
         store.set_feedback_score.assert_called_once_with("c0", 4.0)
+
+    @pytest.mark.asyncio
+    async def test_feedback_loop_passes_store_to_factory(self):
+        store = MagicMock()
+        pipeline = _pipeline_mock(sources=["c0"])
+        factory = MagicMock(return_value=pipeline)
+
+        with patch(
+            "src.evals.e2e.technique_benchmark.temporary_config",
+            side_effect=lambda *_args, **_kwargs: _noop_context(),
+        ):
+            report = await _benchmark().run(
+                [_qa(relevant=["c0"])],
+                ["feedback_loop"],
+                pipeline_factory=factory,
+                vector_store=store,
+            )
+
+        assert report.feedback_comparison is not None
+        assert factory.call_count == 2
+        for call in factory.call_args_list:
+            assert call.kwargs["vector_store"] is store
+
+    @pytest.mark.asyncio
+    async def test_feedback_loop_factory_without_vector_store_kwarg(self):
+        pipeline = _pipeline_mock(sources=["c0"])
+
+        def legacy_factory(*, self_rag: bool = False):
+            _ = self_rag
+            return pipeline
+
+        with patch(
+            "src.evals.e2e.technique_benchmark.temporary_config",
+            side_effect=lambda *_args, **_kwargs: _noop_context(),
+        ):
+            report = await _benchmark().run(
+                [_qa(relevant=["c0"])],
+                ["feedback_loop"],
+                pipeline_factory=legacy_factory,
+            )
+
+        assert report.feedback_comparison is not None
 
     @pytest.mark.asyncio
     async def test_feedback_loop_factory_exception_sets_error(self):

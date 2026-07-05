@@ -14,6 +14,7 @@ from src.infrastructure.vectordb.feedback_store import (
     QdrantFeedbackStore,
     RedisFeedbackStore,
     SqlFeedbackStore,
+    build_vector_store_from_settings,
     create_feedback_store,
     wrap_vector_store_with_feedback,
 )
@@ -324,6 +325,52 @@ class TestFeedbackStoreFactory:
             password="secret",
             decode_responses=True,
         )
+
+    def test_build_vector_store_from_settings_qdrant_backend(self):
+        inner = MagicMock()
+        with (
+            patch(
+                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
+                return_value=inner,
+            ),
+            patch("src.core.settings.settings") as mock_settings,
+        ):
+            mock_settings.quality.feedback_loop.backend = "qdrant"
+            mock_settings.quality.feedback_loop.postgres_url = ""
+            mock_settings.redis.url = "redis://localhost"
+            mock_settings.redis.password.get_secret_value.return_value = ""
+            result = build_vector_store_from_settings()
+        assert result is inner
+
+    def test_build_vector_store_from_settings_redis_backend(self):
+        inner = MagicMock()
+        with (
+            patch(
+                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
+                return_value=inner,
+            ),
+            patch("src.core.settings.settings") as mock_settings,
+            patch(
+                "src.infrastructure.vectordb.feedback_store._build_redis_client",
+                return_value=MagicMock(),
+            ),
+        ):
+            mock_settings.quality.feedback_loop.backend = "redis"
+            mock_settings.quality.feedback_loop.postgres_url = ""
+            mock_settings.redis.url = "redis://localhost"
+            mock_settings.redis.password.get_secret_value.return_value = ""
+            result = build_vector_store_from_settings()
+        assert isinstance(result, FeedbackDelegatingVectorStore)
+
+    def test_build_vector_store_from_settings_reuses_injected_store(self):
+        inner = MagicMock()
+        with patch("src.core.settings.settings") as mock_settings:
+            mock_settings.quality.feedback_loop.backend = "qdrant"
+            mock_settings.quality.feedback_loop.postgres_url = ""
+            mock_settings.redis.url = "redis://localhost"
+            mock_settings.redis.password.get_secret_value.return_value = ""
+            result = build_vector_store_from_settings(vector_store=inner)
+        assert result is inner
 
 
 class TestFeedbackStoreBaseGetScores:

@@ -315,3 +315,26 @@ def wrap_vector_store_with_feedback(
     )
     logger.info("Feedback backend=%r enabled for multi-replica atomic increments", backend)
     return FeedbackDelegatingVectorStore(vector_store, feedback)
+
+
+def build_vector_store_from_settings(
+    *,
+    vector_store: VectorStoreRepository | None = None,
+    default_sqlite_path: Path | None = None,
+) -> VectorStoreRepository:
+    """Build Qdrant plus an optional feedback wrapper from application settings."""
+    from src.core.constants import ROOT
+    from src.core.settings import settings
+    from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+
+    base = vector_store or QdrantVectorStore.from_settings()
+    feedback_cfg = settings.quality.feedback_loop
+    sqlite_path = default_sqlite_path or (ROOT / "data" / "processed" / "feedback.db")
+    return wrap_vector_store_with_feedback(
+        base,
+        backend=feedback_cfg.backend,
+        redis_url=settings.redis.url,
+        redis_password=settings.redis.password.get_secret_value(),
+        postgres_url=feedback_cfg.postgres_url,
+        default_sqlite_path=sqlite_path,
+    )
