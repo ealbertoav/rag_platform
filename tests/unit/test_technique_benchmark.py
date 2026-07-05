@@ -211,6 +211,41 @@ class TestTemporaryConfig:
     def test_reload_settings_module(self):
         reload_settings_module()
 
+    def test_reload_settings_refreshes_retrieval_pipeline_bindings(self):
+        import src.rag.pipelines.retrieval_pipeline as retrieval_pipeline
+
+        key = "QUERY_EXPANSION__ENABLED"
+        with temporary_config({key: "true"}):
+            assert retrieval_pipeline._settings().query_expansion.enabled is True
+        with temporary_config({key: "false"}):
+            assert retrieval_pipeline._settings().query_expansion.enabled is False
+
+    def test_sequential_overrides_apply_to_pipeline_factory(self):
+        """Each technique must see its own env overrides when building the pipeline."""
+        from src.rag.pipelines.retrieval_pipeline import RetrievalPipeline
+
+        seen: list[bool] = []
+
+        def _capture_expansion(*_args, **_kwargs):
+            import src.rag.pipelines.retrieval_pipeline as rp
+
+            seen.append(rp._settings().query_expansion.enabled)
+            raise RuntimeError("stop after settings read")
+
+        with patch.object(RetrievalPipeline, "from_settings", side_effect=_capture_expansion):
+            with (
+                temporary_config({"QUERY_EXPANSION__ENABLED": "false"}),
+                pytest.raises(RuntimeError),
+            ):
+                build_benchmark_pipeline(self_rag=False)
+            with (
+                temporary_config({"QUERY_EXPANSION__ENABLED": "true"}),
+                pytest.raises(RuntimeError),
+            ):
+                build_benchmark_pipeline(self_rag=False)
+
+        assert seen == [False, True]
+
 
 # ── dataclasses ────────────────────────────────────────────────────────────────
 
@@ -371,7 +406,13 @@ class TestBuildBenchmarkPipeline:
         agent = MagicMock()
         answer = Answer(query_id="q", text="Hi", sources=["c0"])
         agent.chat_full = AsyncMock(
-            return_value=MagicMock(answer=answer, iterations=1, actions=[], self_rag_decisions=[])
+            return_value=MagicMock(
+                answer=answer,
+                context_texts=["EKS runs on AWS."],
+                iterations=1,
+                actions=[],
+                self_rag_decisions=[],
+            )
         )
         with patch(
             "src.rag.pipelines.agent_pipeline.AgentPipeline.from_settings",
@@ -380,7 +421,7 @@ class TestBuildBenchmarkPipeline:
             pipeline = build_benchmark_pipeline(self_rag=True)
         result_answer, contexts = await pipeline.benchmark("question?")
         assert result_answer is answer
-        assert contexts == []
+        assert contexts == ["EKS runs on AWS."]
         agent.chat_full.assert_awaited_once_with("question?")
 
 
@@ -463,6 +504,20 @@ class TestTechniqueBenchmarkRun:
         assert report.results[0].technique == "feedback_loop"
 
     @pytest.mark.asyncio
+    async def test_self_rag_eval_uses_pipeline_context(self):
+        pipeline = _pipeline_mock(context=["EKS passage."])
+        factory = MagicMock(return_value=pipeline)
+
+        with patch(
+            "src.evals.e2e.technique_benchmark.temporary_config",
+            return_value=_noop_context(),
+        ):
+            report = await _benchmark().run([_qa()], ["self_rag"], pipeline_factory=factory)
+
+        assert report.results[0].mean_faithfulness == pytest.approx(0.9)
+        assert report.results[0].mean_relevance == pytest.approx(0.85)
+
+    @pytest.mark.asyncio
     async def test_self_rag_uses_agent_factory(self):
         pipeline = _pipeline_mock()
         factory = MagicMock(return_value=pipeline)
@@ -474,6 +529,21 @@ class TestTechniqueBenchmarkRun:
             await _benchmark().run([_qa()], ["self_rag"], pipeline_factory=factory)
 
         factory.assert_called_with(self_rag=True)
+
+    @pytest.mark.asyncio
+    async def test_unknown_technique_uses_default_overrides(self):
+        pipeline = _pipeline_mock()
+        factory = MagicMock(return_value=pipeline)
+
+        with patch(
+            "src.evals.e2e.technique_benchmark.temporary_config",
+            return_value=_noop_context(),
+        ) as mock_cfg:
+            report = await _benchmark().run([_qa()], ["custom_unknown"], pipeline_factory=factory)
+
+        mock_cfg.assert_called_once()
+        assert mock_cfg.call_args.args[0]["QUERY_EXPANSION__ENABLED"] == "false"
+        assert report.results[0].technique == "custom_unknown"
 
     @pytest.mark.asyncio
     async def test_answer_without_latency_uses_elapsed(self):

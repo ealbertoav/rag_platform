@@ -339,7 +339,7 @@ class TestHybridRetrieverGaps:
 class TestRetrievalPipelineAdaptive:
     def test_from_settings_wires_adaptive_when_enabled(self):
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
             ) as mock_llm,

@@ -5,13 +5,13 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 
-from src.core.settings import settings
 from src.domain.entities.query import Query
 from src.domain.repositories.llm_repository import LLMRepository
 from src.domain.services.retrieval_service import RetrievalResult, RetrievalService
 from src.observability.metrics import record_retrieval
 
 if TYPE_CHECKING:
+    from src.core.settings import Settings
     from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.infrastructure.vectordb.bm25 import BM25Index
 
@@ -19,12 +19,19 @@ logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
 
 
+def _settings() -> Settings:
+    """Read settings lazily so env reloads apply without re-importing this module."""
+    from src.core.settings import settings
+
+    return settings
+
+
 def _build_graph_retriever(
     llm: LLMRepository,
     bm25: object,
 ) -> object | None:
     """Return a GraphRetriever when Neo4j is enabled, else None."""
-    if not settings.neo4j.enabled:
+    if not _settings().neo4j.enabled:
         return None
     try:
         from src.rag.retrieval.graph_retriever import GraphRetriever
@@ -41,7 +48,7 @@ def _build_hype_retriever(
     bm25: object,
 ) -> object | None:
     """Return a HyPERetriever when HyPE is enabled, else None."""
-    if not settings.retrieval.hype.enabled:
+    if not _settings().retrieval.hype.enabled:
         return None
     try:
         from src.rag.retrieval.hype_retriever import HyPERetriever
@@ -65,7 +72,7 @@ def _build_hyde_retriever(
 ) -> object | None:
     """Return a HyDERetriever when HyDE is enabled, else None."""
     if enabled is None:
-        enabled = settings.retrieval.hyde.enabled
+        enabled = _settings().retrieval.hyde.enabled
     if not enabled:
         return None
     try:
@@ -86,7 +93,7 @@ def _build_hierarchical_retriever(
     vector_store: VectorStoreRepository,
 ) -> object | None:
     """Return a HierarchicalRetriever when hierarchical indexing is enabled, else None."""
-    if not settings.chunking.hierarchical.enabled:
+    if not _settings().chunking.hierarchical.enabled:
         return None
     try:
         from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
@@ -94,7 +101,7 @@ def _build_hierarchical_retriever(
         return HierarchicalRetriever(
             embedder=embedder,  # type: ignore[arg-type]
             vector_store=vector_store,
-            summary_top_k=settings.chunking.hierarchical.summary_top_k,
+            summary_top_k=_settings().chunking.hierarchical.summary_top_k,
         )
     except Exception as exc:
         logger.warning("Hierarchical retriever unavailable (continuing without it): %s", exc)
@@ -160,7 +167,7 @@ class RetrievalPipeline:
         if llm is None:
             llm = LlamaCppProvider.from_settings()
 
-        cfg = settings.retrieval
+        cfg = _settings().retrieval
         embedder = get_embedding_provider()
         if vector_store is None:
             vector_store = QdrantVectorStore.from_settings()
@@ -188,18 +195,18 @@ class RetrievalPipeline:
             hierarchical_retriever=hierarchical,  # type: ignore[arg-type]
             fusion_mode=cfg.hybrid_fusion,
             feedback_boost_multiplier=(
-                settings.quality.feedback_loop.boost_multiplier
-                if settings.quality.feedback_loop.enabled
+                _settings().quality.feedback_loop.boost_multiplier
+                if _settings().quality.feedback_loop.enabled
                 else 0.0
             ),
         )
 
         expander = None
-        if settings.query_expansion.enabled or settings.query_expansion.step_back.enabled:
+        if _settings().query_expansion.enabled or _settings().query_expansion.step_back.enabled:
             expander = QueryExpander.from_settings(llm)
         classifier = None
         strategy_registry = None
-        if settings.retrieval.adaptive.enabled:
+        if _settings().retrieval.adaptive.enabled:
             from src.rag.retrieval.adaptive.query_classifier import QueryClassifier
             from src.rag.retrieval.adaptive.strategies import AdaptiveStrategyRegistry
 
@@ -207,7 +214,7 @@ class RetrievalPipeline:
             strategy_registry = AdaptiveStrategyRegistry.from_settings()
         reranker = CrossEncoder.from_settings()
         compressor = (
-            ContextualCompressor.from_settings(llm) if settings.compression.enabled else None
+            ContextualCompressor.from_settings(llm) if _settings().compression.enabled else None
         )
 
         service = RetrievalService(
@@ -219,24 +226,24 @@ class RetrievalPipeline:
             reranker=reranker,
             compressor=compressor,
             top_k_retrieval=cfg.top_k_dense,
-            top_k_rerank=settings.reranker.top_k,
+            top_k_rerank=_settings().reranker.top_k,
             top_k_final=cfg.top_k_final,
             rse_enabled=cfg.rse.enabled,
             rse_max_segment_tokens=cfg.rse.max_segment_tokens,
             parent_context_enabled=cfg.parent_context.enabled,
-            parent_child_strategy=settings.chunking.strategy == "parent_child",
+            parent_child_strategy=_settings().chunking.strategy == "parent_child",
             chunk_lookup=bm25_index,
             diversity_enabled=cfg.diversity.enabled,
             diversity_lambda=cfg.diversity.lambda_,
             embedder=embedder if cfg.diversity.enabled else None,
-            reliable_rag_enabled=settings.quality.reliable_rag.enabled,
-            reliable_rag_min_score=settings.quality.reliable_rag.min_score,
-            llm=llm if settings.quality.reliable_rag.enabled else None,
+            reliable_rag_enabled=_settings().quality.reliable_rag.enabled,
+            reliable_rag_min_score=_settings().quality.reliable_rag.min_score,
+            llm=llm if _settings().quality.reliable_rag.enabled else None,
             feedback_boost_multiplier=(
-                settings.quality.feedback_loop.boost_multiplier
-                if settings.quality.feedback_loop.enabled
+                _settings().quality.feedback_loop.boost_multiplier
+                if _settings().quality.feedback_loop.enabled
                 else 0.0
             ),
-            vector_store=(vector_store if settings.quality.feedback_loop.enabled else None),
+            vector_store=(vector_store if _settings().quality.feedback_loop.enabled else None),
         )
         return cls(service=service)

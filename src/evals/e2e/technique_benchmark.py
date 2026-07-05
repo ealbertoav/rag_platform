@@ -333,7 +333,7 @@ class _AgentBenchmarkAdapter:
 
     async def benchmark(self, question: str) -> tuple[Any, list[str]]:
         result = await self._agent.chat_full(question)  # type: ignore[attr-defined]
-        return result.answer, []
+        return result.answer, list(result.context_texts)
 
 
 def build_benchmark_pipeline(*, self_rag: bool = False) -> BenchmarkPipeline:
