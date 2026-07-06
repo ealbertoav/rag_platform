@@ -17,6 +17,8 @@ from src.evals.golden_dataset import (
     MIN_QA_PAIRS,
     count_real_qa_pairs,
     is_placeholder_retrieval_row,
+    load_qa_dicts,
+    retrieval_rows_match_qa,
 )
 from src.evals.retrieval.recall_at_k import recall_at_k
 
@@ -102,14 +104,28 @@ def check_regression_gate(
         raw_ids = row.get("relevant_chunk_ids", [])
         relevant = [r for r in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(r, str)]
         if not relevant:
-            row_id = row.get("id", "<unknown>")
+            row_id = str(row.get("id", "<unknown>"))
             return RegressionGateResult(
                 status=GateStatus.FAILED,
                 message=f"Regression gate FAILED: row {row_id} has no relevant_chunk_ids.",
             )
+
+    qa_pairs = load_qa_dicts(qa)
+    if not retrieval_rows_match_qa(qa_pairs, real):
+        return RegressionGateResult(
+            status=GateStatus.FAILED,
+            message=(
+                "Regression gate FAILED: retrieval_dataset.json is out of sync with "
+                "qa_dataset.json — rerun `make evals` to regenerate both goldens."
+            ),
+        )
+
+    for row in real:
+        raw_ids = row.get("relevant_chunk_ids", [])
+        relevant = [r for r in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(r, str)]
         score = recall_at_k(relevant, relevant, k=5)
         if score < min_recall:
-            row_id = row.get("id", "<unknown>")
+            row_id = str(row.get("id", "<unknown>"))
             return RegressionGateResult(
                 status=GateStatus.FAILED,
                 message=(

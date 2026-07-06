@@ -173,6 +173,18 @@ def is_placeholder_qa_pair(pair: dict[str, object]) -> bool:
     return is_placeholder_chunk_ids(chunks)
 
 
+def is_evaluable_qa_pair(pair: dict[str, object]) -> bool:
+    """Return True when a QA row should participate in benchmarks."""
+    if not pair.get("question"):
+        return False
+    chunks = pair.get("relevant_chunks")
+    if not isinstance(chunks, list):
+        return True
+    if not chunks:
+        return False
+    return not is_placeholder_chunk_ids(chunks)
+
+
 def is_placeholder_retrieval_row(entry: dict[str, object]) -> bool:
     """Return True when all relevant_chunk_ids are placeholder IDs."""
     raw_ids = entry.get("relevant_chunk_ids")
@@ -182,29 +194,75 @@ def is_placeholder_retrieval_row(entry: dict[str, object]) -> bool:
 
 
 def filter_real_qa_pairs(pairs: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Drop rows without a question and placeholder-only relevant_chunks."""
-    filtered: list[dict[str, object]] = []
-    for pair in pairs:
-        if not isinstance(pair, dict) or not pair.get("question"):
-            continue
-        if is_placeholder_qa_pair(pair):
-            continue
-        filtered.append(pair)
-    return filtered
+    """Drop rows without a question, empty relevant_chunks, and placeholder-only IDs."""
+    return [pair for pair in pairs if isinstance(pair, dict) and is_evaluable_qa_pair(pair)]
 
 
 def qa_pairs_to_retrieval_rows(pairs: list[QAPair]) -> list[dict[str, object]]:
     """Convert QA pairs to retrieval golden rows (query + relevant_chunk_ids)."""
-    rows: list[dict[str, object]] = []
-    for i, pair in enumerate(pairs):
-        rows.append(
-            {
-                "id": f"retrieval_{i + 1:03d}",
-                "query": pair.question,
-                "relevant_chunk_ids": list(pair.relevant_chunks),
-            }
-        )
-    return rows
+    return _retrieval_rows_from_qa_content(
+        [(pair.question, list(pair.relevant_chunks)) for pair in pairs]
+    )
+
+
+def qa_dicts_to_retrieval_rows(pairs: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Convert evaluable QA dict rows to retrieval golden rows."""
+    evaluable = filter_real_qa_pairs(pairs)
+    content = []
+    for pair in evaluable:
+        raw_chunks = pair.get("relevant_chunks")
+        if isinstance(raw_chunks, list):
+            # pyrefly: ignore [unnecessary-type-conversion]
+            chunk_ids = [str(chunk_id) for chunk_id in raw_chunks if isinstance(chunk_id, str)]
+        else:
+            chunk_ids = []
+        content.append((str(pair["question"]), chunk_ids))
+    return _retrieval_rows_from_qa_content(content)
+
+
+def _retrieval_rows_from_qa_content(
+    rows: list[tuple[str, list[str]]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": f"retrieval_{index + 1:03d}",
+            "query": question,
+            "relevant_chunk_ids": chunk_ids,
+        }
+        for index, (question, chunk_ids) in enumerate(rows)
+    ]
+
+
+def load_qa_dicts(path: Path | None = None) -> list[dict[str, object]]:
+    """Load QA golden rows from disk."""
+    qa_path = path or _DEFAULT_QA_GOLDEN_PATH
+    try:
+        raw: object = json.loads(qa_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def retrieval_rows_match_qa(
+    qa_pairs: list[dict[str, object]],
+    retrieval_rows: list[dict[str, object]],
+) -> bool:
+    """Return True when retrieval rows are the sync output of evaluable QA pairs."""
+    expected = qa_dicts_to_retrieval_rows(qa_pairs)
+    actual = [
+        {
+            "query": row.get("query"),
+            "relevant_chunk_ids": row.get("relevant_chunk_ids"),
+        }
+        for row in retrieval_rows
+        if isinstance(row, dict)
+    ]
+    normalized_expected = [
+        {"query": row["query"], "relevant_chunk_ids": row["relevant_chunk_ids"]} for row in expected
+    ]
+    return normalized_expected == actual
 
 
 def save_retrieval_dataset(rows: list[dict[str, object]], path: Path | None = None) -> None:

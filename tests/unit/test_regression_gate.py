@@ -263,6 +263,33 @@ class TestCheckRegressionGate:
         assert result.status == GateStatus.FAILED
         assert "no relevant_chunk_ids" in result.message
 
+    def test_fails_when_retrieval_out_of_sync_with_qa(self, tmp_path: Path):
+        qa = tmp_path / "qa.json"
+        retrieval = tmp_path / "retrieval.json"
+        baseline = tmp_path / "baseline.json"
+        qa_rows = [_real_qa_row(i) for i in range(1, MIN_QA_PAIRS + 1)]
+        _write_json(qa, qa_rows)
+        _write_json(
+            retrieval,
+            [
+                {
+                    "id": f"retrieval_{i:03d}",
+                    "query": f"Mismatched question {i}?",
+                    "relevant_chunk_ids": [f"rag_c{i:03d}"],
+                }
+                for i in range(1, MIN_QA_PAIRS + 1)
+            ],
+        )
+        _write_json(baseline, {"min_samples": MIN_QA_PAIRS, "min_recall_at_5": 0.5})
+
+        result = check_regression_gate(
+            qa_path=qa,
+            retrieval_path=retrieval,
+            baseline_path=baseline,
+        )
+        assert result.status == GateStatus.FAILED
+        assert "out of sync" in result.message
+
 
 class TestRegressionGateMain:
     def test_main_prints_pass_message(self, capsys: pytest.CaptureFixture[str]):

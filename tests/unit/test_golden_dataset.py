@@ -20,11 +20,15 @@ from src.evals.golden_dataset import (
     count_real_qa_pairs,
     dedup_retention_estimate,
     filter_real_qa_pairs,
+    is_evaluable_qa_pair,
     is_placeholder_chunk_ids,
     is_placeholder_qa_pair,
     is_placeholder_retrieval_row,
+    load_qa_dicts,
+    qa_dicts_to_retrieval_rows,
     qa_pairs_to_retrieval_rows,
     resolve_max_chunks,
+    retrieval_rows_match_qa,
     save_retrieval_dataset,
 )
 
@@ -98,6 +102,16 @@ class TestPlaceholderDetection:
     def test_placeholder_qa_pair(self):
         assert is_placeholder_qa_pair({"relevant_chunks": ["chunk_id_1"]})
         assert not is_placeholder_qa_pair({"relevant_chunks": ["rag_c001"]})
+        assert not is_placeholder_qa_pair({"relevant_chunks": []})
+
+    def test_is_evaluable_qa_pair(self):
+        assert is_evaluable_qa_pair({"question": "Real?", "relevant_chunks": ["c0"]})
+        assert not is_evaluable_qa_pair({"question": "", "relevant_chunks": ["c0"]})
+        assert not is_evaluable_qa_pair({"question": "Empty?", "relevant_chunks": []})
+        assert not is_evaluable_qa_pair(
+            {"question": "Placeholder?", "relevant_chunks": ["chunk_id_1"]}
+        )
+        assert is_evaluable_qa_pair({"question": "Legacy?", "relevant_chunks": "bad"})
 
     def test_placeholder_retrieval_row(self):
         assert is_placeholder_retrieval_row({"relevant_chunk_ids": ["chunk_id_1"]})
@@ -121,6 +135,16 @@ class TestFilterRealQaPairs:
         assert len(pairs) == 1
         assert pairs[0]["question"] == "Real?"
 
+    def test_filters_empty_relevant_chunks(self):
+        pairs = filter_real_qa_pairs(
+            [
+                {"question": "Real?", "relevant_chunks": ["c0"]},
+                {"question": "Missing chunks?", "relevant_chunks": []},
+            ]
+        )
+        assert len(pairs) == 1
+        assert pairs[0]["question"] == "Real?"
+
 
 class TestRetrievalSync:
     def test_qa_pairs_to_retrieval_rows(self):
@@ -131,6 +155,44 @@ class TestRetrievalSync:
         assert rows[0]["id"] == "retrieval_001"
         assert rows[0]["query"] == "What is RAG?"
         assert rows[0]["relevant_chunk_ids"] == ["c0"]
+
+    def test_qa_dicts_to_retrieval_rows_filters_non_evaluable(self):
+        pairs: list[dict[str, object]] = [
+            {"question": "Real?", "relevant_chunks": ["c0"]},
+            {"question": "Placeholder?", "relevant_chunks": ["chunk_id_1"]},
+            {"question": "Empty?", "relevant_chunks": []},
+            {"question": "Legacy?", "relevant_chunks": "bad"},
+        ]
+        rows = qa_dicts_to_retrieval_rows(pairs)
+        assert len(rows) == 2
+        assert rows[0]["query"] == "Real?"
+        assert rows[1]["query"] == "Legacy?"
+        assert rows[1]["relevant_chunk_ids"] == []
+
+    def test_retrieval_rows_match_qa(self):
+        qa_pairs: list[dict[str, object]] = [
+            {"question": "Real?", "relevant_chunks": ["c0"]},
+            {"question": "Also real?", "relevant_chunks": ["c1"]},
+        ]
+        expected = qa_dicts_to_retrieval_rows(qa_pairs)
+        assert retrieval_rows_match_qa(qa_pairs, expected)
+        assert not retrieval_rows_match_qa(qa_pairs, expected[:1])
+
+    def test_load_qa_dicts(self, tmp_path: Path):
+        path = tmp_path / "qa.json"
+        path.write_text(
+            json.dumps([{"question": "Q?", "relevant_chunks": ["c0"]}, "bad"]),
+            encoding="utf-8",
+        )
+        assert len(load_qa_dicts(path)) == 1
+
+    def test_load_qa_dicts_missing_or_invalid(self, tmp_path: Path):
+        assert load_qa_dicts(tmp_path / "missing.json") == []
+        path = tmp_path / "qa.json"
+        path.write_text("not json", encoding="utf-8")
+        assert load_qa_dicts(path) == []
+        path.write_text('{"not": "a list"}', encoding="utf-8")
+        assert load_qa_dicts(path) == []
 
     def test_save_retrieval_dataset(self, tmp_path: Path):
         rows: list[dict[str, object]] = [{"id": "r1", "query": "q?", "relevant_chunk_ids": ["c0"]}]
@@ -215,6 +277,9 @@ class TestParseJsonPairs:
 
     def test_non_list_returns_empty(self):
         assert parse_json_pairs('{"question": "q", "answer": "a"}') == []
+
+    def test_invalid_embedded_json_array_returns_empty(self):
+        assert parse_json_pairs("Pairs:\n[not valid json]\nDone.") == []
 
 
 # ── QAPair ─────────────────────────────────────────────────────────────────────

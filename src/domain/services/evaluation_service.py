@@ -94,11 +94,8 @@ class EvaluationService:
             raw: object = json.loads(self._qa_path.read_text(encoding="utf-8"))
             if not isinstance(raw, list):
                 return []
-            pairs: list[dict[str, object]] = []
-            for item in raw:
-                if isinstance(item, dict) and item.get("question"):
-                    pairs.append(item)
-            return filter_real_qa_pairs(pairs)
+            candidates = [item for item in raw if isinstance(item, dict)]
+            return filter_real_qa_pairs(candidates)
         except (OSError, ValueError) as exc:
             logger.warning("Cannot load QA dataset from %s: %s", self._qa_path, exc)
             return []
