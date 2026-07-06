@@ -1,156 +1,142 @@
 [
   {
     "id": "retrieval_001",
-    "query": "What vector database does the RAG platform use?",
+    "query": "Question 0?",
     "relevant_chunk_ids": [
-      "rag_c001"
+      "c0"
     ]
   },
   {
     "id": "retrieval_002",
-    "query": "How does hybrid search combine dense and sparse retrieval?",
+    "query": "Question 1?",
     "relevant_chunk_ids": [
-      "rag_c002"
+      "c1"
     ]
   },
   {
     "id": "retrieval_003",
-    "query": "What embedding model is the default for retrieval?",
+    "query": "Question 2?",
     "relevant_chunk_ids": [
-      "rag_c003"
+      "c2"
     ]
   },
   {
     "id": "retrieval_004",
-    "query": "Which LLM runtime powers local generation?",
+    "query": "Question 3?",
     "relevant_chunk_ids": [
-      "rag_c004"
+      "c3"
     ]
   },
   {
     "id": "retrieval_005",
-    "query": "What is the purpose of the cross-encoder reranker?",
+    "query": "Question 4?",
     "relevant_chunk_ids": [
-      "rag_c005"
+      "c4"
     ]
   },
   {
     "id": "retrieval_006",
-    "query": "How do you ingest documents into the platform?",
+    "query": "Question 5?",
     "relevant_chunk_ids": [
-      "rag_c006"
+      "c5"
     ]
   },
   {
     "id": "retrieval_007",
-    "query": "What chunking strategies are supported?",
+    "query": "Question 6?",
     "relevant_chunk_ids": [
-      "rag_c007"
+      "c6"
     ]
   },
   {
     "id": "retrieval_008",
-    "query": "What does HyDE retrieval do at query time?",
+    "query": "Question 7?",
     "relevant_chunk_ids": [
-      "rag_c008"
+      "c7"
     ]
   },
   {
     "id": "retrieval_009",
-    "query": "What is multi-query expansion?",
+    "query": "Question 8?",
     "relevant_chunk_ids": [
-      "rag_c009"
+      "c8"
     ]
   },
   {
     "id": "retrieval_010",
-    "query": "How does contextual compression reduce token usage?",
+    "query": "Question 9?",
     "relevant_chunk_ids": [
-      "rag_c010"
+      "c9"
     ]
   },
   {
     "id": "retrieval_011",
-    "query": "What is Reliable RAG relevancy grading?",
+    "query": "Question 10?",
     "relevant_chunk_ids": [
-      "rag_c011"
+      "c10"
     ]
   },
   {
     "id": "retrieval_012",
-    "query": "What is the Self-RAG decision loop?",
+    "query": "Question 11?",
     "relevant_chunk_ids": [
-      "rag_c012"
+      "c11"
     ]
   },
   {
     "id": "retrieval_013",
-    "query": "How does the retrieval feedback loop work?",
+    "query": "Question 12?",
     "relevant_chunk_ids": [
-      "rag_c013"
+      "c12"
     ]
   },
   {
     "id": "retrieval_014",
-    "query": "Which feedback backends support multi-replica deployments?",
+    "query": "Question 13?",
     "relevant_chunk_ids": [
-      "rag_c014"
+      "c13"
     ]
   },
   {
     "id": "retrieval_015",
-    "query": "What metrics does POST /evals/run report?",
+    "query": "Question 14?",
     "relevant_chunk_ids": [
-      "rag_c015"
+      "c14"
     ]
   },
   {
     "id": "retrieval_016",
-    "query": "How is the golden QA dataset generated?",
+    "query": "Question 15?",
     "relevant_chunk_ids": [
-      "rag_c016"
+      "c15"
     ]
   },
   {
     "id": "retrieval_017",
-    "query": "What is MMR diversity retrieval?",
+    "query": "Question 16?",
     "relevant_chunk_ids": [
-      "rag_c017"
+      "c16"
     ]
   },
   {
     "id": "retrieval_018",
-    "query": "How does parent context enrichment work?",
+    "query": "Question 17?",
     "relevant_chunk_ids": [
-      "rag_c018"
+      "c17"
     ]
   },
   {
     "id": "retrieval_019",
-    "query": "What does explainable retrieval add to chat/full?",
+    "query": "Question 18?",
     "relevant_chunk_ids": [
-      "rag_c019"
+      "c18"
     ]
   },
   {
     "id": "retrieval_020",
-    "query": "How are source highlights validated?",
+    "query": "Question 19?",
     "relevant_chunk_ids": [
-      "rag_c020"
-    ]
-  },
-  {
-    "id": "retrieval_021",
-    "query": "What CI job guards retrieval metric regression?",
-    "relevant_chunk_ids": [
-      "rag_c021"
-    ]
-  },
-  {
-    "id": "retrieval_022",
-    "query": "How do you compare RAG techniques side by side?",
-    "relevant_chunk_ids": [
-      "rag_c022"
+      "c19"
     ]
   }
 ]

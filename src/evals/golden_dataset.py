@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from string import Template
@@ -213,6 +214,48 @@ def save_retrieval_dataset(rows: list[dict[str, object]], path: Path | None = No
     with target.open("w", encoding="utf-8") as fh:
         json.dump(rows, fh, indent=2, ensure_ascii=False)
     logger.info("Saved %d retrieval rows to %s", len(rows), target)
+
+
+def dedup_retention_estimate(dedup_threshold: float) -> float:
+    """Estimate the fraction of generated QA pairs that survive deduplication.
+
+    Lower cosine thresholds remove more near-duplicate questions across chunks.
+    """
+    clamped = max(0.5, min(1.0, dedup_threshold))
+    return 0.5 + 0.5 * clamped
+
+
+def chunks_needed_for_min_pairs(
+    min_pairs: int,
+    n_pairs_per_chunk: int,
+    *,
+    dedup_threshold: float = 0.95,
+) -> int:
+    """Return the minimum chunk count likely to reach *min_pairs* after dedup."""
+    if min_pairs <= 0 or n_pairs_per_chunk <= 0:
+        return 1
+    retention = dedup_retention_estimate(dedup_threshold)
+    raw_pairs_needed = math.ceil(min_pairs / retention)
+    return max(1, math.ceil(raw_pairs_needed / n_pairs_per_chunk))
+
+
+def resolve_max_chunks(
+    total_chunks: int,
+    *,
+    min_pairs: int,
+    n_pairs_per_chunk: int,
+    max_chunks: int | None = None,
+    dedup_threshold: float = 0.95,
+) -> int:
+    """Pick how many chunks to process, accounting for expected dedup losses."""
+    if max_chunks is not None:
+        return min(total_chunks, max(1, max_chunks))
+    needed = chunks_needed_for_min_pairs(
+        min_pairs,
+        n_pairs_per_chunk,
+        dedup_threshold=dedup_threshold,
+    )
+    return min(total_chunks, needed)
 
 
 def count_real_qa_pairs(path: Path | None = None) -> int:

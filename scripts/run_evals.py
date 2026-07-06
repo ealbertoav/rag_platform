@@ -21,6 +21,7 @@ from src.evals.golden_dataset import (
     MIN_QA_PAIRS,
     SyntheticDatasetBuilder,
     qa_pairs_to_retrieval_rows,
+    resolve_max_chunks,
     save_retrieval_dataset,
 )
 
@@ -86,11 +87,14 @@ def main() -> None:
         sys.exit(1)
 
     chunks = bm25.chunks
-    if args.max_chunks is None:
-        # Ensure enough chunks to hit min-pairs even with dedup losses.
-        needed = max(1, (args.min_pairs + args.n_pairs - 1) // args.n_pairs)
-        args.max_chunks = min(len(chunks), needed)
-    chunks = chunks[: args.max_chunks]
+    max_chunks = resolve_max_chunks(
+        len(chunks),
+        min_pairs=args.min_pairs,
+        n_pairs_per_chunk=args.n_pairs,
+        max_chunks=args.max_chunks,
+        dedup_threshold=args.dedup_threshold,
+    )
+    chunks = chunks[:max_chunks]
 
     print(
         f"Building QA pairs from {len(chunks)} chunks "

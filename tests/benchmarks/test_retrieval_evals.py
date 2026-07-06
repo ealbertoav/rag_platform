@@ -9,16 +9,11 @@ placeholder rows (default state before documents are ingested and evals are run)
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from src.core.constants import DATASETS_DIR
-from src.evals.golden_dataset import (
-    MIN_QA_PAIRS,
-    count_real_qa_pairs,
-    is_placeholder_retrieval_row,
-)
+from src.evals.golden_dataset import MIN_QA_PAIRS, count_real_qa_pairs, is_placeholder_retrieval_row
+from src.evals.regression_gate import load_real_retrieval_rows, load_regression_baseline
 from src.evals.retrieval import (
     RetrievalEvaluator,
     RetrievalSample,
@@ -32,24 +27,14 @@ _QA_PATH = DATASETS_DIR / "goldens" / "qa_dataset.json"
 
 
 def _load_baseline() -> dict[str, object]:
-    try:
-        data = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return load_regression_baseline(_BASELINE_PATH)
 
 
 def _load_real_samples() -> list[RetrievalSample]:
     """Load golden dataset; returns an empty list if only placeholder rows are present."""
+    if not load_real_retrieval_rows(_GOLDEN_PATH):
+        return []
     try:
-        raw = json.loads(_GOLDEN_PATH.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            return []
-        real_rows = [
-            row for row in raw if isinstance(row, dict) and not is_placeholder_retrieval_row(row)
-        ]
-        if not real_rows:
-            return []
         samples = load_retrieval_dataset(_GOLDEN_PATH)
         return [
             s

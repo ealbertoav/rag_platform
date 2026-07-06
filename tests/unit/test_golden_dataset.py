@@ -16,12 +16,15 @@ from src.evals.golden_dataset import (
     MIN_QA_PAIRS,
     QAPair,
     SyntheticDatasetBuilder,
+    chunks_needed_for_min_pairs,
     count_real_qa_pairs,
+    dedup_retention_estimate,
     filter_real_qa_pairs,
     is_placeholder_chunk_ids,
     is_placeholder_qa_pair,
     is_placeholder_retrieval_row,
     qa_pairs_to_retrieval_rows,
+    resolve_max_chunks,
     save_retrieval_dataset,
 )
 
@@ -161,6 +164,33 @@ class TestCountRealQaPairs:
 
     def test_min_qa_pairs_constant(self):
         assert MIN_QA_PAIRS == 20
+
+
+class TestChunkEstimation:
+    def test_dedup_retention_clamped(self):
+        assert dedup_retention_estimate(1.0) == 1.0
+        assert dedup_retention_estimate(0.95) == 0.975
+        assert dedup_retention_estimate(0.5) == 0.75
+        assert dedup_retention_estimate(0.0) == 0.75
+
+    def test_chunks_needed_accounts_for_dedup(self):
+        naive = max(1, (MIN_QA_PAIRS + 2) // 3)
+        with_dedup = chunks_needed_for_min_pairs(MIN_QA_PAIRS, 3, dedup_threshold=0.95)
+        assert with_dedup >= naive
+
+    def test_chunks_needed_minimum_one(self):
+        assert chunks_needed_for_min_pairs(0, 0) == 1
+
+    def test_resolve_max_chunks_uses_explicit_cap(self):
+        assert resolve_max_chunks(100, min_pairs=20, n_pairs_per_chunk=3, max_chunks=5) == 5
+
+    def test_resolve_max_chunks_defaults_with_dedup_headroom(self):
+        default = resolve_max_chunks(100, min_pairs=20, n_pairs_per_chunk=3)
+        naive = max(1, (20 + 3 - 1) // 3)
+        assert default >= naive
+
+    def test_resolve_max_chunks_capped_by_available(self):
+        assert resolve_max_chunks(2, min_pairs=20, n_pairs_per_chunk=3) == 2
 
 
 # ── _parse_json_pairs ──────────────────────────────────────────────────────────

@@ -1,0 +1,6 @@
+{
+  "min_samples": 20,
+  "min_recall_at_5": 0.5,
+  "oracle_recall_at_5": 1.0,
+  "description": "T-152 retrieval regression baseline — oracle retrieval uses ground-truth relevant_chunk_ids."
+}
