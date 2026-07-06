@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 from abc import ABC, abstractmethod
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -80,6 +82,7 @@ class RedisFeedbackStore(FeedbackStore):
                 f"Redis feedback accumulate failed for {chunk_id!r}",
                 cause=exc,
             ) from exc
+        # pyrefly: ignore [unnecessary-type-conversion]
         return float(raw)
 
     def get_score(self, chunk_id: str) -> float:
@@ -138,10 +141,15 @@ class SqlFeedbackStore(FeedbackStore):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Generator[sqlite3.Connection]:
         conn = sqlite3.connect(self._path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
