@@ -168,6 +168,69 @@ class TestRunEvalsMain:
         assert qa_out.exists()
         assert not retrieval_out.exists()
 
+    def test_custom_output_syncs_sibling_retrieval_not_committed_golden(
+        self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path
+    ):
+        import run_evals
+
+        pairs = _golden_pairs()
+        bm25 = _bm25_mock()
+        committed_retrieval = work_tmp / "goldens" / "retrieval_dataset.json"
+        committed_retrieval.parent.mkdir(parents=True, exist_ok=True)
+        committed_retrieval.write_text('{"sentinel": true}', encoding="utf-8")
+
+        qa_out = work_tmp / "custom" / "qa.json"
+        sibling_retrieval = work_tmp / "custom" / "retrieval_dataset.json"
+
+        monkeypatch.setattr(
+            run_evals,
+            "_default_retrieval_output",
+            lambda: committed_retrieval,
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["run_evals.py", "--output", str(qa_out)],
+        )
+        with _patch_run_evals(bm25, _mock_builder(pairs)):
+            run_evals.main()
+
+        assert json.loads(committed_retrieval.read_text()) == {"sentinel": True}
+        assert sibling_retrieval.exists()
+        retrieval_data = json.loads(sibling_retrieval.read_text())
+        assert len(retrieval_data) == MIN_QA_PAIRS
+
+    def test_expands_chunks_when_initial_batch_below_min_pairs(
+        self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path
+    ):
+        import run_evals
+
+        chunk_count = 100
+        bm25 = _bm25_mock(chunk_count)
+        initial = chunks_needed_for_min_pairs(MIN_QA_PAIRS, 3)
+        qa_out = work_tmp / "qa.json"
+
+        builder = _mock_builder(_golden_pairs())
+
+        def _generate(batch: list[Chunk]) -> list[QAPair]:
+            if len(batch) <= initial:
+                return [_qa_pair(i) for i in range(5)]
+            return _golden_pairs()
+
+        builder.generate_from_chunks.side_effect = _generate
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["run_evals.py", "--output", str(qa_out), "--no-sync-retrieval"],
+        )
+        with _patch_run_evals(bm25, builder):
+            run_evals.main()
+
+        assert builder.generate_from_chunks.call_count >= 2
+        final_batch = builder.generate_from_chunks.call_args[0][0]
+        assert len(final_batch) > initial
+
     def test_default_max_chunks_uses_dedup_headroom(
         self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path
     ):

@@ -328,6 +328,67 @@ def resolve_max_chunks(
     return min(total_chunks, needed)
 
 
+def resolve_retrieval_output_path(
+    qa_output: Path,
+    *,
+    retrieval_output: Path | None = None,
+    qa_golden_path: Path | None = None,
+    retrieval_golden_path: Path | None = None,
+) -> Path:
+    """Return the retrieval golden path paired with *qa_output*.
+
+    Custom QA outputs sync retrieval alongside the QA file instead of
+    overwriting the committed ``datasets/goldens/retrieval_dataset.json``.
+    """
+    default_qa = qa_golden_path or _DEFAULT_QA_GOLDEN_PATH
+    default_retrieval = retrieval_golden_path or _DEFAULT_RETRIEVAL_PATH
+    if retrieval_output is not None:
+        return retrieval_output
+    if qa_output.resolve() == default_qa.resolve():
+        return default_retrieval
+    return qa_output.parent / "retrieval_dataset.json"
+
+
+def generate_until_min_pairs(
+    builder: SyntheticDatasetBuilder,
+    chunks: list[Chunk],
+    *,
+    min_pairs: int,
+    n_pairs_per_chunk: int,
+    dedup_threshold: float = 0.95,
+    max_chunks: int | None = None,
+) -> tuple[list[QAPair], int]:
+    """Generate QA pairs, expanding the chunk window until *min_pairs* or exhaustion."""
+    if not chunks:
+        return [], 0
+
+    if max_chunks is not None:
+        limit = min(len(chunks), max(1, max_chunks))
+        return builder.generate_from_chunks(chunks[:limit]), limit
+
+    limit = resolve_max_chunks(
+        len(chunks),
+        min_pairs=min_pairs,
+        n_pairs_per_chunk=n_pairs_per_chunk,
+        max_chunks=None,
+        dedup_threshold=dedup_threshold,
+    )
+    while True:
+        pairs = builder.generate_from_chunks(chunks[:limit])
+        if len(pairs) >= min_pairs or limit >= len(chunks):
+            return pairs, limit
+        shortfall = min_pairs - len(pairs)
+        extra = chunks_needed_for_min_pairs(
+            shortfall,
+            n_pairs_per_chunk,
+            dedup_threshold=dedup_threshold,
+        )
+        next_limit = min(len(chunks), limit + extra)
+        if next_limit <= limit:
+            next_limit = len(chunks)
+        limit = next_limit
+
+
 def count_real_qa_pairs(path: Path | None = None) -> int:
     """Count non-placeholder QA rows in the golden dataset file."""
     qa_path = path or _DEFAULT_QA_GOLDEN_PATH

@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -20,6 +20,7 @@ from src.evals.golden_dataset import (
     count_real_qa_pairs,
     dedup_retention_estimate,
     filter_real_qa_pairs,
+    generate_until_min_pairs,
     is_evaluable_qa_pair,
     is_placeholder_chunk_ids,
     is_placeholder_qa_pair,
@@ -28,6 +29,7 @@ from src.evals.golden_dataset import (
     qa_dicts_to_retrieval_rows,
     qa_pairs_to_retrieval_rows,
     resolve_max_chunks,
+    resolve_retrieval_output_path,
     retrieval_rows_match_qa,
     save_retrieval_dataset,
     sync_retrieval_from_qa,
@@ -52,6 +54,15 @@ def _chunk(i: int, text: str = "relevant passage text") -> Chunk:
         document_id="doc",
         text=text,
         metadata={"source": f"doc{i}.pdf"},
+    )
+
+
+def _qa_pair(i: int) -> QAPair:
+    return QAPair(
+        question=f"Question {i}?",
+        answer=f"Answer {i}.",
+        relevant_chunks=[f"c{i}"],
+        source="doc.md",
     )
 
 
@@ -273,6 +284,111 @@ class TestChunkEstimation:
 
     def test_resolve_max_chunks_capped_by_available(self):
         assert resolve_max_chunks(2, min_pairs=20, n_pairs_per_chunk=3) == 2
+
+
+class TestResolveRetrievalOutputPath:
+    def test_default_qa_uses_committed_retrieval(self, tmp_path: Path):
+        qa = tmp_path / "goldens" / "qa_dataset.json"
+        retrieval = tmp_path / "goldens" / "retrieval_dataset.json"
+        assert (
+            resolve_retrieval_output_path(
+                qa,
+                qa_golden_path=qa,
+                retrieval_golden_path=retrieval,
+            )
+            == retrieval
+        )
+
+    def test_explicit_retrieval_output(self, tmp_path: Path):
+        qa = tmp_path / "qa.json"
+        explicit = tmp_path / "custom_retrieval.json"
+        assert resolve_retrieval_output_path(qa, retrieval_output=explicit) == explicit
+
+    def test_custom_qa_writes_sibling_retrieval(self, tmp_path: Path):
+        qa = tmp_path / "custom" / "qa.json"
+        default_qa = tmp_path / "goldens" / "qa_dataset.json"
+        default_retrieval = tmp_path / "goldens" / "retrieval_dataset.json"
+        assert (
+            resolve_retrieval_output_path(
+                qa,
+                qa_golden_path=default_qa,
+                retrieval_golden_path=default_retrieval,
+            )
+            == tmp_path / "custom" / "retrieval_dataset.json"
+        )
+
+
+class TestGenerateUntilMinPairs:
+    def test_empty_chunks(self):
+        builder = MagicMock()
+        pairs, limit = generate_until_min_pairs(
+            builder,
+            [],
+            min_pairs=MIN_QA_PAIRS,
+            n_pairs_per_chunk=3,
+        )
+        assert pairs == []
+        assert limit == 0
+        builder.generate_from_chunks.assert_not_called()
+
+    def test_respects_explicit_max_chunks(self):
+        chunks = [_chunk(i) for i in range(10)]
+        builder = MagicMock()
+        builder.generate_from_chunks.return_value = [
+            QAPair(question="q?", answer="a.", relevant_chunks=["c0"])
+        ]
+        pairs, limit = generate_until_min_pairs(
+            builder,
+            chunks,
+            min_pairs=20,
+            n_pairs_per_chunk=3,
+            max_chunks=4,
+        )
+        assert limit == 4
+        assert builder.generate_from_chunks.call_count == 1
+        assert len(builder.generate_from_chunks.call_args[0][0]) == 4
+        assert len(pairs) == 1
+
+    def test_expands_when_dedup_removes_pairs(self):
+        chunks = [_chunk(i) for i in range(100)]
+        builder = MagicMock()
+        initial = chunks_needed_for_min_pairs(MIN_QA_PAIRS, 3)
+
+        def _generate(batch: list[Chunk]) -> list[QAPair]:
+            if len(batch) <= initial:
+                return [_qa_pair(i) for i in range(5)]
+            return [_qa_pair(i) for i in range(MIN_QA_PAIRS)]
+
+        builder.generate_from_chunks.side_effect = _generate
+        pairs, limit = generate_until_min_pairs(
+            builder,
+            chunks,
+            min_pairs=MIN_QA_PAIRS,
+            n_pairs_per_chunk=3,
+        )
+        assert len(pairs) == MIN_QA_PAIRS
+        assert limit > initial
+        assert builder.generate_from_chunks.call_count >= 2
+
+    def test_exhausts_all_chunks_when_extra_does_not_advance(self):
+        chunks = [_chunk(i) for i in range(10)]
+        builder = MagicMock()
+        builder.generate_from_chunks.return_value = [_qa_pair(0)]
+        initial = chunks_needed_for_min_pairs(MIN_QA_PAIRS, 3)
+
+        with patch(
+            "src.evals.golden_dataset.chunks_needed_for_min_pairs",
+            side_effect=[initial, 0],
+        ):
+            pairs, limit = generate_until_min_pairs(
+                builder,
+                chunks,
+                min_pairs=MIN_QA_PAIRS,
+                n_pairs_per_chunk=3,
+            )
+
+        assert limit == len(chunks)
+        assert len(pairs) == 1
 
 
 # ── _parse_json_pairs ──────────────────────────────────────────────────────────

@@ -20,8 +20,10 @@ from src.core.constants import DATASETS_DIR
 from src.evals.golden_dataset import (
     MIN_QA_PAIRS,
     SyntheticDatasetBuilder,
+    generate_until_min_pairs,
     qa_pairs_to_retrieval_rows,
     resolve_max_chunks,
+    resolve_retrieval_output_path,
     save_retrieval_dataset,
 )
 
@@ -68,7 +70,11 @@ def main() -> None:
     parser.add_argument(
         "--retrieval-output",
         default=None,
-        help="Retrieval golden output path (default: datasets/goldens/retrieval_dataset.json)",
+        help=(
+            "Retrieval golden output path "
+            "(default: datasets/goldens/retrieval_dataset.json when --output is default; "
+            "otherwise retrieval_dataset.json alongside custom --output)"
+        ),
     )
     parser.add_argument(
         "--no-sync-retrieval",
@@ -87,17 +93,16 @@ def main() -> None:
         sys.exit(1)
 
     chunks = bm25.chunks
-    max_chunks = resolve_max_chunks(
+    initial_limit = resolve_max_chunks(
         len(chunks),
         min_pairs=args.min_pairs,
         n_pairs_per_chunk=args.n_pairs,
         max_chunks=args.max_chunks,
         dedup_threshold=args.dedup_threshold,
     )
-    chunks = chunks[:max_chunks]
 
     print(
-        f"Building QA pairs from {len(chunks)} chunks "
+        f"Building QA pairs from {initial_limit} chunks "
         f"(n={args.n_pairs} per chunk, min={args.min_pairs})…"
     )
 
@@ -110,7 +115,14 @@ def main() -> None:
         n_pairs_per_chunk=args.n_pairs,
         dedup_threshold=args.dedup_threshold,
     )
-    pairs = builder.generate_from_chunks(chunks)
+    pairs, chunk_limit = generate_until_min_pairs(
+        builder,
+        chunks,
+        min_pairs=args.min_pairs,
+        n_pairs_per_chunk=args.n_pairs,
+        dedup_threshold=args.dedup_threshold,
+        max_chunks=args.max_chunks,
+    )
 
     if len(pairs) < args.min_pairs:
         print(
@@ -125,8 +137,11 @@ def main() -> None:
     print(f"✓ {len(pairs)} QA pairs saved to {output}")
 
     if not args.no_sync_retrieval:
-        retrieval_path = (
-            Path(args.retrieval_output) if args.retrieval_output else _default_retrieval_output()
+        retrieval_path = resolve_retrieval_output_path(
+            output,
+            retrieval_output=Path(args.retrieval_output) if args.retrieval_output else None,
+            qa_golden_path=_default_output(),
+            retrieval_golden_path=_default_retrieval_output(),
         )
         save_retrieval_dataset(qa_pairs_to_retrieval_rows(pairs), retrieval_path)
         print(f"✓ Retrieval golden synced to {retrieval_path}")
