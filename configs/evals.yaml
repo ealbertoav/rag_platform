@@ -45,3 +45,11 @@ evals:
       - name: feedback_loop
         description: User feedback RRF boost (pre-seeds scores; compares boost on vs off)
         overrides: {}
+
+  chunk_size_sweep:
+    sizes: [256, 500, 768, 1024]
+    weights:
+      recall: 0.35
+      faithfulness: 0.35
+      relevance: 0.20
+      latency: 0.10

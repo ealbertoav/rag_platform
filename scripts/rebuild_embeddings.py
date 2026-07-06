@@ -170,12 +170,15 @@ def main() -> None:
     vector_store = QdrantVectorStore.from_settings()
 
     if args.recreate_collection:
-        print(f"Dropping collection '{settings.qdrant.collection}'…")
+        from src.core.exceptions import VectorStoreError
+
+        print(f"Clearing collection '{settings.qdrant.collection}'…")
         try:
-            vector_store.drop_collection()
-            print("Collection dropped.")
-        except Exception as exc:
-            print(f"Warning: could not drop collection: {exc}", file=sys.stderr)
+            vector_store.recreate_collection()
+        except VectorStoreError as exc:
+            print(f"[error] Could not clear Qdrant collection: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print("Collection cleared.")
 
     # ── Re-embed in batches ─────────────────────────────────────────────────────
     errors = 0

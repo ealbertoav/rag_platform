@@ -5,7 +5,6 @@ import importlib
 import json
 import logging
 import os
-import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,11 +17,17 @@ from rich.table import Table
 
 from src.core.constants import DATASETS_DIR, EXPORTS_DIR, ROOT
 from src.core.exceptions import VectorStoreError
-from src.domain.entities.evaluation import BenchmarkRun, EvalSample
+from src.domain.entities.evaluation import BenchmarkRun
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
+from src.evals.e2e.benchmark_samples import (
+    GenerationMetricAccumulator,
+    pair_str,
+    pair_str_list,
+    pipeline_error_logger,
+    score_pipeline_question,
+)
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.relevance import RelevanceMetric
-from src.evals.retrieval.recall_at_k import recall_at_k
 from src.rag.quality.feedback_loop import record_feedback, score_from_relevant
 
 logger = logging.getLogger(__name__)
@@ -580,57 +585,40 @@ class TechniqueBenchmark:
         pipeline: BenchmarkPipeline,
         qa_pairs: list[dict[str, object]],
     ) -> TechniqueResult:
-        recalls: list[float] = []
-        faith_scores: list[float] = []
-        relev_scores: list[float] = []
-        latencies: list[float] = []
+        accumulator = GenerationMetricAccumulator()
 
         for pair in qa_pairs:
-            question = _str(pair.get("question"))
-            expected = _str(pair.get("answer"))
-            relevant_ids = _str_list(pair.get("relevant_chunks"))
+            question = pair_str(pair.get("question"))
+            expected = pair_str(pair.get("answer"))
+            relevant_ids = pair_str_list(pair.get("relevant_chunks"))
             if not question:
                 continue
 
-            t0 = time.monotonic()
-            try:
-                run = await pipeline.benchmark(question)
-            except Exception as exc:
-                logger.error("Pipeline failed for %s / %r: %s", technique, question[:40], exc)
-                recalls.append(0.0)
-                faith_scores.append(0.0)
-                relev_scores.append(0.0)
-                latencies.append((time.monotonic() - t0) * 1000)
-                continue
-
-            answer = run.answer
-            context_texts = run.context_texts
-            retrieved_ids = list(answer.sources)
-            recalls.append(recall_at_k(retrieved_ids, relevant_ids, k=self._k))
-
-            sample = EvalSample(
+            scores = await score_pipeline_question(
+                pipeline=pipeline,
                 question=question,
                 expected_answer=expected,
-                retrieved_chunks=context_texts,
-                generated_answer=answer.text,
-                parametric_answer=run.parametric_answer,
+                relevant_ids=relevant_ids,
+                recall_k=self._k,
+                faithfulness=self._faith,
+                relevance=self._relev,
+                on_pipeline_error=pipeline_error_logger(
+                    logger.error,
+                    "Pipeline failed for %s / %r: %s",
+                    technique,
+                    question[:40],
+                ),
             )
-            faith_scores.append(self._faith.score(sample).score)
-            relev_scores.append(self._relev.score(sample).score)
-            latency_ms = getattr(answer, "latency_ms", None)
-            if isinstance(latency_ms, int | float):
-                latencies.append(float(latency_ms))
-            else:
-                latencies.append((time.monotonic() - t0) * 1000)
+            accumulator.append(scores)
 
-        n = len(recalls) or 1
+        means = accumulator.means()
         return TechniqueResult(
             technique=technique,
-            total_samples=len(recalls),
-            mean_recall_at_5=sum(recalls) / n,
-            mean_faithfulness=sum(faith_scores) / n,
-            mean_relevance=sum(relev_scores) / n,
-            mean_latency_ms=sum(latencies) / n,
+            total_samples=accumulator.total_samples,
+            mean_recall_at_5=means.mean_recall_at_5,
+            mean_faithfulness=means.mean_faithfulness,
+            mean_relevance=means.mean_relevance,
+            mean_latency_ms=means.mean_latency_ms,
         )
 
 
@@ -655,9 +643,6 @@ def run_technique_matrix(
     return report
 
 
-def _str(val: object) -> str:
-    return val if isinstance(val, str) else ""
-
-
-def _str_list(val: object) -> list[str]:
-    return [v for v in val if isinstance(v, str)] if isinstance(val, list) else []
+# Backward-compatible aliases for tests and internal callers.
+_str = pair_str
+_str_list = pair_str_list

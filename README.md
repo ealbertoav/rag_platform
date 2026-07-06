@@ -24,6 +24,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Technique benchmark (T-150):** Compare optional RAG techniques side-by-side on the golden QA dataset — baseline, multi-query expansion, HyDE, contextual compression, Reliable RAG, Self-RAG (agent path), and feedback-loop boost A/B — without code changes between runs. Each technique toggles via isolated env overrides; results export to `data/exports/technique_benchmark_{timestamp}.json`. See [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150).
 
+> **Chunk size sweep (T-151):** Automate chunk-size tuning by benchmarking multiple `chunk_size` values on the golden QA dataset — each size gets an isolated Qdrant collection (`rag_documents_cs{size}`), optional on-disk chunk/BM25 caches, and a weighted recommendation across Recall@5, Faithfulness, Relevance, and latency. Results export to `data/exports/chunk_size_sweep_{timestamp}.json`. See [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151).
+
 ---
 
 ## Table of Contents
@@ -47,6 +49,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
+  - [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
@@ -330,7 +333,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
-| `configs/evals.yaml` | Evaluation thresholds and dataset paths |
+| `configs/evals.yaml` | Evaluation thresholds, dataset paths, technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151) |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
 
 ---
@@ -926,6 +929,67 @@ The `feedback_loop` technique uses `temporary_feedback_seed` to write positive s
 ```
 
 When the golden file contains only placeholder `chunk_id_*` rows, the script exits 0 with a skip report (populate real pairs via `make evals` first). Full results save to `data/exports/technique_benchmark_{timestamp}.json`.
+
+---
+
+### Chunk Size Optimization Sweep (T-151)
+
+Sweep configured `chunk_size` values and recommend the best for your corpus. Each size runs in isolation: a dedicated Qdrant collection (`rag_documents_cs{size}`), per-size BM25 index, and optional on-disk chunk cache under `data/chunks/{size}/`. The sweep scores Recall@5, Faithfulness, Relevance, and end-to-end latency, then ranks sizes by a weighted score (defaults in `configs/evals.yaml` → `evals.chunk_size_sweep.weights`).
+
+```bash
+# Preview planned steps (collections, cache paths, actions) without executing
+uv run python scripts/benchmark_chunk_sizes.py --dry-run
+
+# Full sweep — requires real golden QA pairs and an ingest source when cache is cold
+uv run python scripts/benchmark_chunk_sizes.py \
+  --ingest-source data/raw/ \
+  --max-samples 20
+
+# Or use the Makefile default (no extra flags)
+make benchmark-chunk-sizes
+
+# Custom sizes and force re-chunk from source (ignores cached chunks)
+uv run python scripts/benchmark_chunk_sizes.py \
+  --sizes 256,500,768 \
+  --ingest-source data/raw/ \
+  --force-rechunk \
+  --max-samples 50
+
+# Swap LLM profile before the sweep (same as make benchmark)
+uv run python scripts/benchmark_chunk_sizes.py \
+  --llm-config configs/llm/qwen3-14b.yaml \
+  --ingest-source data/raw/
+```
+
+**Per-size workflow** (see flow diagram in [Evaluation Framework](#evaluation-framework)):
+
+| Step | What happens |
+|---|---|
+| Chunk | Load `data/chunks/{size}/chunks.json` cache, or chunk `--ingest-source` at the target size |
+| Index | Embed chunks, `recreate_collection()` on the per-size Qdrant collection, upsert + rebuild BM25 |
+| Evaluate | Run `ChatPipeline` against golden QA pairs; remap `relevant_chunks` when chunk boundaries shift |
+| Recommend | Weighted score across Recall@5, Faithfulness, Relevance, and normalized latency |
+
+**Output:**
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         Chunk Size Comparison                                │
+├────────────┬──────────┬──────────────┬───────────┬────────────┬──────────────┤
+│ Chunk Size │ Recall@5 │ Faithfulness │ Relevance │ Latency ms │ Weighted     │
+├────────────┼──────────┼──────────────┼───────────┼────────────┼──────────────┤
+│ 256        │  0.712   │    0.841     │   0.802   │   1620.4   │   0.782      │
+│ 500 ★      │  0.768   │    0.878     │   0.835   │   1785.1   │   0.841      │
+│ 768        │  0.754   │    0.862     │   0.821   │   1942.8   │   0.809      │
+│ 1024       │  0.731   │    0.849     │   0.814   │   2105.3   │   0.776      │
+└────────────┴──────────┴──────────────┴───────────┴────────────┴──────────────┘
+
+Recommended chunk_size: 500
+```
+
+When the golden file contains only placeholder `chunk_id_*` rows, the script exits 0 with a skip report (populate real pairs via `make evals` first). `--dry-run` always succeeds and writes the planned sweep to `data/exports/chunk_size_sweep_{timestamp}.json`. Full results use the same path pattern.
+
+**Default sizes** (defined in `configs/evals.yaml` → `evals.chunk_size_sweep.sizes`): `256`, `500`, `768`, `1024`.
 
 ---
 
@@ -1604,6 +1668,7 @@ rag_implementation/
 │   ├── run_evals.py            # QA dataset generation CLI
 │   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
 │   ├── benchmark_techniques.py # Technique matrix CLI (T-150)
+│   ├── benchmark_chunk_sizes.py # Chunk size sweep CLI (T-151)
 │   └── compare_models.py       # Multi-model comparison table
 ├── specs/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
@@ -1614,7 +1679,7 @@ rag_implementation/
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
-│   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150)
+│   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · benchmark_samples helpers
 │   ├── infrastructure/         # BGE-M3, Qdrant, BM25, feedback_store (T-146), Redis client, Neo4j, SQLite metadata, llama.cpp, web search
 │   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
@@ -1635,7 +1700,7 @@ rag_implementation/
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
-│   ├── benchmarks/             # E2E, technique matrix (T-150), feedback concurrency tests
+│   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
 │   └── unit/                   # 800+ unit tests (zero external deps)
 ├── .dockerignore
@@ -1701,6 +1766,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make evals` | Generate synthetic QA dataset |
 | `make benchmark` | Run E2E benchmark |
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
+| `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |
 | `make lint` | `ruff check` + `mypy` |
 | `make format` | `ruff format` + `ruff check --fix` |
 | `make test` | Unit + integration tests with coverage |
@@ -1730,7 +1796,7 @@ make test
 make qdrant-up
 uv run pytest tests/integration/test_qdrant.py -v
 
-# Benchmark suite (E2E, technique matrix, feedback concurrency)
+# Benchmark suite (E2E, technique matrix, chunk size sweep, feedback concurrency)
 uv run pytest tests/benchmarks/ -v -s
 ```
 
@@ -2363,7 +2429,7 @@ Per-request retrieval constraints for scoped Q&A — inspired by multi-faceted f
 
 ## Evaluation Framework
 
-The platform ships four evaluation layers: synthetic dataset generation (T-040), retrieval metrics (T-041), generation metrics (T-042), end-to-end benchmarking (T-043/T-044), and optional **technique comparison** (T-150) for side-by-side RAG configuration tuning.
+The platform ships four evaluation layers: synthetic dataset generation (T-040), retrieval metrics (T-041), generation metrics (T-042), end-to-end benchmarking (T-043/T-044), optional **technique comparison** (T-150) for side-by-side RAG configuration tuning, and **chunk size optimization** (T-151) for corpus-specific chunking tuning.
 
 ```mermaid
 flowchart LR
@@ -2406,10 +2472,25 @@ flowchart LR
         RUN --> FBAB["Feedback A/B<br/>temporary_feedback_seed<br/>boost off vs on"]
     end
 
+    subgraph SWEEP["📐 Chunk Size Sweep (T-151)"]
+        SRC["--ingest-source<br/>or data/chunks/{size}/ cache"] --> CHK["Chunk at size<br/>save chunks.json"]
+        CHK --> IDX["Embed + recreate_collection<br/>rag_documents_cs{size}"]
+        IDX --> BM25S[("data/chunks/{size}/<br/>bm25_index.json")]
+        IDX --> QCS[("Qdrant<br/>per-size collection")]
+        QA6[("QA Dataset<br/>filter placeholders")] --> EVAL["ChatPipeline per size<br/>remap relevant_chunks"]
+        QCS --> EVAL
+        BM25S --> EVAL
+        EVAL --> MET3["Recall@5 · Faithfulness<br/>Relevance · latency"]
+        MET3 --> WGT["Weighted score<br/>configs/evals.yaml weights"]
+        WGT --> CS[("data/exports<br/>chunk_size_sweep_{ts}.json")]
+        WGT --> REC["★ recommended chunk_size"]
+    end
+
     GEN --> RET
     GEN --> GEN2
     GEN --> E2E
     E2E --> TECH
+    E2E --> SWEEP
 ```
 
 ---

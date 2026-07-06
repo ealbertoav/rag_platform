@@ -753,7 +753,9 @@ class TestRetrievalServiceRemaining:
         )
         query = Query(text="q", expanded_texts=["variant"])
 
-        async def _fake_gather(*_args, **_kwargs):
+        async def _fake_gather(*coros, **_kwargs):
+            for coro in coros:
+                coro.close()
             return [[(_chunk(0), 0.9)]]
 
         with patch(

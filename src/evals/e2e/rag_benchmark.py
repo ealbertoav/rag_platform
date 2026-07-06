@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from src.domain.entities.evaluation import EvalSample
+from src.evals.e2e.benchmark_samples import pair_str, pair_str_list
 from src.evals.generation.context_precision import ContextPrecisionMetric
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.hallucination import HallucinationMetric
@@ -123,9 +124,9 @@ class RAGBenchmark:
         results: list[SampleResult] = []
 
         for i, pair in enumerate(qa_pairs):
-            question = _str(pair.get("question"))
-            expected = _str(pair.get("answer"))
-            relevant_ids = _str_list(pair.get("relevant_chunks"))
+            question = pair_str(pair.get("question"))
+            expected = pair_str(pair.get("answer"))
+            relevant_ids = pair_str_list(pair.get("relevant_chunks"))
 
             if not question:
                 continue
@@ -223,11 +224,3 @@ class RAGBenchmark:
             passed=passed,
             per_sample=results,
         )
-
-
-def _str(val: object) -> str:
-    return val if isinstance(val, str) else ""
-
-
-def _str_list(val: object) -> list[str]:
-    return [v for v in val if isinstance(v, str)] if isinstance(val, list) else []

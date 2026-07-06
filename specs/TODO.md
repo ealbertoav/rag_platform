@@ -4,14 +4,13 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 15 — Evaluation Operationalization. **T-150 ✅ done** (PR #29 — technique benchmark matrix, `make benchmark-techniques`, `TechniqueBenchmark` orchestrator).
+> **Current focus:** Phase 15 — Evaluation Operationalization. **T-151 ✅ done** (PR #30 — chunk size sweep, `make benchmark-chunk-sizes`, `ChunkSizeSweep` orchestrator, per-size Qdrant collections + chunk/BM25 caches).
 >
 > **Next tasks (recommended order):**
-> 1. **T-151** — Chunk size optimization sweep (`scripts/benchmark_chunk_sizes.py`)
-> 2. **T-152** — Populate golden QA dataset + CI eval regression gates
-> 3. **T-161 / T-162** — Phase 16 production hardening (secrets, health probes)
-> 4. **T-171** — Mypy CI gate hardening
-> 5. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+> 1. **T-152** — Populate golden QA dataset + CI eval regression gates
+> 2. **T-161 / T-162** — Phase 16 production hardening (secrets, health probes)
+> 3. **T-171** — Mypy CI gate hardening
+> 4. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
 ---
 
@@ -1815,7 +1814,7 @@
 >
 > **Depends on:** Phase 4 (T-040–T-043), Phase 11–14 technique flags
 >
-> **Progress:** T-150 complete · T-151 and T-152 remaining
+> **Progress:** T-150 complete · T-151 complete · T-152 remaining
 
 ---
 
@@ -1852,19 +1851,43 @@
 ---
 
 ### T-151 · Chunk Size Optimization Sweep
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Automate chunk size tuning by sweeping `chunk_size` values and measuring faithfulness/relevancy/latency — inspired by RAG_Techniques `choose_chunk_size.py`.
 - **Inputs:** T-011 (chunkers), T-043 (benchmark), T-040 (golden dataset)
 - **Outputs:** Script recommending optimal chunk size for the current corpus.
 - **Files:**
-  - `scripts/benchmark_chunk_sizes.py`
-  - `src/evals/e2e/chunk_size_sweep.py`
-  - `configs/evals.yaml` — add `chunk_size_sweep.sizes: [256, 500, 768, 1024]`
+  - `scripts/benchmark_chunk_sizes.py` — CLI (`--sizes`, `--ingest-source`, `--dry-run`, `--force-rechunk`, `--llm-config`)
+  - `src/evals/e2e/chunk_size_sweep.py` — `ChunkSizeSweep` orchestrator, per-size indexing, weighted recommendation
+  - `src/evals/e2e/benchmark_samples.py` — shared sample scoring helpers extracted from technique benchmark
+  - `configs/evals.yaml` — `chunk_size_sweep.sizes: [256, 500, 768, 1024]` and `chunk_size_sweep.weights`
+  - `src/infrastructure/vectordb/qdrant.py` — `recreate_collection()` for per-size index resets; embedding model validation on existing collections
+  - `tests/unit/test_chunk_size_sweep.py` — unit coverage (850+ lines)
+  - `tests/unit/test_benchmark_samples.py` — shared helper tests
+  - `tests/benchmarks/test_chunk_size_sweep.py` — integration skip on placeholder data
+  - `Makefile` — `benchmark-chunk-sizes` target
+- **Usage:**
+  ```bash
+  make benchmark-chunk-sizes
+  uv run python scripts/benchmark_chunk_sizes.py --dry-run
+  uv run python scripts/benchmark_chunk_sizes.py \
+    --ingest-source data/raw/ \
+    --sizes 256,500,768,1024 \
+    --force-rechunk \
+    --max-samples 50
+  ```
+- **Output:** `data/exports/chunk_size_sweep_{timestamp}.json` + Rich comparison table with ★ on recommended size
 - **Acceptance Criteria:**
-  - Sweeps configured chunk sizes (requires re-ingest per size or pre-chunked cache)
-  - Reports Recall@5, Faithfulness, avg latency per size
-  - Prints recommended size based on weighted score
-  - `--dry-run` lists planned sweep without executing
+  - Sweeps configured chunk sizes with isolated Qdrant collections (`rag_documents_cs{size}`)
+  - Per-size chunk cache at `data/chunks/{size}/chunks.json` and BM25 at `data/chunks/{size}/bm25_index.json`
+  - `--ingest-source` chunks documents when cache is missing; `--force-rechunk` ignores cache
+  - `recreate_collection()` clears Qdrant before each per-size re-index (dense + BM25 stay aligned)
+  - Reports Recall@5, Faithfulness, Relevance, and avg latency per size
+  - Prints recommended size based on weighted score (`recall`, `faithfulness`, `relevance`, `latency` weights in config)
+  - Remaps `relevant_chunks` when chunk boundaries shift between sizes (text overlap fallback)
+  - `--dry-run` lists planned sweep steps without executing
+  - Skips gracefully when golden dataset contains only placeholders
+  - `make benchmark-chunk-sizes` Makefile target added
+- **Notes:** `temporary_config` applies per-size env overrides (`CHUNKING__CHUNK_SIZE`, `QDRANT__COLLECTION`). Shared scoring logic lives in `benchmark_samples.py` and is reused by `technique_benchmark.py`. Qdrant `_model_validated` resets on collection recreate so per-size collections validate embedding model independently.
 
 ---
 
@@ -2174,6 +2197,6 @@ T-163 + T-164 + T-165 ──► T-172
 12. **Phase 12 — Priority 2 (Index-Time Enrichment):** T-120 → T-121 → T-122 → T-123 → T-124 → T-125 → T-126 _(~3 sessions)_
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
-15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 → T-152 _(~1 session; T-150 done in PR #29)_
+15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 _(~1 session; T-150 done in PR #29, T-151 done in PR #30)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 → T-162 → T-163 → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_

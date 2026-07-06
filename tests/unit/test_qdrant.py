@@ -322,6 +322,7 @@ def store(mock_client: MagicMock) -> QdrantVectorStore:
     s = QdrantVectorStore(collection="test_col", dense_dim=4)
     s._client = mock_client
     s._collection_ready = True
+    s._model_validated = True
     return s
 
 
@@ -431,6 +432,27 @@ class TestEnsureCollection:
         store._ensure_collection()
         store._ensure_collection()
         mock_client.collection_exists.assert_not_called()
+
+    def test_ensure_collection_validates_once_when_ready_flag_stale(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(metadata={"embedding_model_name": "openai:text-embedding-3-large"})
+        )
+        store = QdrantVectorStore(
+            collection="test_col",
+            dense_dim=4,
+            embedding_model_name="openai:text-embedding-3-large",
+        )
+        store._client = mock_client
+        store._collection_ready = True
+        store._model_validated = False
+
+        store._ensure_collection()
+        exists_calls_after_first = mock_client.collection_exists.call_count
+        store._ensure_collection()
+
+        assert mock_client.collection_exists.call_count == exists_calls_after_first
+        assert store._model_validated
 
     def test_wraps_exception_as_vector_store_error(self, mock_client: MagicMock):
         mock_client.collection_exists.side_effect = ConnectionError("no server")
@@ -655,6 +677,7 @@ class TestUpsert:
         )
         store._client = mock_client
         store._collection_ready = True
+        store._model_validated = True
         chunk = _chunk(0).model_copy(update={"metadata": {CHUNK_TYPE_KEY: CHUNK_TYPE_HYPE}})
         existing = MagicMock()
         existing.id = chunk.id
@@ -2005,12 +2028,162 @@ class TestEmbeddingModelValidation:
 
 class TestQdrantMisc:
     def test_drop_collection(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
         store = QdrantVectorStore(collection="test_col", dense_dim=4)
         store._client = mock_client
         store._collection_ready = True
+        store._model_validated = True
         store.drop_collection()
         mock_client.delete_collection.assert_called_once_with("test_col")
         assert not store._collection_ready
+        assert not store._model_validated
+
+    def test_drop_collection_skips_missing(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = False
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        store.drop_collection()
+        mock_client.delete_collection.assert_not_called()
+
+    def test_drop_collection_wraps_errors(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.delete_collection.side_effect = RuntimeError("down")
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        with pytest.raises(VectorStoreError, match="drop collection failed"):
+            store.drop_collection()
+
+    def test_recreate_collection_noop_when_missing(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = False
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        store._collection_ready = True
+        store._model_validated = True
+        store.recreate_collection()
+        mock_client.delete_collection.assert_not_called()
+        assert not store._collection_ready
+        assert not store._model_validated
+
+    def test_recreate_collection_drops_existing(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        store._collection_ready = True
+        store.recreate_collection()
+        mock_client.delete_collection.assert_called_once_with("test_col")
+        assert not store._collection_ready
+
+    def test_recreate_collection_purges_on_drop_failure(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.delete_collection.side_effect = RuntimeError("locked")
+        point = MagicMock(id="p1")
+        mock_client.scroll.side_effect = [([point], None), ([], None)]
+        mock_client.count.return_value = MagicMock(count=0)
+        store = QdrantVectorStore(
+            collection="test_col",
+            dense_dim=4,
+            embedding_model_name="openai:text-embedding-3-large",
+        )
+        store._client = mock_client
+        store.recreate_collection()
+        mock_client.delete.assert_called_once()
+        mock_client.update_collection.assert_called_once_with(
+            collection_name="test_col",
+            metadata={"embedding_model_name": "openai:text-embedding-3-large"},
+        )
+        assert not store._collection_ready
+        assert not store._model_validated
+
+    def test_recreate_collection_purge_allows_upsert_after_model_change(
+        self, mock_client: MagicMock
+    ):
+        mock_client.collection_exists.return_value = True
+        mock_client.delete_collection.side_effect = RuntimeError("locked")
+        point = MagicMock(id="p1")
+        mock_client.scroll.side_effect = [
+            ([point], None),
+            ([], None),
+            ([], None),
+        ]
+        mock_client.count.return_value = MagicMock(count=0)
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(metadata={"embedding_model_name": "openai:text-embedding-3-large"})
+        )
+        store = QdrantVectorStore(
+            collection="test_col",
+            dense_dim=4,
+            embedding_model_name="openai:text-embedding-3-large",
+        )
+        store._client = mock_client
+        store.recreate_collection()
+
+        chunk = _chunk(0)
+        _wire_new_chunk_retrieve_and_upsert(mock_client, [chunk])
+        store.upsert([chunk])
+
+        assert store._model_validated
+        mock_client.upsert.assert_called_once()
+
+    def test_ensure_collection_validates_when_ready_but_not_validated(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(metadata={"embedding_model_name": "openai:old-model"})
+        )
+        store = QdrantVectorStore(
+            collection="test_col",
+            dense_dim=4,
+            embedding_model_name="openai:new-model",
+        )
+        store._client = mock_client
+        store._collection_ready = True
+        store._model_validated = False
+
+        with pytest.raises(VectorStoreError, match="Embedding model mismatch"):
+            store._ensure_collection()
+
+        mock_client.create_collection.assert_not_called()
+
+    def test_recreate_collection_raises_when_purge_leaves_points(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.delete_collection.side_effect = RuntimeError("locked")
+        mock_client.scroll.return_value = ([], None)
+        mock_client.count.return_value = MagicMock(count=3)
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        with pytest.raises(VectorStoreError, match="still has 3 point"):
+            store.recreate_collection()
+
+    def test_recreate_collection_purges_multiple_scroll_pages(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.delete_collection.side_effect = RuntimeError("locked")
+        point_a = MagicMock(id="p1")
+        point_b = MagicMock(id="p2")
+        mock_client.scroll.side_effect = [
+            ([point_a], "page-2"),
+            ([point_b], None),
+            ([], None),
+        ]
+        mock_client.count.return_value = MagicMock(count=0)
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        store.recreate_collection()
+        assert mock_client.delete.call_count == 2
+
+    def test_recreate_collection_raises_on_exists_check_failure(self, mock_client: MagicMock):
+        mock_client.collection_exists.side_effect = RuntimeError("down")
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        with pytest.raises(VectorStoreError, match="status check failed"):
+            store.recreate_collection()
+
+    def test_recreate_collection_raises_on_purge_failure(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.delete_collection.side_effect = RuntimeError("locked")
+        mock_client.scroll.side_effect = RuntimeError("scroll down")
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        with pytest.raises(VectorStoreError, match="Could not clear Qdrant collection"):
+            store.recreate_collection()
 
     def test_get_collection_embedding_model_when_missing(self, mock_client: MagicMock):
         mock_client.collection_exists.return_value = False

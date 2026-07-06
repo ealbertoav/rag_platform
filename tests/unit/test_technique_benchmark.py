@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +15,7 @@ from src.domain.entities.answer import Answer
 from src.domain.entities.evaluation import BenchmarkRun
 from src.evals.e2e.technique_benchmark import (
     FeedbackComparison,
+    PipelineFactory,
     TechniqueBenchmark,
     TechniqueBenchmarkReport,
     TechniqueConfig,
@@ -32,6 +34,7 @@ from src.evals.e2e.technique_benchmark import (
     temporary_config,
     temporary_feedback_seed,
 )
+from tests.unit.e2e_benchmark_helpers import metric_mock, pipeline_mock
 
 _DEFAULT_TECHNIQUE_NAMES = (
     "baseline",
@@ -56,42 +59,10 @@ def _qa(
     }
 
 
-def _pipeline_mock(
-    *,
-    sources: list[str] | None = None,
-    text: str = "Answer.",
-    context: list[str] | None = None,
-    latency_ms: float = 42.0,
-    fail: bool = False,
-) -> MagicMock:
-    pipeline = MagicMock()
-    if fail:
-        pipeline.benchmark = AsyncMock(side_effect=RuntimeError("pipeline down"))
-    else:
-        answer = Answer(
-            query_id="q1",
-            text=text,
-            sources=sources if sources is not None else ["c0"],
-            latency_ms=latency_ms,
-        )
-        pipeline.benchmark = AsyncMock(
-            return_value=BenchmarkRun(answer=answer, context_texts=context or ["ctx"])
-        )
-    return pipeline
-
-
-def _metric_mock(score: float) -> MagicMock:
-    mock = MagicMock()
-    result = MagicMock()
-    result.score = score
-    mock.score.return_value = result
-    return mock
-
-
 def _benchmark(faith: float = 0.9, relev: float = 0.85) -> TechniqueBenchmark:
     return TechniqueBenchmark(
-        faithfulness=_metric_mock(faith),
-        relevance=_metric_mock(relev),
+        faithfulness=metric_mock(faith),
+        relevance=metric_mock(relev),
     )
 
 
@@ -547,7 +518,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_runs_baseline_technique(self):
-        pipeline = _pipeline_mock(sources=["c0", "c1"])
+        pipeline = pipeline_mock(sources=["c0", "c1"])
         factory = MagicMock(return_value=pipeline)
 
         with patch(
@@ -568,7 +539,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_pipeline_failure_recorded_as_zero(self):
-        pipeline = _pipeline_mock(fail=True)
+        pipeline = pipeline_mock(fail=True)
         factory = MagicMock(return_value=pipeline)
 
         with patch(
@@ -593,7 +564,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_feedback_loop_comparison(self):
-        pipeline = _pipeline_mock(sources=["c0"])
+        pipeline = pipeline_mock(sources=["c0"])
         factory = MagicMock(return_value=pipeline)
 
         with (
@@ -626,7 +597,7 @@ class TestTechniqueBenchmarkRun:
     async def test_feedback_loop_restores_scores_after_comparison(self):
         store = MagicMock()
         store.get_feedback_score.return_value = 4.0
-        pipeline = _pipeline_mock(sources=["c0"])
+        pipeline = pipeline_mock(sources=["c0"])
         factory = MagicMock(return_value=pipeline)
         bench = _benchmark()
 
@@ -643,7 +614,7 @@ class TestTechniqueBenchmarkRun:
     @pytest.mark.asyncio
     async def test_feedback_loop_passes_store_to_factory(self):
         store = MagicMock()
-        pipeline = _pipeline_mock(sources=["c0"])
+        pipeline = pipeline_mock(sources=["c0"])
         factory = MagicMock(return_value=pipeline)
 
         with patch(
@@ -664,7 +635,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_feedback_loop_factory_without_vector_store_kwarg(self):
-        pipeline = _pipeline_mock(sources=["c0"])
+        pipeline = pipeline_mock(sources=["c0"])
 
         def legacy_factory(*, self_rag: bool = False):
             _ = self_rag
@@ -677,7 +648,7 @@ class TestTechniqueBenchmarkRun:
             report = await _benchmark().run(
                 [_qa(relevant=["c0"])],
                 ["feedback_loop"],
-                pipeline_factory=legacy_factory,
+                pipeline_factory=cast(PipelineFactory, legacy_factory),
             )
 
         assert report.feedback_comparison is not None
@@ -748,7 +719,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_self_rag_eval_uses_pipeline_context(self):
-        pipeline = _pipeline_mock(context=["EKS passage."])
+        pipeline = pipeline_mock(context=["EKS passage."])
         factory = MagicMock(return_value=pipeline)
 
         with patch(
@@ -762,7 +733,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_self_rag_uses_agent_factory(self):
-        pipeline = _pipeline_mock()
+        pipeline = pipeline_mock()
         factory = MagicMock(return_value=pipeline)
 
         with patch(
@@ -775,7 +746,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_unknown_technique_uses_default_overrides(self):
-        pipeline = _pipeline_mock()
+        pipeline = pipeline_mock()
         factory = MagicMock(return_value=pipeline)
 
         with patch(
@@ -814,7 +785,7 @@ class TestTechniqueBenchmarkRun:
 
     @pytest.mark.asyncio
     async def test_skips_empty_question_in_evaluate(self):
-        pipeline = _pipeline_mock()
+        pipeline = pipeline_mock()
         factory = MagicMock(return_value=pipeline)
 
         qa_pairs: list[dict[str, object]] = [
