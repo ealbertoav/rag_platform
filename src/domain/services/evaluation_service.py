@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.core.constants import DATASETS_DIR, EXPORTS_DIR
 from src.evals.e2e.rag_benchmark import BenchmarkReport, RAGBenchmark
+from src.evals.golden_dataset import filter_real_qa_pairs
 
 logger = logging.getLogger(__name__)
 
@@ -97,15 +98,7 @@ class EvaluationService:
             for item in raw:
                 if isinstance(item, dict) and item.get("question"):
                     pairs.append(item)
-            # Skip placeholder rows (relevant_chunks filled with "chunk_id_*")
-            result: list[dict[str, object]] = []
-            for p in pairs:
-                chunks = p.get("relevant_chunks")
-                if not isinstance(chunks, list) or not all(
-                    str(r).startswith("chunk_id_") for r in chunks if isinstance(r, str)
-                ):
-                    result.append(p)
-            return result
+            return filter_real_qa_pairs(pairs)
         except (OSError, ValueError) as exc:
             logger.warning("Cannot load QA dataset from %s: %s", self._qa_path, exc)
             return []

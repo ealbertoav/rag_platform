@@ -28,6 +28,7 @@ from src.evals.e2e.benchmark_samples import (
 )
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.relevance import RelevanceMetric
+from src.evals.golden_dataset import filter_real_qa_pairs, is_placeholder_qa_pair  # noqa: F401
 from src.rag.quality.feedback_loop import record_feedback, score_from_relevant
 
 logger = logging.getLogger(__name__)
@@ -175,26 +176,7 @@ class TechniqueBenchmarkReport:
         (console or Console()).print(table)
 
 
-def is_placeholder_qa_pair(pair: dict[str, object]) -> bool:
-    """Return True when all relevant_chunks are placeholder IDs (chunk_id_*)."""
-    chunks = pair.get("relevant_chunks")
-    if not isinstance(chunks, list) or not chunks:
-        return False
-    # pyrefly: ignore [unnecessary-type-conversion]
-    str_chunks = [str(r) for r in chunks if isinstance(r, str)]
-    return bool(str_chunks) and all(r.startswith("chunk_id_") for r in str_chunks)
-
-
-def filter_qa_pairs(pairs: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Drop rows without a question and placeholder-only relevant_chunks."""
-    filtered: list[dict[str, object]] = []
-    for pair in pairs:
-        if not isinstance(pair, dict) or not pair.get("question"):
-            continue
-        if is_placeholder_qa_pair(pair):
-            continue
-        filtered.append(pair)
-    return filtered
+filter_qa_pairs = filter_real_qa_pairs
 
 
 def prepare_qa_pairs(

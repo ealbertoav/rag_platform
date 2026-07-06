@@ -26,6 +26,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Chunk size sweep (T-151):** Automate chunk-size tuning by benchmarking multiple `chunk_size` values on the golden QA dataset — each size gets an isolated Qdrant collection (`rag_documents_cs{size}`), optional on-disk chunk/BM25 caches, and a weighted recommendation across Recall@5, Faithfulness, Relevance, and latency. Results export to `data/exports/chunk_size_sweep_{timestamp}.json`. See [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151).
 
+> **Golden dataset & CI eval gates (T-152):** Populate `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json` via `make evals` (requires `make ingest` first; enforces ≥ 20 real QA pairs). CI runs retrieval regression when real golden data is present. Extend evals with human-in-the-loop feedback via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152).
+
 ---
 
 ## Table of Contents
@@ -50,6 +52,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
   - [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151)
+  - [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
@@ -761,16 +764,31 @@ See [Agentic RAG](#agentic-rag) for action types and when to use the agent endpo
 
 ### Run Evaluations
 
+Golden eval datasets live under `datasets/goldens/`. The repo ships a starter corpus (22 QA pairs); regenerate from your own ingested documents before production benchmarking.
+
 ```bash
-# Generate synthetic QA pairs from ingested documents
+# 1. Ingest documents (prerequisite — populates BM25 + Qdrant)
+make ingest SOURCE=data/raw/
+
+# 2. Generate ≥ 20 QA pairs and sync retrieval goldens
 make evals
 
 # With options
 uv run python scripts/run_evals.py \
   --n-pairs 5 \
-  --max-chunks 100 \
-  --output datasets/synthetic/my_dataset.json
+  --min-pairs 20 \
+  --max-chunks 100
 ```
+
+`make evals` writes:
+
+| File | Purpose |
+|------|---------|
+| `datasets/goldens/qa_dataset.json` | End-to-end RAG benchmark (`POST /evals/run`, `make benchmark`) |
+| `datasets/goldens/retrieval_dataset.json` | Retrieval-only Recall@K regression (`tests/benchmarks/test_retrieval_evals.py`) |
+| `datasets/goldens/retrieval_baseline.json` | Committed Recall@5 floor for CI regression |
+
+See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152) for the full workflow and CI gate behavior.
 
 ### Rebuild Embeddings
 
@@ -990,6 +1008,41 @@ Recommended chunk_size: 500
 When the golden file contains only placeholder `chunk_id_*` rows, the script exits 0 with a skip report (populate real pairs via `make evals` first). `--dry-run` always succeeds and writes the planned sweep to `data/exports/chunk_size_sweep_{timestamp}.json`. Full results use the same path pattern.
 
 **Default sizes** (defined in `configs/evals.yaml` → `evals.chunk_size_sweep.sizes`): `256`, `500`, `768`, `1024`.
+
+---
+
+### Golden Dataset & Eval Regression Gates (T-152)
+
+Operationalize evaluation with real golden data and CI regression gates.
+
+**Workflow:**
+
+```mermaid
+flowchart LR
+    ING["make ingest<br/>SOURCE=data/raw/"] --> EVALS["make evals<br/>≥ 20 QA pairs"]
+    EVALS --> QA[("qa_dataset.json")]
+    EVALS --> RET[("retrieval_dataset.json")]
+    QA --> API["POST /evals/run<br/>200 OK"]
+    QA --> BENCH["make benchmark"]
+    RET --> CI["CI retrieval-regression<br/>Recall@5 gate"]
+```
+
+1. **Ingest** — `make ingest SOURCE=...` populates BM25 (required by `SyntheticDatasetBuilder`).
+2. **Generate goldens** — `make evals` writes QA + retrieval datasets; fails if fewer than 20 pairs are produced.
+3. **Run live evals** — `POST /evals/run` returns `200` with metric summary when real pairs are present (`204` when empty/placeholder-only).
+4. **CI regression** — the `retrieval-regression` job runs `tests/benchmarks/test_retrieval_evals.py` and enforces `min_recall_at_5` from `datasets/goldens/retrieval_baseline.json` when real data is committed.
+
+**Human-in-the-loop extensions:** seed chunk relevance via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) (`POST /feedback`) and follow [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md) for multi-replica feedback before relying on feedback-driven ranking in production evals.
+
+**Regression config** (`configs/evals.yaml`):
+
+```yaml
+evals:
+  min_qa_pairs: 20
+  retrieval:
+    regression:
+      min_recall_at_5: 0.5
+```
 
 ---
 

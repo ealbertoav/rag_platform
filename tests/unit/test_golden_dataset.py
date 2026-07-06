@@ -2,14 +2,38 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 import numpy as np
 
 from src.domain.entities.chunk import Chunk
-from src.evals.golden_dataset import QAPair, SyntheticDatasetBuilder, _parse_json_pairs
+from src.evals.golden_dataset import (
+    MIN_QA_PAIRS,
+    QAPair,
+    SyntheticDatasetBuilder,
+    count_real_qa_pairs,
+    filter_real_qa_pairs,
+    is_placeholder_chunk_ids,
+    is_placeholder_qa_pair,
+    is_placeholder_retrieval_row,
+    qa_pairs_to_retrieval_rows,
+    save_retrieval_dataset,
+)
+
+
+def _internal(module: str, name: str) -> object:
+    return getattr(importlib.import_module(module), name)
+
+
+parse_json_pairs = cast(
+    Callable[[str], list[dict[str, str]]],
+    _internal("src.evals.golden_dataset", "_parse_json_pairs"),
+)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -35,7 +59,7 @@ def _llm_mock(response: str = _VALID_JSON) -> MagicMock:
     return m
 
 
-def _embedder_mock(n_questions: int = 2, dim: int = 4) -> MagicMock:
+def _embedder_mock(dim: int = 4) -> MagicMock:
     m = MagicMock()
     rng = np.random.default_rng(42)
     m.embed.side_effect = lambda texts: rng.random((len(texts), dim)).tolist()
@@ -55,28 +79,112 @@ def _builder(
     )
 
 
+# ── T-152 golden dataset helpers ───────────────────────────────────────────────
+
+
+class TestPlaceholderDetection:
+    def test_placeholder_chunk_ids_true(self):
+        assert is_placeholder_chunk_ids(["chunk_id_1", "chunk_id_2"])
+
+    def test_placeholder_chunk_ids_false_mixed(self):
+        assert not is_placeholder_chunk_ids(["c0", "chunk_id_1"])
+
+    def test_placeholder_chunk_ids_false_empty(self):
+        assert not is_placeholder_chunk_ids([])
+
+    def test_placeholder_qa_pair(self):
+        assert is_placeholder_qa_pair({"relevant_chunks": ["chunk_id_1"]})
+        assert not is_placeholder_qa_pair({"relevant_chunks": ["rag_c001"]})
+
+    def test_placeholder_retrieval_row(self):
+        assert is_placeholder_retrieval_row({"relevant_chunk_ids": ["chunk_id_1"]})
+        assert not is_placeholder_retrieval_row({"relevant_chunk_ids": ["rag_c001"]})
+
+    def test_placeholder_retrieval_row_empty_or_missing(self):
+        assert not is_placeholder_retrieval_row({})
+        assert not is_placeholder_retrieval_row({"relevant_chunk_ids": []})
+        assert not is_placeholder_retrieval_row({"relevant_chunk_ids": "bad"})
+
+
+class TestFilterRealQaPairs:
+    def test_filters_placeholders_and_empty_questions(self):
+        pairs = filter_real_qa_pairs(
+            [
+                {"question": "Real?", "relevant_chunks": ["c0"]},
+                {"question": "Placeholder?", "relevant_chunks": ["chunk_id_1"]},
+                {"question": "", "relevant_chunks": ["c1"]},
+            ]
+        )
+        assert len(pairs) == 1
+        assert pairs[0]["question"] == "Real?"
+
+
+class TestRetrievalSync:
+    def test_qa_pairs_to_retrieval_rows(self):
+        pairs = [
+            QAPair(question="What is RAG?", answer="Retrieval augmented.", relevant_chunks=["c0"])
+        ]
+        rows = qa_pairs_to_retrieval_rows(pairs)
+        assert rows[0]["id"] == "retrieval_001"
+        assert rows[0]["query"] == "What is RAG?"
+        assert rows[0]["relevant_chunk_ids"] == ["c0"]
+
+    def test_save_retrieval_dataset(self, tmp_path: Path):
+        rows: list[dict[str, object]] = [{"id": "r1", "query": "q?", "relevant_chunk_ids": ["c0"]}]
+        out = tmp_path / "retrieval.json"
+        save_retrieval_dataset(rows, out)
+        data = json.loads(out.read_text())
+        assert data[0]["query"] == "q?"
+
+
+class TestCountRealQaPairs:
+    def test_counts_non_placeholder_rows(self, tmp_path: Path):
+        path = tmp_path / "qa.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {"question": "Real?", "relevant_chunks": ["c0"]},
+                    {"question": "Placeholder?", "relevant_chunks": ["chunk_id_1"]},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        assert count_real_qa_pairs(path) == 1
+
+    def test_missing_file_returns_zero(self, tmp_path: Path):
+        assert count_real_qa_pairs(tmp_path / "missing.json") == 0
+
+    def test_non_list_json_returns_zero(self, tmp_path: Path):
+        path = tmp_path / "qa.json"
+        path.write_text('{"not": "a list"}', encoding="utf-8")
+        assert count_real_qa_pairs(path) == 0
+
+    def test_min_qa_pairs_constant(self):
+        assert MIN_QA_PAIRS == 20
+
+
 # ── _parse_json_pairs ──────────────────────────────────────────────────────────
 
 
 class TestParseJsonPairs:
     def test_valid_json_array(self):
-        result = _parse_json_pairs(_VALID_JSON)
+        result = parse_json_pairs(_VALID_JSON)
         assert len(result) == 2
         assert result[0]["question"] == "What is X?"
 
     def test_json_embedded_in_text(self):
         text = f"Here are the pairs:\n{_VALID_JSON}\nThat's all."
-        result = _parse_json_pairs(text)
+        result = parse_json_pairs(text)
         assert len(result) == 2
 
     def test_empty_response_returns_empty(self):
-        assert _parse_json_pairs("") == []
+        assert parse_json_pairs("") == []
 
     def test_invalid_json_returns_empty(self):
-        assert _parse_json_pairs("not json") == []
+        assert parse_json_pairs("not json") == []
 
     def test_non_list_returns_empty(self):
-        assert _parse_json_pairs('{"question": "q", "answer": "a"}') == []
+        assert parse_json_pairs('{"question": "q", "answer": "a"}') == []
 
 
 # ── QAPair ─────────────────────────────────────────────────────────────────────

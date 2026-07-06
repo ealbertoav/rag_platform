@@ -17,6 +17,11 @@ from src.domain.repositories.llm_repository import LLMRepository
 logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).parents[1] / "prompts" / "evaluation" / "generate_qa.txt"
+MIN_QA_PAIRS = 20
+_DEFAULT_RETRIEVAL_PATH = (
+    Path(__file__).parents[2] / "datasets" / "goldens" / "retrieval_dataset.json"
+)
+_DEFAULT_QA_GOLDEN_PATH = Path(__file__).parents[2] / "datasets" / "goldens" / "qa_dataset.json"
 
 
 class _RawPair(TypedDict):
@@ -147,6 +152,80 @@ class SyntheticDatasetBuilder:
                     removed.add(j)
 
         return keep
+
+
+# ── Golden dataset helpers (T-152) ───────────────────────────────────────────
+
+
+def is_placeholder_chunk_ids(chunk_ids: list[object]) -> bool:
+    """Return True when every ID is a placeholder (chunk_id_*)."""
+    # pyrefly: ignore [unnecessary-type-conversion]
+    str_ids = [str(r) for r in chunk_ids if isinstance(r, str)]
+    return bool(str_ids) and all(r.startswith("chunk_id_") for r in str_ids)
+
+
+def is_placeholder_qa_pair(pair: dict[str, object]) -> bool:
+    """Return True when all relevant_chunks are placeholder IDs (chunk_id_*)."""
+    chunks = pair.get("relevant_chunks")
+    if not isinstance(chunks, list) or not chunks:
+        return False
+    return is_placeholder_chunk_ids(chunks)
+
+
+def is_placeholder_retrieval_row(entry: dict[str, object]) -> bool:
+    """Return True when all relevant_chunk_ids are placeholder IDs."""
+    raw_ids = entry.get("relevant_chunk_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return False
+    return is_placeholder_chunk_ids(raw_ids)
+
+
+def filter_real_qa_pairs(pairs: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Drop rows without a question and placeholder-only relevant_chunks."""
+    filtered: list[dict[str, object]] = []
+    for pair in pairs:
+        if not isinstance(pair, dict) or not pair.get("question"):
+            continue
+        if is_placeholder_qa_pair(pair):
+            continue
+        filtered.append(pair)
+    return filtered
+
+
+def qa_pairs_to_retrieval_rows(pairs: list[QAPair]) -> list[dict[str, object]]:
+    """Convert QA pairs to retrieval golden rows (query + relevant_chunk_ids)."""
+    rows: list[dict[str, object]] = []
+    for i, pair in enumerate(pairs):
+        rows.append(
+            {
+                "id": f"retrieval_{i + 1:03d}",
+                "query": pair.question,
+                "relevant_chunk_ids": list(pair.relevant_chunks),
+            }
+        )
+    return rows
+
+
+def save_retrieval_dataset(rows: list[dict[str, object]], path: Path | None = None) -> None:
+    """Write retrieval golden rows (default: datasets/goldens/retrieval_dataset.json)."""
+    target = path or _DEFAULT_RETRIEVAL_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as fh:
+        json.dump(rows, fh, indent=2, ensure_ascii=False)
+    logger.info("Saved %d retrieval rows to %s", len(rows), target)
+
+
+def count_real_qa_pairs(path: Path | None = None) -> int:
+    """Count non-placeholder QA rows in the golden dataset file."""
+    qa_path = path or _DEFAULT_QA_GOLDEN_PATH
+    try:
+        raw: object = json.loads(qa_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(raw, list):
+        return 0
+    candidates = [item for item in raw if isinstance(item, dict)]
+    return len(filter_real_qa_pairs(candidates))
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────

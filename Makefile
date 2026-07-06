@@ -15,7 +15,8 @@ ingest:
 	uv run python scripts/ingest.py --source $(SOURCE)
 
 evals:
-	uv run python scripts/run_evals.py
+	@echo "Generate golden QA + retrieval datasets (requires: make ingest SOURCE=... first)"
+	uv run python scripts/run_evals.py --output datasets/goldens/qa_dataset.json
 
 benchmark:
 	uv run python scripts/benchmark.py

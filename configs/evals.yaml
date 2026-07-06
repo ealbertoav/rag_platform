@@ -1,11 +1,15 @@
 evals:
   dataset_path: datasets/goldens/qa_dataset.json
   retrieval_dataset_path: datasets/goldens/retrieval_dataset.json
+  retrieval_baseline_path: datasets/goldens/retrieval_baseline.json
   synthetic_dataset_path: datasets/synthetic/generated_qa.json
+  min_qa_pairs: 20
 
   retrieval:
     recall_k: [1, 3, 5, 10]
     precision_k: [3, 5]
+    regression:
+      min_recall_at_5: 0.5
 
   generation:
     faithfulness_threshold: 0.8
