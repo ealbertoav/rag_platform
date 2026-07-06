@@ -12,7 +12,13 @@ from __future__ import annotations
 import pytest
 
 from src.core.constants import DATASETS_DIR
-from src.evals.golden_dataset import MIN_QA_PAIRS, count_real_qa_pairs, is_placeholder_retrieval_row
+from src.evals.golden_dataset import (
+    MIN_QA_PAIRS,
+    count_real_qa_pairs,
+    is_placeholder_retrieval_row,
+    load_qa_dicts,
+    retrieval_rows_match_qa,
+)
 from src.evals.regression_gate import load_real_retrieval_rows, load_regression_baseline
 from src.evals.retrieval import (
     RetrievalEvaluator,
@@ -69,6 +75,11 @@ class TestRetrievalBenchmark:
         assert isinstance(min_samples, int)
         assert len(_SAMPLES) >= min_samples
         assert count_real_qa_pairs(_QA_PATH) >= min_samples
+
+    def test_retrieval_matches_qa_golden(self):
+        qa_pairs = load_qa_dicts(_QA_PATH)
+        real_rows = load_real_retrieval_rows(_GOLDEN_PATH)
+        assert retrieval_rows_match_qa(qa_pairs, real_rows)
 
     def test_evaluate_returns_metrics_for_each_k(self, evaluator):
         results = evaluator.evaluate(_SAMPLES)

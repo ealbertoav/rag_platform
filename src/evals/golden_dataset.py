@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from string import Template
 from typing import TypedDict
@@ -247,7 +248,7 @@ def load_qa_dicts(path: Path | None = None) -> list[dict[str, object]]:
 
 def retrieval_rows_match_qa(
     qa_pairs: list[dict[str, object]],
-    retrieval_rows: list[dict[str, object]],
+    retrieval_rows: Sequence[object],
 ) -> bool:
     """Return True when retrieval rows are the sync output of evaluable QA pairs."""
     expected = qa_dicts_to_retrieval_rows(qa_pairs)
@@ -272,6 +273,17 @@ def save_retrieval_dataset(rows: list[dict[str, object]], path: Path | None = No
     with target.open("w", encoding="utf-8") as fh:
         json.dump(rows, fh, indent=2, ensure_ascii=False)
     logger.info("Saved %d retrieval rows to %s", len(rows), target)
+
+
+def sync_retrieval_from_qa(
+    qa_path: Path | None = None,
+    retrieval_path: Path | None = None,
+) -> int:
+    """Derive retrieval golden rows from evaluable QA rows and write them to disk."""
+    qa_pairs = load_qa_dicts(qa_path)
+    rows = qa_dicts_to_retrieval_rows(qa_pairs)
+    save_retrieval_dataset(rows, retrieval_path)
+    return len(rows)
 
 
 def dedup_retention_estimate(dedup_threshold: float) -> float:

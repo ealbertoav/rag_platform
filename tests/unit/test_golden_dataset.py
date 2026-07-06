@@ -30,6 +30,7 @@ from src.evals.golden_dataset import (
     resolve_max_chunks,
     retrieval_rows_match_qa,
     save_retrieval_dataset,
+    sync_retrieval_from_qa,
 )
 
 
@@ -177,6 +178,25 @@ class TestRetrievalSync:
         expected = qa_dicts_to_retrieval_rows(qa_pairs)
         assert retrieval_rows_match_qa(qa_pairs, expected)
         assert not retrieval_rows_match_qa(qa_pairs, expected[:1])
+
+    def test_retrieval_rows_match_qa_ignores_non_dict_rows(self):
+        qa_pairs: list[dict[str, object]] = [
+            {"question": "Real?", "relevant_chunks": ["c0"]},
+        ]
+        expected = qa_dicts_to_retrieval_rows(qa_pairs)
+        assert retrieval_rows_match_qa(qa_pairs, [*expected, "bad"])
+
+    def test_sync_retrieval_from_qa(self, tmp_path: Path):
+        qa_path = tmp_path / "qa.json"
+        retrieval_path = tmp_path / "retrieval.json"
+        qa_path.write_text(
+            json.dumps([{"question": "What is RAG?", "relevant_chunks": ["rag_c001"]}]),
+            encoding="utf-8",
+        )
+        count = sync_retrieval_from_qa(qa_path, retrieval_path)
+        assert count == 1
+        rows = json.loads(retrieval_path.read_text())
+        assert rows[0]["query"] == "What is RAG?"
 
     def test_load_qa_dicts(self, tmp_path: Path):
         path = tmp_path / "qa.json"

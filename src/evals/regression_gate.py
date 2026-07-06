@@ -116,7 +116,7 @@ def check_regression_gate(
             status=GateStatus.FAILED,
             message=(
                 "Regression gate FAILED: retrieval_dataset.json is out of sync with "
-                "qa_dataset.json — rerun `make evals` to regenerate both goldens."
+                "qa_dataset.json — run `make sync-retrieval-goldens` or `make evals`."
             ),
         )
 

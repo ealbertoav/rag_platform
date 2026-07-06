@@ -179,7 +179,11 @@ class TestRunEvalsMain:
         expected = chunks_needed_for_min_pairs(MIN_QA_PAIRS, 3)
 
         qa_out = work_tmp / "qa.json"
-        monkeypatch.setattr(sys, "argv", ["run_evals.py", "--output", str(qa_out)])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["run_evals.py", "--output", str(qa_out), "--no-sync-retrieval"],
+        )
         builder = _mock_builder(pairs)
         with _patch_run_evals(bm25, builder):
             run_evals.main()

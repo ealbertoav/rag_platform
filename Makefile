@@ -1,4 +1,4 @@
-.PHONY: install sync serve ingest evals benchmark lint format test test-unit test-e2e clean qdrant-up \
+.PHONY: install sync serve ingest evals sync-retrieval-goldens benchmark lint format test test-unit test-e2e clean qdrant-up \
         docker-build docker-up docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
         benchmark-chunk-sizes
 
@@ -17,6 +17,10 @@ ingest:
 evals:
 	@echo "Generate golden QA + retrieval datasets (requires: make ingest SOURCE=... first)"
 	uv run python scripts/run_evals.py --output datasets/goldens/qa_dataset.json
+
+sync-retrieval-goldens:
+	@echo "Sync retrieval_dataset.json from qa_dataset.json (no LLM regeneration)"
+	uv run python scripts/sync_retrieval_golden.py
 
 benchmark:
 	uv run python scripts/benchmark.py
