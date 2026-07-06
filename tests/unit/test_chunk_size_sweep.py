@@ -241,6 +241,21 @@ class TestSweepPlanAndReport:
         plan = build_sweep_plan([256], cache_dir=tmp_path)
         assert "missing cache" in plan[0].action
 
+    def test_build_sweep_plan_force_rechunk_with_source(self, tmp_path: Path):
+        save_chunk_cache([_chunk()], 256, tmp_path)
+        plan = build_sweep_plan(
+            [256],
+            ingest_source=Path("data/raw"),
+            cache_dir=tmp_path,
+            force_rechunk=True,
+        )
+        assert plan[0].action == "re-chunk source + overwrite cache + index"
+
+    def test_build_sweep_plan_force_rechunk_without_source(self, tmp_path: Path):
+        save_chunk_cache([_chunk()], 256, tmp_path)
+        plan = build_sweep_plan([256], cache_dir=tmp_path, force_rechunk=True)
+        assert plan[0].action == "force rechunk requires --ingest-source"
+
     def test_report_save_and_summary(self, tmp_path: Path):
         report = ChunkSizeSweepReport(
             timestamp="T",
@@ -507,6 +522,21 @@ class TestChunkSizeSweepRun:
         assert len(report.plan) == 2
 
     @pytest.mark.asyncio
+    async def test_dry_run_force_rechunk(self, tmp_path: Path):
+        save_chunk_cache([_chunk()], 256, tmp_path)
+        source = tmp_path / "src"
+        source.mkdir()
+        report = await _benchmark().run(
+            [],
+            [256],
+            dry_run=True,
+            ingest_source=source,
+            cache_dir=tmp_path,
+            force_rechunk=True,
+        )
+        assert report.plan[0].action == "re-chunk source + overwrite cache + index"
+
+    @pytest.mark.asyncio
     async def test_skips_placeholder_dataset(self):
         report = await _benchmark().run([], [256])
         assert report.skipped is True
@@ -642,6 +672,17 @@ class TestChunkSizeSweepRun:
                 force_rechunk=False,
             )
 
+    def test_prepare_chunks_force_rechunk_without_source_raises(self, tmp_path: Path):
+        save_chunk_cache([_chunk("cached")], 256, tmp_path)
+        sweep = _benchmark()
+        with pytest.raises(ValueError, match="force-rechunk requires --ingest-source"):
+            sweep._prepare_chunks(
+                256,
+                ingest_source=None,
+                cache_dir=tmp_path,
+                force_rechunk=True,
+            )
+
     def test_prepare_chunks_empty_after_chunking_raises(self, tmp_path: Path):
         source = tmp_path / "src"
         source.mkdir()
@@ -774,6 +815,29 @@ class TestRunChunkSizeSweep:
         report = run_chunk_size_sweep([256], [], output_dir=tmp_path, sweep=runner, dry_run=True)
         assert report.dry_run is True
         assert not list(tmp_path.glob("chunk_size_sweep_*.json"))
+
+    def test_run_chunk_size_sweep_passes_force_rechunk(self, tmp_path: Path):
+        async def _fake_run(*_args, **kwargs):
+            assert kwargs.get("force_rechunk") is True
+            return ChunkSizeSweepReport(
+                timestamp="T",
+                sizes=[256],
+                results=[],
+                dry_run=True,
+            )
+
+        runner = MagicMock()
+        runner.run = AsyncMock(side_effect=_fake_run)
+
+        report = run_chunk_size_sweep(
+            [256],
+            [],
+            output_dir=tmp_path,
+            sweep=runner,
+            dry_run=True,
+            force_rechunk=True,
+        )
+        assert report.dry_run is True
 
 
 def _noop_context():

@@ -55,6 +55,7 @@ async def run(args: argparse.Namespace) -> int:
             timestamp=ts,
             ingest_source=ingest_source,
             dry_run=True,
+            force_rechunk=args.force_rechunk,
         )
         report.print_table()
         print(f"\n{report.summary()}")

@@ -450,13 +450,19 @@ def build_sweep_plan(
     ingest_source: Path | None = None,
     cache_dir: Path | None = None,
     base_collection: str = "rag_documents",
+    force_rechunk: bool = False,
 ) -> list[SweepPlanEntry]:
     """Describe planned work for each size (used by --dry-run)."""
     plan: list[SweepPlanEntry] = []
     for size in sizes:
         cache_path = chunk_cache_path(size, cache_dir)
         cached = load_chunk_cache(size, cache_dir) is not None
-        if cached:
+        if force_rechunk:
+            if ingest_source is not None:
+                action = "re-chunk source + overwrite cache + index"
+            else:
+                action = "force rechunk requires --ingest-source"
+        elif cached:
             action = "load cache + index"
         elif ingest_source is not None:
             action = "chunk source + cache + index"
@@ -510,6 +516,7 @@ class ChunkSizeSweep:
             ingest_source=ingest_source,
             cache_dir=cache_dir,
             base_collection=base_collection,
+            force_rechunk=force_rechunk,
         )
 
         if dry_run:
@@ -587,6 +594,8 @@ class ChunkSizeSweep:
             if cached:
                 return cached
         if ingest_source is None:
+            if force_rechunk:
+                raise ValueError(f"--force-rechunk requires --ingest-source for size {chunk_size}")
             raise ValueError(
                 f"No chunk cache for size {chunk_size}; pass --ingest-source to build it"
             )
@@ -650,6 +659,7 @@ def run_chunk_size_sweep(
     sweep: ChunkSizeSweep | None = None,
     ingest_source: Path | None = None,
     dry_run: bool = False,
+    force_rechunk: bool = False,
 ) -> ChunkSizeSweepReport:
     """Synchronous entry point for scripts."""
     import asyncio
@@ -663,6 +673,7 @@ def run_chunk_size_sweep(
             timestamp=ts,
             ingest_source=ingest_source,
             dry_run=dry_run,
+            force_rechunk=force_rechunk,
         )
     )
     if not report.skipped and not report.dry_run:
