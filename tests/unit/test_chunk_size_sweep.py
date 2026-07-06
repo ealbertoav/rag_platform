@@ -398,17 +398,26 @@ class TestSourceChunking:
 
 
 class TestIndexingHelpers:
-    def test_clear_vector_index_drops_collection(self):
+    def test_clear_vector_index_uses_recreate_collection(self):
         store = MagicMock()
+        clear_vector_index(store)
+        store.recreate_collection.assert_called_once()
+        store.drop_collection.assert_not_called()
+
+    def test_clear_vector_index_falls_back_to_drop_collection(self):
+        store = MagicMock(spec=["drop_collection"])
         clear_vector_index(store)
         store.drop_collection.assert_called_once()
 
-    def test_clear_vector_index_swallows_drop_errors(self):
-        store = MagicMock()
-        store.drop_collection.side_effect = RuntimeError("missing collection")
-        clear_vector_index(store)
+    def test_clear_vector_index_propagates_recreate_errors(self):
+        from src.core.exceptions import VectorStoreError
 
-    def test_clear_vector_index_noop_without_drop(self):
+        store = MagicMock()
+        store.recreate_collection.side_effect = VectorStoreError("purge failed")
+        with pytest.raises(VectorStoreError, match="purge failed"):
+            clear_vector_index(store)
+
+    def test_clear_vector_index_noop_without_clear_methods(self):
         clear_vector_index(MagicMock(spec=[]))
 
     def test_embed_chunks(self):
@@ -445,13 +454,37 @@ class TestIndexingHelpers:
             out_store, out_bm25, out_chunks = index_chunks_for_size(
                 256, [_chunk()], cache_dir=tmp_path
             )
-        store.drop_collection.assert_called_once()
+        store.recreate_collection.assert_called_once()
         store.upsert.assert_called_once_with(embedded)
         bm25.index.assert_called_once_with(embedded)
         bm25.save.assert_called_once()
         assert out_store is store
         assert out_bm25 is bm25
         assert out_chunks == embedded
+
+    def test_index_chunks_for_size_aborts_when_clear_fails(self, tmp_path: Path):
+        from src.core.exceptions import VectorStoreError
+
+        store = MagicMock()
+        store.recreate_collection.side_effect = VectorStoreError("clear failed")
+        bm25 = MagicMock()
+        embedded = [_chunk()]
+        with (
+            patch("src.evals.e2e.chunk_size_sweep.embed_chunks", return_value=embedded),
+            patch(
+                "src.evals.e2e.chunk_size_sweep.temporary_config",
+                return_value=_noop_context(),
+            ),
+            patch(
+                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
+                return_value=store,
+            ),
+            patch("src.infrastructure.vectordb.bm25.BM25Index", return_value=bm25),
+            pytest.raises(VectorStoreError, match="clear failed"),
+        ):
+            index_chunks_for_size(256, [_chunk()], cache_dir=tmp_path)
+        store.upsert.assert_not_called()
+        bm25.index.assert_not_called()
 
     def test_build_sweep_pipeline(self):
         store = MagicMock()
@@ -524,6 +557,22 @@ class TestChunkSizeSweepRun:
             report = await sweep.run([_qa()], [256], cache_dir=tmp_path)
 
         assert report.results[0].error == "chunk failed"
+
+    @pytest.mark.asyncio
+    async def test_index_clear_failure_recorded_as_error(self, tmp_path: Path):
+        from src.core.exceptions import VectorStoreError
+
+        sweep = _benchmark()
+        with (
+            patch.object(sweep, "_prepare_chunks", return_value=[_chunk()]),
+            patch(
+                "src.evals.e2e.chunk_size_sweep.index_chunks_for_size",
+                side_effect=VectorStoreError("clear failed"),
+            ),
+        ):
+            report = await sweep.run([_qa()], [256], cache_dir=tmp_path)
+
+        assert report.results[0].error == "clear failed"
 
     @pytest.mark.asyncio
     async def test_pipeline_failure_recorded_as_zero(self, tmp_path: Path):

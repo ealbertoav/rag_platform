@@ -186,8 +186,65 @@ class QdrantVectorStore(VectorStoreRepository):
     def drop_collection(self) -> None:
         """Delete the Qdrant collection and reset the ready flag."""
         with self._client_lock:
-            self._client.delete_collection(self.collection)
+            try:
+                if self._client.collection_exists(self.collection):
+                    self._client.delete_collection(self.collection)
+            except Exception as exc:
+                raise VectorStoreError(
+                    f"Qdrant drop collection failed for {self.collection!r}", cause=exc
+                ) from exc
             self._collection_ready = False
+            self._model_validated = False
+
+    def recreate_collection(self) -> None:
+        """Clear the collection so the next upsert replaces the full index.
+
+        Drops the collection when possible. When drop fails but the collection
+        still exists, purges all points and verifies the index is empty before
+        returning so callers never upsert into a partially stale collection.
+        """
+        with self._client_lock:
+            try:
+                collection_existed = self._client.collection_exists(self.collection)
+            except Exception as exc:
+                raise VectorStoreError(
+                    "Qdrant collection status check failed before re-index", cause=exc
+                ) from exc
+
+            if not collection_existed:
+                self._collection_ready = False
+                self._model_validated = False
+                return
+
+            try:
+                self._client.delete_collection(self.collection)
+            except Exception as drop_exc:
+                logger.warning(
+                    "Qdrant delete_collection failed for %r; falling back to point purge: %s",
+                    self.collection,
+                    drop_exc,
+                )
+                try:
+                    self._delete_all_points_unlocked()
+                except Exception as purge_exc:
+                    raise VectorStoreError(
+                        f"Could not clear Qdrant collection {self.collection!r} before re-index",
+                        cause=purge_exc,
+                    ) from purge_exc
+
+                remaining = self._count_unlocked()
+                if remaining > 0:
+                    raise VectorStoreError(
+                        f"Qdrant collection {self.collection!r} still has "
+                        f"{remaining} point(s) after purge",
+                        cause=drop_exc,
+                    ) from drop_exc
+                self._collection_ready = True
+                self._model_validated = False
+                return
+
+            self._collection_ready = False
+            self._model_validated = False
 
     # ── VectorStoreRepository interface ────────────────────────────────────────
 
@@ -323,9 +380,34 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def count(self) -> int:
         try:
-            return cast(int, self._client.count(collection_name=self.collection).count)
+            return self._count_unlocked()
         except Exception as exc:
             raise VectorStoreError("Qdrant count failed", cause=exc) from exc
+
+    def _count_unlocked(self) -> int:
+        return cast(int, self._client.count(collection_name=self.collection).count)
+
+    def _delete_all_points_unlocked(self) -> None:
+        """Remove every point from the collection (caller must hold ``_client_lock``)."""
+        offset: Any | None = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self.collection,
+                limit=100,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            if not points:
+                break
+            ids = [str(point.id) for point in points]
+            if ids:
+                self._client.delete(
+                    collection_name=self.collection,
+                    points_selector=PointIdsList(points=ids),  # type: ignore[arg-type]
+                )
+            if offset is None:
+                break
 
     def chunk_exists(self, chunk_id: str) -> bool:
         """Return True when *chunk_id* is stored in the Qdrant collection."""

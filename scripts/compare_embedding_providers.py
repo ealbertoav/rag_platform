@@ -126,8 +126,7 @@ def _index_chunks_for_provider(
     )
 
     try:
-        with contextlib.suppress(Exception):
-            vector_store.drop_collection()
+        vector_store.recreate_collection()
 
         is_api = provider in API_EMBEDDING_PROVIDERS
         batch_size = API_BATCH_SIZE if is_api else _INDEX_BATCH_SIZE
@@ -146,7 +145,7 @@ def _index_chunks_for_provider(
         return retriever, vector_store
     except Exception:
         with contextlib.suppress(Exception):
-            vector_store.drop_collection()
+            vector_store.recreate_collection()
         raise
 
 
@@ -195,7 +194,7 @@ async def _run_provider(
             ndcgs.append(_compute_ndcg_at_k(retrieved_ids, relevant, k))
     finally:
         with contextlib.suppress(Exception):
-            vector_store.drop_collection()
+            vector_store.recreate_collection()
 
     n = len(recalls)
     return ProviderResult(

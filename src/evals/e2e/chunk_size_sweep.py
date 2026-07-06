@@ -326,16 +326,21 @@ def embed_chunks(chunks: list[Chunk]) -> list[Chunk]:
 def clear_vector_index(store: VectorStoreRepository) -> None:
     """Drop the per-size Qdrant collection before a full re-index.
 
-    Re-chunking assigns new chunk UUIDs while BM25 is fully replaced via: meth:`BM25Index.index`. Clearing Qdrant first keeps dense and lexical
+    Re-chunking assigns new chunk UUIDs while BM25 is fully replaced via
+    :meth:`BM25Index.index`. Clearing Qdrant first keeps dense and lexical
     indexes aligned on repeat runs (``--force-rechunk``, cache overwrite, etc.).
-    """  # noqa: E501
+
+    Raises when the vector store cannot be cleared so callers do not upsert
+    into a partially stale collection.
+    """
+    recreate = getattr(store, "recreate_collection", None)
+    if recreate is not None:
+        recreate()
+        return
     drop = getattr(store, "drop_collection", None)
     if drop is None:
         return
-    try:
-        drop()
-    except Exception as exc:
-        logger.debug("Could not clear Qdrant collection before re-index: %s", exc)
+    drop()
 
 
 def index_chunks_for_size(
