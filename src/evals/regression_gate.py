@@ -20,7 +20,7 @@ from src.evals.golden_dataset import (
     load_qa_dicts,
     retrieval_rows_match_qa,
 )
-from src.evals.retrieval.recall_at_k import recall_at_k
+from src.evals.retrieval.recall_at_k import oracle_recall_at_k
 
 _DEFAULT_QA_PATH = DATASETS_DIR / "goldens" / "qa_dataset.json"
 _DEFAULT_RETRIEVAL_PATH = DATASETS_DIR / "goldens" / "retrieval_dataset.json"
@@ -87,8 +87,8 @@ def check_regression_gate(
         )
 
     baseline = load_regression_baseline(baseline_path)
-    min_samples = _baseline_int(baseline, "min_samples", MIN_QA_PAIRS)
-    min_recall = _baseline_float(baseline, "min_recall_at_5", 0.5)
+    min_samples = baseline_int(baseline, "min_samples", MIN_QA_PAIRS)
+    min_recall = baseline_float(baseline, "min_recall_at_5", 0.5)
 
     qa_count = count_real_qa_pairs(qa)
     if qa_count < min_samples or len(real) < min_samples:
@@ -123,7 +123,7 @@ def check_regression_gate(
     for row in real:
         raw_ids = row.get("relevant_chunk_ids", [])
         relevant = [r for r in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(r, str)]
-        score = recall_at_k(relevant, relevant, k=5)
+        score = oracle_recall_at_k(relevant, k=5)
         if score < min_recall:
             row_id = str(row.get("id", "<unknown>"))
             return RegressionGateResult(
@@ -149,7 +149,7 @@ def main() -> None:
         sys.exit(1)
 
 
-def _baseline_int(baseline: dict[str, object], key: str, default: int) -> int:
+def baseline_int(baseline: dict[str, object], key: str, default: int) -> int:
     value = baseline.get(key, default)
     if isinstance(value, bool):
         return default
@@ -165,7 +165,7 @@ def _baseline_int(baseline: dict[str, object], key: str, default: int) -> int:
     return default
 
 
-def _baseline_float(baseline: dict[str, object], key: str, default: float) -> float:
+def baseline_float(baseline: dict[str, object], key: str, default: float) -> float:
     value = baseline.get(key, default)
     if isinstance(value, bool):
         return default

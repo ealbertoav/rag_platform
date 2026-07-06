@@ -24,7 +24,7 @@ from src.evals.retrieval import (
     RetrievalEvaluator,
     RetrievalSample,
     load_retrieval_dataset,
-    recall_at_k,
+    oracle_recall_at_k,
 )
 
 _GOLDEN_PATH = DATASETS_DIR / "goldens" / "retrieval_dataset.json"
@@ -98,28 +98,19 @@ class TestRetrievalBenchmark:
         for a, b in zip(recalls[:-1], recalls[1:], strict=False):
             assert a <= b + 1e-9  # non-decreasing
 
-    def test_oracle_recall_meets_baseline(self, evaluator):
+    def test_oracle_recall_meets_baseline(self):
         """Ground-truth retrieval (retrieved=relevant) must meet the committed baseline."""
-        oracle_samples = [
-            RetrievalSample(
-                query_id=s.query_id,
-                retrieved_ids=list(s.relevant_ids),
-                relevant_ids=list(s.relevant_ids),
-            )
-            for s in _SAMPLES
-        ]
-        results = evaluator.evaluate(oracle_samples)
-        recall_at_5 = next(m.recall for m in results if m.k == 5)
+        recall_at_5 = sum(oracle_recall_at_k(s.relevant_ids, k=5) for s in _SAMPLES) / len(_SAMPLES)
         expected = _BASELINE.get("oracle_recall_at_5", 1.0)
         assert isinstance(expected, (int, float))
         assert recall_at_5 >= float(expected) - 1e-9
 
-    def test_recall_at_5_above_regression_threshold(self, evaluator):
+    def test_recall_at_5_above_regression_threshold(self):
         """Per-sample oracle Recall@5 must clear the CI regression floor."""
         min_recall = _BASELINE.get("min_recall_at_5", 0.5)
         assert isinstance(min_recall, (int, float))
         for sample in _SAMPLES:
-            score = recall_at_k(sample.relevant_ids, sample.relevant_ids, k=5)
+            score = oracle_recall_at_k(sample.relevant_ids, k=5)
             assert score >= float(min_recall)
 
     def test_print_summary_table(self, evaluator, capsys):

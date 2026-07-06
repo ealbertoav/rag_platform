@@ -11,7 +11,7 @@ from rich.table import Table
 from src.evals.retrieval.mrr import mrr
 from src.evals.retrieval.ndcg import ndcg_at_k
 from src.evals.retrieval.precision_at_k import precision_at_k
-from src.evals.retrieval.recall_at_k import recall_at_k
+from src.evals.retrieval.recall_at_k import oracle_recall_at_k, recall_at_k
 
 
 @dataclasses.dataclass
@@ -109,3 +109,13 @@ def load_retrieval_dataset(path: Path) -> list[RetrievalSample]:
 def _mean(values: Iterable[float]) -> float:
     items = list(values)
     return sum(items) / len(items) if items else 0.0
+
+
+__all__ = [
+    "MetricsAtK",
+    "RetrievalEvaluator",
+    "RetrievalSample",
+    "load_retrieval_dataset",
+    "oracle_recall_at_k",
+    "recall_at_k",
+]
