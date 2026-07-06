@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from types import TracebackType
 from typing import Any, Protocol, TypeAlias, cast
@@ -55,6 +56,8 @@ _EXPANSION = 3  # multiplier for hybrid search candidate pool
 _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
 _FEEDBACK_SCORE_EPSILON = 1e-9
 _MAX_FEEDBACK_UPDATE_RETRIES = 20
+_MAX_FEEDBACK_VERIFY_RETRIES = 5
+_FEEDBACK_VERIFY_DELAY_S = 0.002
 _FEEDBACK_UPDATE_ID_KEY = "feedback_update_id"
 
 QdrantNamedVectors: TypeAlias = dict[
@@ -133,6 +136,19 @@ class QdrantVectorStore(VectorStoreRepository):
     The collection is created automatically on first use if it does not exist.
     Uses the modern `query_points` API (qdrant-client ≥ 1.7).
     """
+
+    _feedback_chunk_locks: dict[str, threading.Lock] = {}
+    _feedback_locks_mutex = threading.Lock()
+
+    @classmethod
+    def _chunk_feedback_lock(cls, chunk_id: str) -> threading.Lock:
+        """Return a process-local lock serializing feedback updates for *chunk_id*."""
+        with cls._feedback_locks_mutex:
+            lock = cls._feedback_chunk_locks.get(chunk_id)
+            if lock is None:
+                lock = threading.Lock()
+                cls._feedback_chunk_locks[chunk_id] = lock
+            return lock
 
     def __init__(
         self,
@@ -331,6 +347,10 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def accumulate_feedback_score(self, chunk_id: str, delta: float) -> float:
         """Add *delta* to the stored feedback score with compare-and-set retries."""
+        with self._chunk_feedback_lock(chunk_id):
+            return self._accumulate_feedback_score_locked(chunk_id, delta)
+
+    def _accumulate_feedback_score_locked(self, chunk_id: str, delta: float) -> float:
         if not self._retrieve_points([chunk_id]):
             raise VectorStoreError(
                 f"Chunk {chunk_id!r} not found in collection {self.collection!r}"
@@ -482,14 +502,59 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant set_payload failed", cause=exc) from exc
-        metadata = self._metadata_from_point(self._require_point(chunk_id))
-        return (
-            metadata.get(_FEEDBACK_UPDATE_ID_KEY) == update_id
-            and self._feedback_revision_from_metadata(metadata) == feedback_revision
-            and self._feedback_scores_equal(
-                self._feedback_score_from_metadata(metadata),
-                feedback_score,
-            )
+        return self._verify_feedback_write(
+            chunk_id,
+            update_id=update_id,
+            expected_score=expected_score,
+            expected_revision=expected_revision,
+            feedback_score=feedback_score,
+            feedback_revision=feedback_revision,
+        )
+
+    def _verify_feedback_write(
+        self,
+        chunk_id: str,
+        *,
+        update_id: str,
+        expected_score: float,
+        expected_revision: int,
+        feedback_score: float,
+        feedback_revision: int,
+    ) -> bool:
+        """Confirm our conditional writing landed — retry reads to avoid stale verify."""
+        for attempt in range(_MAX_FEEDBACK_VERIFY_RETRIES):
+            metadata = self._metadata_from_point(self._require_point(chunk_id))
+            if metadata.get(_FEEDBACK_UPDATE_ID_KEY) == update_id and self._feedback_state_matches(
+                metadata,
+                feedback_score=feedback_score,
+                feedback_revision=feedback_revision,
+            ):
+                return True
+
+            actual_score = self._feedback_score_from_metadata(metadata)
+            actual_revision = self._feedback_revision_from_metadata(metadata)
+            if actual_revision != expected_revision or not self._feedback_scores_equal(
+                actual_score, expected_score
+            ):
+                return False
+
+            if attempt + 1 < _MAX_FEEDBACK_VERIFY_RETRIES:
+                time.sleep(_FEEDBACK_VERIFY_DELAY_S)
+        return False
+
+    def _feedback_state_matches(
+        self,
+        metadata: dict[str, object],
+        *,
+        feedback_score: float,
+        feedback_revision: int,
+    ) -> bool:
+        """Return True when *metadata* reflects the requested feedback state."""
+        actual_revision = self._feedback_revision_from_metadata(metadata)
+        actual_score = self._feedback_score_from_metadata(metadata)
+        return actual_revision == feedback_revision and self._feedback_scores_equal(
+            actual_score,
+            feedback_score,
         )
 
     def _ensure_feedback_fields_initialized(self, chunk_id: str) -> None:

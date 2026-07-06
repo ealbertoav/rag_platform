@@ -114,8 +114,9 @@ class TestQdrantIntegration:
 
     def test_accumulate_feedback_score_is_linearizable(self, store):
         chunk = _chunk(51)
-        # Upsert preserves feedback metadata — drop any stale point from prior runs.
-        store.delete([chunk.id])
+        store._ensure_collection()
+        if store.chunk_exists(chunk.id):
+            store.delete([chunk.id])
         store.upsert([chunk])
         assert store.get_feedback_score(chunk.id) == 0.0
         assert store.get_feedback_revision(chunk.id) == 0
@@ -132,7 +133,9 @@ class TestQdrantIntegration:
 
     def test_upsert_during_feedback_accumulation_preserves_scores(self, store):
         chunk = _chunk(52)
-        store.delete([chunk.id])
+        store._ensure_collection()
+        if store.chunk_exists(chunk.id):
+            store.delete([chunk.id])
         store.upsert([chunk])
         from concurrent.futures import ThreadPoolExecutor
 

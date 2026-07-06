@@ -62,6 +62,15 @@ class BenchmarkPipeline(Protocol):
     async def benchmark(self, question: str) -> BenchmarkRun: ...
 
 
+class PipelineFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        self_rag: bool = False,
+        vector_store: VectorStoreRepository | None = None,
+    ) -> BenchmarkPipeline: ...
+
+
 @dataclasses.dataclass(frozen=True)
 class TechniqueConfig:
     name: str
@@ -452,7 +461,7 @@ class TechniqueBenchmark:
         techniques: list[str],
         *,
         timestamp: str | None = None,
-        pipeline_factory: object | None = None,
+        pipeline_factory: PipelineFactory | None = None,
         vector_store: object | None = None,
     ) -> TechniqueBenchmarkReport:
         """Run each technique independently and return a comparison report."""
@@ -511,7 +520,7 @@ class TechniqueBenchmark:
             overrides = cfg.overrides if cfg else merge_technique_overrides(technique)
             try:
                 with temporary_config(overrides):
-                    pipeline = factory(self_rag=(technique == "self_rag"))  # type: ignore[operator]
+                    pipeline = factory(self_rag=(technique == "self_rag"))
                     result = await self._evaluate_technique(technique, pipeline, qa_pairs)
             except Exception as exc:
                 logger.exception("Technique %s failed", technique)
@@ -537,7 +546,7 @@ class TechniqueBenchmark:
         self,
         qa_pairs: list[dict[str, object]],
         *,
-        factory: object,
+        factory: PipelineFactory,
         vector_store: object | None,
     ) -> tuple[FeedbackComparison | None, TechniqueResult | None]:
         """Pre-seed feedback scores and compare Recall@5 with boost off vs. on."""
@@ -545,9 +554,9 @@ class TechniqueBenchmark:
 
         def bound_factory(*, self_rag: bool = False) -> BenchmarkPipeline:
             try:
-                return factory(self_rag=self_rag, vector_store=store)  # type: ignore[call-arg, operator]
+                return factory(self_rag=self_rag, vector_store=store)
             except TypeError:
-                return factory(self_rag=self_rag)  # type: ignore[operator]
+                return factory(self_rag=self_rag)
 
         with temporary_feedback_seed(qa_pairs, vector_store=store):
             with temporary_config(build_feedback_boost_overrides(boost_enabled=False)):
