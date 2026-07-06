@@ -323,6 +323,21 @@ def embed_chunks(chunks: list[Chunk]) -> list[Chunk]:
     ]
 
 
+def clear_vector_index(store: VectorStoreRepository) -> None:
+    """Drop the per-size Qdrant collection before a full re-index.
+
+    Re-chunking assigns new chunk UUIDs while BM25 is fully replaced via: meth:`BM25Index.index`. Clearing Qdrant first keeps dense and lexical
+    indexes aligned on repeat runs (``--force-rechunk``, cache overwrite, etc.).
+    """  # noqa: E501
+    drop = getattr(store, "drop_collection", None)
+    if drop is None:
+        return
+    try:
+        drop()
+    except Exception as exc:
+        logger.debug("Could not clear Qdrant collection before re-index: %s", exc)
+
+
 def index_chunks_for_size(
     chunk_size: int,
     chunks: list[Chunk],
@@ -330,7 +345,7 @@ def index_chunks_for_size(
     cache_dir: Path | None = None,
     base_collection: str = "rag_documents",
 ) -> tuple[VectorStoreRepository, object, list[Chunk]]:
-    """Embed and upsert *chunks* into the per-size Qdrant collection + BM25 cache."""
+    """Embed and replace the per-size Qdrant collection + BM25 cache."""
     from src.infrastructure.vectordb.bm25 import BM25Index
     from src.infrastructure.vectordb.qdrant import QdrantVectorStore
 
@@ -338,6 +353,7 @@ def index_chunks_for_size(
     overrides = build_chunk_size_overrides(chunk_size, base_collection=base_collection)
     with temporary_config(overrides):
         store = QdrantVectorStore.from_settings()
+        clear_vector_index(store)
         store.upsert(embedded)
         bm25 = BM25Index(index_path=bm25_cache_path(chunk_size, cache_dir))
         bm25.index(embedded)

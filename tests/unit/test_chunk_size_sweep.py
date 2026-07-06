@@ -23,6 +23,7 @@ from src.evals.e2e.chunk_size_sweep import (
     build_sweep_plan,
     chunk_cache_path,
     chunk_documents_from_source,
+    clear_vector_index,
     collection_name_for_size,
     compute_weighted_score,
     embed_chunks,
@@ -397,6 +398,19 @@ class TestSourceChunking:
 
 
 class TestIndexingHelpers:
+    def test_clear_vector_index_drops_collection(self):
+        store = MagicMock()
+        clear_vector_index(store)
+        store.drop_collection.assert_called_once()
+
+    def test_clear_vector_index_swallows_drop_errors(self):
+        store = MagicMock()
+        store.drop_collection.side_effect = RuntimeError("missing collection")
+        clear_vector_index(store)
+
+    def test_clear_vector_index_noop_without_drop(self):
+        clear_vector_index(MagicMock(spec=[]))
+
     def test_embed_chunks(self):
         chunk = _chunk()
         embedder = MagicMock()
@@ -431,6 +445,7 @@ class TestIndexingHelpers:
             out_store, out_bm25, out_chunks = index_chunks_for_size(
                 256, [_chunk()], cache_dir=tmp_path
             )
+        store.drop_collection.assert_called_once()
         store.upsert.assert_called_once_with(embedded)
         bm25.index.assert_called_once_with(embedded)
         bm25.save.assert_called_once()
