@@ -239,7 +239,11 @@ class QdrantVectorStore(VectorStoreRepository):
                         f"{remaining} point(s) after purge",
                         cause=drop_exc,
                     ) from drop_exc
-                self._collection_ready = True
+                # Collection still exists but is empty — refresh model metadata so the
+                # next upsert validates against the current embedding config, not the
+                # previous index, then force _ensure_collection to re-check on upsert.
+                self._write_collection_metadata_model(self.embedding_model_name)
+                self._collection_ready = False
                 self._model_validated = False
                 return
 
@@ -1061,6 +1065,8 @@ class QdrantVectorStore(VectorStoreRepository):
     def _ensure_collection(self) -> None:
         with self._client_lock:
             if self._collection_ready:
+                if not self._model_validated:
+                    self._validate_embedding_model()
                 return
             collection_existed: bool
             try:
