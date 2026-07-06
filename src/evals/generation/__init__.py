@@ -9,6 +9,25 @@ from src.domain.entities.evaluation import EvalSample
 
 logger = logging.getLogger(__name__)
 
+PARAMETRIC_ANSWER_DETAILS = "Parametric answer (no retrieval context)"
+
+
+def parametric_eval_result(
+    metric: str,
+    threshold: float,
+    *,
+    higher_is_better: bool = True,
+) -> EvalResult:
+    """Neutral score when faithfulness/context metrics do not apply (no retrieval)."""
+    score = 1.0 if higher_is_better else 0.0
+    return EvalResult.make(
+        metric,
+        score,
+        threshold,
+        higher_is_better=higher_is_better,
+        details=PARAMETRIC_ANSWER_DETAILS,
+    )
+
 
 @dataclasses.dataclass
 class EvalResult:

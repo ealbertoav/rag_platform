@@ -16,18 +16,15 @@ async def test_lifespan_startup_sets_pipeline_state():
     mock_chat = MagicMock()
     mock_ingest = MagicMock()
     mock_bm25 = MagicMock()
+    mock_vector_store = MagicMock()
 
     with (
         patch("src.core.logging.configure_logging"),
         patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create", return_value=mock_bm25),
         patch(
-            "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
-            return_value=MagicMock(),
+            "src.infrastructure.vectordb.feedback_store.build_vector_store_from_settings",
+            return_value=mock_vector_store,
         ) as vector_store_factory,
-        patch(
-            "src.infrastructure.vectordb.feedback_store.wrap_vector_store_with_feedback",
-            side_effect=lambda store, **_: store,
-        ),
         patch(
             "src.rag.pipelines.chat_pipeline.ChatPipeline.from_settings",
             return_value=mock_chat,
@@ -46,8 +43,8 @@ async def test_lifespan_startup_sets_pipeline_state():
             assert app.state.chat_pipeline is mock_chat
             assert app.state.ingestion_pipeline is mock_ingest
             assert app.state.models_loaded is True
-            mock_vector_store = vector_store_factory.return_value
             assert app.state.vector_store is mock_vector_store
+            vector_store_factory.assert_called_once()
             chat_factory.assert_called_once_with(
                 bm25_index=mock_bm25,
                 vector_store=mock_vector_store,
@@ -70,10 +67,9 @@ async def test_lifespan_shutdown_saves_indexes():
     with (
         patch("src.core.logging.configure_logging"),
         patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
-        patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
         patch(
-            "src.infrastructure.vectordb.feedback_store.wrap_vector_store_with_feedback",
-            side_effect=lambda store, **_: store,
+            "src.infrastructure.vectordb.feedback_store.build_vector_store_from_settings",
+            return_value=MagicMock(),
         ),
         patch("src.rag.pipelines.chat_pipeline.ChatPipeline.from_settings"),
         patch("src.rag.pipelines.agent_pipeline.AgentPipeline.from_settings"),
@@ -98,10 +94,9 @@ async def test_lifespan_shutdown_save_failure_logged(caplog):
     with (
         patch("src.core.logging.configure_logging"),
         patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
-        patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
         patch(
-            "src.infrastructure.vectordb.feedback_store.wrap_vector_store_with_feedback",
-            side_effect=lambda store, **_: store,
+            "src.infrastructure.vectordb.feedback_store.build_vector_store_from_settings",
+            return_value=MagicMock(),
         ),
         patch("src.rag.pipelines.chat_pipeline.ChatPipeline.from_settings"),
         patch("src.rag.pipelines.agent_pipeline.AgentPipeline.from_settings"),

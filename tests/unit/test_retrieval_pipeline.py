@@ -352,7 +352,7 @@ class TestBuildGraphRetriever:
     def test_returns_none_when_neo4j_disabled(self):
         from src.rag.pipelines.retrieval_pipeline import _build_graph_retriever
 
-        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+        with patch("src.core.settings.settings") as mock_settings:
             mock_settings.neo4j = MagicMock(enabled=False)
             assert _build_graph_retriever(MagicMock(), MagicMock()) is None
 
@@ -361,7 +361,7 @@ class TestBuildGraphRetriever:
 
         graph_mock = MagicMock()
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.graph_retriever.GraphRetriever.from_settings",
                 return_value=graph_mock,
@@ -377,7 +377,7 @@ class TestBuildGraphRetriever:
         from src.rag.pipelines.retrieval_pipeline import _build_graph_retriever
 
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.graph_retriever.GraphRetriever.from_settings",
                 side_effect=RuntimeError("neo4j down"),
@@ -427,7 +427,7 @@ class TestBuildHyPERetriever:
     def test_returns_none_when_hype_disabled(self):
         from src.rag.pipelines.retrieval_pipeline import _build_hype_retriever
 
-        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+        with patch("src.core.settings.settings") as mock_settings:
             mock_settings.retrieval = MagicMock(hype=MagicMock(enabled=False))
             assert _build_hype_retriever(MagicMock(), MagicMock(), MagicMock()) is None
 
@@ -439,7 +439,7 @@ class TestBuildHyPERetriever:
         bm25 = MagicMock()
         hype_mock = MagicMock()
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.hype_retriever.HyPERetriever",
                 return_value=hype_mock,
@@ -461,7 +461,7 @@ class TestBuildHyPERetriever:
         from src.rag.pipelines.retrieval_pipeline import _build_hype_retriever
 
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.hype_retriever.HyPERetriever",
                 side_effect=RuntimeError("hype down"),
@@ -477,7 +477,7 @@ class TestBuildHyDERetriever:
     def test_returns_none_when_hyde_disabled(self):
         from src.rag.pipelines.retrieval_pipeline import _build_hyde_retriever
 
-        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+        with patch("src.core.settings.settings") as mock_settings:
             mock_settings.retrieval = MagicMock(hyde=MagicMock(enabled=False))
             assert _build_hyde_retriever(MagicMock(), MagicMock(), MagicMock()) is None
 
@@ -489,7 +489,7 @@ class TestBuildHyDERetriever:
         vector_store = MagicMock()
         hyde_mock = MagicMock()
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.hyde_retriever.HyDERetriever",
                 return_value=hyde_mock,
@@ -511,7 +511,7 @@ class TestBuildHyDERetriever:
         from src.rag.pipelines.retrieval_pipeline import _build_hyde_retriever
 
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.hyde_retriever.HyDERetriever",
                 side_effect=RuntimeError("hyde down"),
@@ -527,7 +527,7 @@ class TestBuildHierarchicalRetriever:
     def test_returns_none_when_hierarchical_disabled(self):
         from src.rag.pipelines.retrieval_pipeline import _build_hierarchical_retriever
 
-        with patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings:
+        with patch("src.core.settings.settings") as mock_settings:
             mock_settings.chunking = MagicMock(hierarchical=MagicMock(enabled=False))
             assert _build_hierarchical_retriever(MagicMock(), MagicMock()) is None
 
@@ -538,7 +538,7 @@ class TestBuildHierarchicalRetriever:
         vector_store = MagicMock()
         hierarchical_mock = MagicMock()
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.hierarchical_retriever.HierarchicalRetriever",
                 return_value=hierarchical_mock,
@@ -562,7 +562,7 @@ class TestBuildHierarchicalRetriever:
         from src.rag.pipelines.retrieval_pipeline import _build_hierarchical_retriever
 
         with (
-            patch("src.rag.pipelines.retrieval_pipeline.settings") as mock_settings,
+            patch("src.core.settings.settings") as mock_settings,
             patch(
                 "src.rag.retrieval.hierarchical_retriever.HierarchicalRetriever",
                 side_effect=RuntimeError("hierarchical down"),

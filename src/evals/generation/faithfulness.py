@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from src.domain.entities.evaluation import EvalSample
-from src.evals.generation import EvalResult, RagasMetric
+from src.evals.generation import EvalResult, RagasMetric, parametric_eval_result
 
 
 class FaithfulnessMetric(RagasMetric):
     """Measures whether the generated answer is grounded in the retrieved context.
 
-    Wraps Ragas ``faithfulness`` (requires ``pip install ragas datasets``).
+    Wraps Ragas "faithfulness" (requires ``pip install ragas datasets``).
     Score is in [0, 1]; higher = more faithful.
     """
 
@@ -17,6 +17,8 @@ class FaithfulnessMetric(RagasMetric):
         super().__init__(threshold)
 
     def _pre_checks(self, sample: EvalSample) -> list[EvalResult]:
+        if sample.parametric_answer:
+            return [parametric_eval_result(self._metric_name, self.threshold)]
         if not sample.generated_answer:
             return [self._guard("Empty generated answer")]
         if not sample.retrieved_chunks:

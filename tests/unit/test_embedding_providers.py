@@ -42,7 +42,7 @@ def _qwen(model: MagicMock | None = None) -> QwenEmbeddingProvider:
 
 
 def _sentence_transformer_import_error() -> patch.dict:
-    """Block real sentence-transformers import (avoids heavy deps + SWIG noise)."""
+    """Block real sentence-transformers import (avoids heavy deps and SWIG noise)."""
     fake_module = MagicMock()
     fake_module.SentenceTransformer = MagicMock(side_effect=OSError("not found"))
     return patch.dict(sys.modules, {"sentence_transformers": fake_module})
@@ -137,6 +137,20 @@ class TestQwenProvider:
 # ── get_embedding_provider factory ────────────────────────────────────────────
 
 
+def _apply_dotted_attrs(mock: MagicMock, attrs: dict[str, object]) -> None:
+    """Set nested attributes on *mock* from dotted keys (e.g., embeddings.provider)."""
+    for key, value in attrs.items():
+        parts = key.split(".")
+        target = mock
+        for part in parts[:-1]:
+            child = getattr(target, part, None)
+            if not isinstance(child, MagicMock):
+                child = MagicMock()
+                setattr(target, part, child)
+            target = child
+        setattr(target, parts[-1], value)
+
+
 def _mock_settings(**kwargs: object) -> MagicMock:
     """Build a settings mock with cache disabled and sensible embedding defaults."""
     defaults: dict[str, object] = {
@@ -148,7 +162,9 @@ def _mock_settings(**kwargs: object) -> MagicMock:
         "embeddings.cache.enabled": False,  # disable cache in unit tests
     }
     defaults.update(kwargs)
-    return MagicMock(**defaults)
+    settings = MagicMock()
+    _apply_dotted_attrs(settings, defaults)
+    return settings
 
 
 class TestGetEmbeddingProvider:

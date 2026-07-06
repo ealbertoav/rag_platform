@@ -1751,6 +1751,38 @@ class TestQdrantFeedbackScore:
                 feedback_revision=1,
             )
 
+    def test_verify_feedback_write_retries_after_stale_read(self, store, mock_client):
+        """Retry verify reads so a successful writing is not applied twice."""
+        reads = {"count": 0}
+        update_id = "test-update-id"
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            point = MagicMock()
+            if reads["count"] == 1:
+                point.payload = {"metadata": {"feedback_score": 4.0, "feedback_revision": 4}}
+            else:
+                point.payload = {
+                    "metadata": {
+                        "feedback_score": 5.0,
+                        "feedback_revision": 5,
+                        "feedback_update_id": update_id,
+                    }
+                }
+            return [point]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+
+        assert store._verify_feedback_write(
+            "chunk-a",
+            update_id=update_id,
+            expected_score=4.0,
+            expected_revision=4,
+            feedback_score=5.0,
+            feedback_revision=5,
+        )
+        assert reads["count"] >= 2
+
     def test_accumulate_feedback_score_raises_when_chunk_deleted_during_retry(
         self, store, mock_client
     ):

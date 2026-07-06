@@ -644,9 +644,9 @@ class TestChatPipelineCRAG:
             web_results=[WebSearchResult(title="Hit", url="https://a.com", snippet="x")],
             refined_context=refined,
         )
-        answer, context_texts = await pipeline.benchmark("question")
-        assert answer.text == "answer"
-        assert context_texts == [refined]
+        run = await pipeline.benchmark("question")
+        assert run.answer.text == "answer"
+        assert run.context_texts == [refined]
 
     @pytest.mark.asyncio
     async def test_benchmark_web_search_failure_returns_empty_eval_context(self):
@@ -657,9 +657,9 @@ class TestChatPipelineCRAG:
             retrieval_result=_retrieval_result(chunks=chunks, context="weak context"),
             web_search=web_search,
         )
-        answer, context_texts = await pipeline.benchmark("question")
-        assert answer.text == "I don't have information about this."
-        assert context_texts == []
+        run = await pipeline.benchmark("question")
+        assert run.answer.text == "I don't have information about this."
+        assert run.context_texts == []
 
     @pytest.mark.asyncio
     async def test_benchmark_empty_web_results_returns_empty_eval_context(self):
@@ -668,9 +668,9 @@ class TestChatPipelineCRAG:
             retrieval_result=_retrieval_result(chunks=chunks, context="weak context"),
             web_results=[],
         )
-        answer, context_texts = await pipeline.benchmark("question")
-        assert answer.text == "I don't have information about this."
-        assert context_texts == []
+        run = await pipeline.benchmark("question")
+        assert run.answer.text == "I don't have information about this."
+        assert run.context_texts == []
 
     @pytest.mark.asyncio
     async def test_benchmark_refinement_failure_returns_empty_eval_context(self):
@@ -682,9 +682,9 @@ class TestChatPipelineCRAG:
             web_results=[WebSearchResult(title="Hit", url="https://a.com", snippet="x")],
             crag_llm=crag_llm,
         )
-        answer, context_texts = await pipeline.benchmark("question")
-        assert answer.text == "I don't have information about this."
-        assert context_texts == []
+        run = await pipeline.benchmark("question")
+        assert run.answer.text == "I don't have information about this."
+        assert run.context_texts == []
 
     @pytest.mark.asyncio
     async def test_benchmark_combine_fallback_uses_retrieval_eval_context(self):
@@ -695,9 +695,9 @@ class TestChatPipelineCRAG:
             crag_llm=None,
             web_search_available=False,
         )
-        answer, context_texts = await pipeline.benchmark("question")
-        assert answer.text == "answer"
-        assert context_texts == [chunk.text for chunk in chunks]
+        run = await pipeline.benchmark("question")
+        assert run.answer.text == "answer"
+        assert run.context_texts == [chunk.text for chunk in chunks]
 
     @pytest.mark.asyncio
     async def test_filtered_low_scores_trigger_web_only(self):
@@ -727,9 +727,9 @@ class TestChatPipelineCRAG:
             ],
             refined_context="web refined answer context",
         )
-        answer, context_texts = await pipeline.benchmark("question")
-        assert answer.text == "answer"
-        assert context_texts == ["web refined answer context"]
+        run = await pipeline.benchmark("question")
+        assert run.answer.text == "answer"
+        assert run.context_texts == ["web refined answer context"]
         pipeline._web_search.search.assert_awaited_once()  # type: ignore[attr-defined]
 
 

@@ -107,6 +107,20 @@ class TestFaithfulnessMetric:
         result = FaithfulnessMetric().score(_sample(chunks=[]))
         assert result.score == pytest.approx(0.0)
 
+    def test_parametric_answer_skips_context_guard(self):
+        sample = _sample(chunks=[], generated="Hello!")
+        sample = EvalSample(
+            question=sample.question,
+            expected_answer=sample.expected_answer,
+            retrieved_chunks=[],
+            generated_answer=sample.generated_answer,
+            parametric_answer=True,
+        )
+        result = FaithfulnessMetric().score(sample)
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is True
+        assert "Parametric answer" in result.details
+
     def test_ragas_failure_returns_zero(self):
         with patch(_FAITH, side_effect=RuntimeError("API error")):
             result = FaithfulnessMetric().score(_sample())
@@ -173,6 +187,18 @@ class TestHallucinationMetric:
         assert result.score == pytest.approx(1.0)
         assert result.passed is False
 
+    def test_parametric_answer_skips_context_penalty(self):
+        sample = EvalSample(
+            question="hello",
+            expected_answer="hi",
+            retrieved_chunks=[],
+            generated_answer="Hello!",
+            parametric_answer=True,
+        )
+        result = HallucinationMetric().score(sample)
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is True
+
     def test_deepeval_failure_returns_one(self):
         with patch(_HALLU, side_effect=ImportError("deepeval not installed")):
             result = HallucinationMetric().score(_sample())
@@ -215,6 +241,18 @@ class TestContextPrecisionMetric:
         assert result.score == pytest.approx(0.0)
         assert result.passed is False
 
+    def test_parametric_answer_skips_context_guard(self):
+        sample = EvalSample(
+            question="hello",
+            expected_answer="hi",
+            retrieved_chunks=[],
+            generated_answer="Hello!",
+            parametric_answer=True,
+        )
+        result = ContextPrecisionMetric().score(sample)
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is True
+
     def test_empty_question_returns_zero(self):
         result = ContextPrecisionMetric().score(_sample(question=""))
         assert result.score == pytest.approx(0.0)
@@ -235,6 +273,18 @@ class TestContextPrecisionMetric:
 
 
 class TestRagasInfrastructure:
+    def test_parametric_eval_result(self):
+        from src.evals.generation import parametric_eval_result
+
+        result = parametric_eval_result("faithfulness", threshold=0.8)
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is True
+        assert "Parametric answer" in result.details
+
+        low = parametric_eval_result("hallucination", threshold=0.1, higher_is_better=False)
+        assert low.score == pytest.approx(0.0)
+        assert low.passed is True
+
     def test_make_ragas_dataset(self):
         from src.evals.generation import _make_ragas_dataset
 

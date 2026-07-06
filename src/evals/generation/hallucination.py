@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from src.domain.entities.evaluation import EvalSample
-from src.evals.generation import EvalResult
+from src.evals.generation import EvalResult, parametric_eval_result
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,12 @@ class HallucinationMetric:
         self.threshold = threshold
 
     def score(self, sample: EvalSample) -> EvalResult:
+        if sample.parametric_answer:
+            return parametric_eval_result(
+                _METRIC,
+                self.threshold,
+                higher_is_better=False,
+            )
         if not sample.generated_answer:
             # No answer → cannot hallucinate; score 0 (perfect, passes).
             return EvalResult.make(

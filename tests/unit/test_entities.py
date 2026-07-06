@@ -180,6 +180,7 @@ class TestEvalSample:
         s = EvalSample(question="q?", expected_answer="a")
         assert s.retrieved_chunks == []
         assert s.generated_answer == ""
+        assert s.parametric_answer is False
         assert s.scores == {}
 
     def test_full_construction(self):

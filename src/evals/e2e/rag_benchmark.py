@@ -131,7 +131,7 @@ class RAGBenchmark:
                 continue
 
             try:
-                answer, context_texts = await pipeline.benchmark(question)  # type: ignore[attr-defined]
+                run = await pipeline.benchmark(question)  # type: ignore[attr-defined]
             except Exception as exc:
                 logger.error("Pipeline failed for question %d: %s", i, exc)
                 results.append(
@@ -150,6 +150,8 @@ class RAGBenchmark:
                 )
                 continue
 
+            answer = run.answer
+            context_texts = run.context_texts
             retrieved_ids = list(answer.sources)
             r5 = recall_at_k(retrieved_ids, relevant_ids, k=self._k)
 
@@ -158,6 +160,7 @@ class RAGBenchmark:
                 expected_answer=expected,
                 retrieved_chunks=context_texts,
                 generated_answer=answer.text,
+                parametric_answer=run.parametric_answer,
             )
             faith_score = self._faith.score(sample).score
             relev_score = self._relev.score(sample).score

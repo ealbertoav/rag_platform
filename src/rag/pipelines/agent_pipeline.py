@@ -10,7 +10,6 @@ from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING, Any
 
-from src.core.settings import settings
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
@@ -77,6 +76,8 @@ class AgentRunResult:
     iterations: int
     actions: list[AgentAction]
     self_rag_decisions: list[SelfRAGStepDecision] = dataclasses.field(default_factory=list)
+    context_texts: list[str] = dataclasses.field(default_factory=list)
+    parametric_answer: bool = False
 
 
 @dataclasses.dataclass
@@ -176,6 +177,8 @@ class AgentPipeline:
                 iterations=result.iterations,
                 actions=result.actions,
                 self_rag_decisions=result.self_rag_decisions,
+                context_texts=result.context_texts,
+                parametric_answer=result.parametric_answer,
             )
         run = await self._agentic_retrieve(question, max_iterations=max_iter)
         context = self._build_context(run.chunks)
@@ -193,6 +196,7 @@ class AgentPipeline:
             answer=final_answer,
             iterations=run.iterations,
             actions=run.actions,
+            context_texts=self._eval_contexts(run.chunks),
         )
 
     # ── Factory ────────────────────────────────────────────────────────────────
@@ -204,6 +208,8 @@ class AgentPipeline:
         bm25_index: BM25Index | None = None,
         vector_store: VectorStoreRepository | None = None,
     ) -> AgentPipeline:
+        from src.core.settings import settings
+
         return cls(
             pipeline=ChatPipeline.from_settings(
                 bm25_index=bm25_index,
@@ -227,6 +233,7 @@ class AgentPipeline:
         decisions: list[SelfRAGStepDecision] = []
         actions: list[AgentAction] = []
         search_query = question
+        context_texts: list[str] = []
 
         for iteration in range(max_iter):
             step = SelfRAGStepDecision(iteration=iteration + 1)
@@ -254,6 +261,8 @@ class AgentPipeline:
                     max_iter,
                     actions,
                     decisions,
+                    context_texts,
+                    parametric_answer=True,
                 )
                 if result is not None:
                     return result
@@ -262,6 +271,7 @@ class AgentPipeline:
             query = Query(text=search_query)
             retrieval = await self._pipeline.retrieval.retrieve(query)
             context = retrieval.context
+            context_texts = self._eval_contexts(retrieval.chunks)
             sources = [chunk_id for c in retrieval.chunks for chunk_id in chunk_source_ids(c)]
 
             if not context.strip():
@@ -275,6 +285,7 @@ class AgentPipeline:
                     max_iter,
                     actions,
                     decisions,
+                    context_texts,
                 )
                 if result is not None:
                     return result
@@ -297,6 +308,7 @@ class AgentPipeline:
                     max_iter,
                     actions,
                     decisions,
+                    context_texts,
                 )
                 if result is not None:
                     return result
@@ -313,6 +325,7 @@ class AgentPipeline:
                 max_iter,
                 actions,
                 decisions,
+                context_texts,
             )
             if result is not None:
                 return result
@@ -322,6 +335,7 @@ class AgentPipeline:
             max_iter,
             actions or [AgentAction.RETRIEVE_MORE],
             decisions,
+            context_texts,
         )
 
     def _self_rag_continue_on_utility_retry(
@@ -334,6 +348,7 @@ class AgentPipeline:
         max_iterations: int,
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
+        context_texts: list[str],
     ) -> tuple[AgentRunResult | None, str]:
         """Finish on refuse or last iteration; otherwise reretrieve with a refined query."""
         _record_utility_on_step(step, util)
@@ -341,13 +356,17 @@ class AgentPipeline:
         if util.action == UtilityAction.REFUSE:
             actions.append(AgentAction.CLARIFY)
             return (
-                self._self_rag_no_info_result(question, iteration + 1, actions, decisions),
+                self._self_rag_no_info_result(
+                    question, iteration + 1, actions, decisions, context_texts
+                ),
                 search_query,
             )
         if iteration == max_iterations - 1:
             actions.append(AgentAction.RETRIEVE_MORE)
             return (
-                self._self_rag_no_info_result(question, iteration + 1, actions, decisions),
+                self._self_rag_no_info_result(
+                    question, iteration + 1, actions, decisions, context_texts
+                ),
                 search_query,
             )
         actions.append(AgentAction.RETRIEVE_MORE)
@@ -364,12 +383,22 @@ class AgentPipeline:
         max_iterations: int,
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
+        context_texts: list[str],
+        *,
+        parametric_answer: bool = False,
     ) -> tuple[AgentRunResult | None, str]:
         """Record utility, finish on accept/refuse, or advance search_query for reretrieve."""
         _record_utility_on_step(step, util)
         decisions.append(step)
         if finished := self._self_rag_finish_from_utility(
-            util, draft, question, iteration, actions, decisions
+            util,
+            draft,
+            question,
+            iteration,
+            actions,
+            decisions,
+            context_texts,
+            parametric_answer=parametric_answer,
         ):
             return finished, search_query
         if iteration == max_iterations - 1 and step.supported is True:
@@ -380,6 +409,7 @@ class AgentPipeline:
                     iterations=iteration + 1,
                     actions=actions,
                     self_rag_decisions=decisions,
+                    context_texts=context_texts,
                 ),
                 search_query,
             )
@@ -395,6 +425,9 @@ class AgentPipeline:
         iteration: int,
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
+        context_texts: list[str],
+        *,
+        parametric_answer: bool = False,
     ) -> AgentRunResult | None:
         if util.action == UtilityAction.ACCEPT:
             actions.append(AgentAction.ANSWER)
@@ -403,10 +436,14 @@ class AgentPipeline:
                 iterations=iteration + 1,
                 actions=actions,
                 self_rag_decisions=decisions,
+                context_texts=context_texts,
+                parametric_answer=parametric_answer,
             )
         if util.action == UtilityAction.REFUSE:
             actions.append(AgentAction.CLARIFY)
-            return self._self_rag_no_info_result(question, iteration + 1, actions, decisions)
+            return self._self_rag_no_info_result(
+                question, iteration + 1, actions, decisions, context_texts
+            )
         return None
 
     def _self_rag_no_info_result(
@@ -415,12 +452,14 @@ class AgentPipeline:
         iterations: int,
         actions: list[AgentAction],
         decisions: list[SelfRAGStepDecision],
+        context_texts: list[str],
     ) -> AgentRunResult:
         return AgentRunResult(
             answer=self._no_info_answer(query),
             iterations=iterations,
             actions=actions,
             self_rag_decisions=decisions,
+            context_texts=context_texts,
         )
 
     async def _agentic_retrieve(
@@ -495,6 +534,11 @@ class AgentPipeline:
     def _build_context(chunks: list[Chunk]) -> str:
         """Join chunk passages for LLM prompts (respects CCH raw_text and RSE merges)."""
         return join_chunk_context(chunks)
+
+    @staticmethod
+    def _eval_contexts(chunks: list[Chunk]) -> list[str]:
+        """Return per-chunk passage texts for faithfulness/relevance evals."""
+        return [chunk.text for chunk in chunks]
 
     def _decide(self, question: str, chunks: list[Chunk]) -> AgentDecision:
         """Ask the LLM whether to answer or refine retrieval."""

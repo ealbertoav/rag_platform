@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.domain.entities.evaluation import EvalSample
-from src.evals.generation import EvalResult, RagasMetric
+from src.evals.generation import EvalResult, RagasMetric, parametric_eval_result
 
 
 class ContextPrecisionMetric(RagasMetric):
@@ -17,6 +17,8 @@ class ContextPrecisionMetric(RagasMetric):
         super().__init__(threshold)
 
     def _pre_checks(self, sample: EvalSample) -> list[EvalResult]:
+        if sample.parametric_answer:
+            return [parametric_eval_result(self._metric_name, self.threshold)]
         if not sample.retrieved_chunks:
             return [self._guard("No context provided")]
         if not sample.question:

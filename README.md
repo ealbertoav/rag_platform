@@ -22,6 +22,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **API rate limiting (T-160):** Optional sliding-window middleware protects `/ingest`, `/chat`, `/chat/agent`, `/evals/run`, and `/feedback` — Redis-backed when available, in-memory fallback otherwise. Disabled by default (`api.rate_limit.enabled: false`). Returns `429` with `Retry-After` when exceeded. See [API Rate Limiting (T-160)](#api-rate-limiting-t-160).
 
+> **Technique benchmark (T-150):** Compare optional RAG techniques side-by-side on the golden QA dataset — baseline, multi-query expansion, HyDE, contextual compression, Reliable RAG, Self-RAG (agent path), and feedback-loop boost A/B — without code changes between runs. Each technique toggles via isolated env overrides; results export to `data/exports/technique_benchmark_{timestamp}.json`. See [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150).
+
 ---
 
 ## Table of Contents
@@ -44,6 +46,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Retrieval feedback (T-145)](#retrieval-feedback-t-145)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
+  - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
@@ -62,6 +65,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 - [Project Structure](#project-structure)
 - [Development](#development)
 - [Testing](#testing)
+- [Evaluation Framework](#evaluation-framework)
 - [Observability](#observability)
 - [CI/CD](#cicd)
 
@@ -94,7 +98,8 @@ flowchart LR
         DS --> RF["RRF Fusion<br/>Top 50"]
         DS2 --> RF
         BS --> RF
-        RF --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
+        RF --> FB["Feedback Boost<br/>(optional · T-145)"]
+        FB --> RR["BGE-Reranker<br/>Cross-Encoder · Top 10"]
         RR --> DIV["MMR Diversity<br/>(optional · T-135)"]
         DIV --> RSE["RSE · Merge Adjacent<br/>(optional · T-123)"]
         RSE --> PC["Parent Context<br/>(optional · T-124)"]
@@ -872,6 +877,58 @@ When Corrective RAG (T-142) is enabled, benchmark faithfulness and context preci
 
 ---
 
+### Compare RAG Techniques (T-150)
+
+Benchmark optional retrieval and quality techniques **independently** on the same golden QA dataset. Each run applies a single technique via env overrides (baseline disables all Phase 11–14 flags first), rebuilds the pipeline from reloaded settings, and scores Recall@5, Faithfulness, Relevance, and end-to-end latency.
+
+```bash
+# Default matrix: baseline, multi_query, hyde, cch, reliable_rag, feedback_loop
+make benchmark-techniques
+
+# Custom technique list and sample cap
+uv run python scripts/benchmark_techniques.py \
+  --techniques baseline,multi_query,hyde,cch,reliable_rag,self_rag,feedback_loop \
+  --max-samples 50
+
+# Swap LLM profile before the matrix (same as make benchmark)
+uv run python scripts/benchmark_techniques.py \
+  --llm-config configs/llm/qwen3-14b.yaml \
+  --techniques baseline,reliable_rag
+```
+
+**Techniques** (defined in `configs/evals.yaml` → `evals.technique_benchmark.configs`):
+
+| Technique | What it toggles | Pipeline |
+|---|---|---|
+| `baseline` | All optional techniques off | `ChatPipeline` |
+| `multi_query` | `query_expansion.enabled` + 3 variants | `ChatPipeline` |
+| `hyde` | `retrieval.hyde.enabled` | `ChatPipeline` |
+| `cch` | Contextual compression | `ChatPipeline` |
+| `reliable_rag` | LLM relevancy grading (T-140) | `ChatPipeline` |
+| `self_rag` | Self-RAG gates (T-141) | `AgentPipeline` |
+| `feedback_loop` | Pre-seeds chunk feedback, compares Recall@5 with boost off vs on | `ChatPipeline` |
+
+The `feedback_loop` technique uses `temporary_feedback_seed` to write positive scores for golden `relevant_chunks`, then runs two passes at identical fusion pool size (`expand_candidate_pool=false`): boost disabled, then boost enabled. Original scores are restored after the run.
+
+**Output:**
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        RAG Technique Comparison                            │
+├──────────────────┬──────────┬──────────────┬───────────┬────────────┬───────┤
+│ Technique        │ Recall@5 │ Faithfulness │ Relevance │ Latency ms │ Status│
+├──────────────────┼──────────┼──────────────┼───────────┼────────────┼───────┤
+│ baseline         │  0.742   │    0.861     │   0.822   │   1840.2   │  OK   │
+│ multi_query      │  0.798   │    0.874     │   0.841   │   2210.5   │  OK   │
+│ reliable_rag     │  0.781   │    0.902     │   0.858   │   2455.1   │  OK   │
+│ feedback_loop    │  0.812   │    0.868     │   0.835   │   1920.0   │  OK   │
+└──────────────────┴──────────┴──────────────┴───────────┴────────────┴───────┘
+```
+
+When the golden file contains only placeholder `chunk_id_*` rows, the script exits 0 with a skip report (populate real pairs via `make evals` first). Full results save to `data/exports/technique_benchmark_{timestamp}.json`.
+
+---
+
 ### Compare Embedding Providers
 
 Benchmark multiple embedding providers against the same golden QA dataset and get a side-by-side quality, latency, and estimated cost table:
@@ -1546,6 +1603,7 @@ rag_implementation/
 │   ├── rebuild_embeddings.py   # Re-embed all chunks → Qdrant (model migration)
 │   ├── run_evals.py            # QA dataset generation CLI
 │   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
+│   ├── benchmark_techniques.py # Technique matrix CLI (T-150)
 │   └── compare_models.py       # Multi-model comparison table
 ├── specs/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
@@ -1556,7 +1614,7 @@ rag_implementation/
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
-│   │   └── e2e/                # RAGBenchmark · BenchmarkReport
+│   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150)
 │   ├── infrastructure/         # BGE-M3, Qdrant, BM25, feedback_store (T-146), Redis client, Neo4j, SQLite metadata, llama.cpp, web search
 │   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
@@ -1577,7 +1635,7 @@ rag_implementation/
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
-│   ├── benchmarks/             # Benchmark tests (skip without data)
+│   ├── benchmarks/             # E2E, technique matrix (T-150), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
 │   └── unit/                   # 800+ unit tests (zero external deps)
 ├── .dockerignore
@@ -1642,6 +1700,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make ingest SOURCE=path` | Ingest a file or directory |
 | `make evals` | Generate synthetic QA dataset |
 | `make benchmark` | Run E2E benchmark |
+| `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make lint` | `ruff check` + `mypy` |
 | `make format` | `ruff format` + `ruff check --fix` |
 | `make test` | Unit + integration tests with coverage |
@@ -1671,11 +1730,11 @@ make test
 make qdrant-up
 uv run pytest tests/integration/test_qdrant.py -v
 
-# Benchmark suite
+# Benchmark suite (E2E, technique matrix, feedback concurrency)
 uv run pytest tests/benchmarks/ -v -s
 ```
 
-**Test coverage:** 97+ source files · 45+ test files · 1682 tests (32 skipped without models/services).
+**Test coverage:** 97+ source files · 80 test files · 1760 tests (32 skipped without models/services).
 
 Integration tests auto-skip when models or Qdrant are absent (CI runs them but does not start Docker services).
 
@@ -2304,6 +2363,8 @@ Per-request retrieval constraints for scoped Q&A — inspired by multi-faceted f
 
 ## Evaluation Framework
 
+The platform ships four evaluation layers: synthetic dataset generation (T-040), retrieval metrics (T-041), generation metrics (T-042), end-to-end benchmarking (T-043/T-044), and optional **technique comparison** (T-150) for side-by-side RAG configuration tuning.
+
 ```mermaid
 flowchart LR
     subgraph GEN["🏭 Dataset Generation (T-040)"]
@@ -2337,9 +2398,18 @@ flowchart LR
         EXIT -->|no| FAIL["exit 1 ❌<br/>POST /evals/run → 200 failed"]
     end
 
+    subgraph TECH["📊 Technique Benchmark (T-150)"]
+        QA5[("QA Dataset<br/>filter placeholders")] --> CFG["Config permutations<br/>env overrides per technique"]
+        CFG --> RUN["ChatPipeline / AgentPipeline<br/>isolated settings reload"]
+        RUN --> MET2["Recall@5 · Faithfulness<br/>Relevance · latency"]
+        MET2 --> TB[("data/exports<br/>technique_benchmark_{ts}.json")]
+        RUN --> FBAB["Feedback A/B<br/>temporary_feedback_seed<br/>boost off vs on"]
+    end
+
     GEN --> RET
     GEN --> GEN2
     GEN --> E2E
+    E2E --> TECH
 ```
 
 ---
@@ -2430,7 +2500,7 @@ scrape_configs:
 ```mermaid
 flowchart LR
     PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
-    L --> U["2️⃣ Unit Tests<br/>1682 tests<br/>coverage upload"]
+    L --> U["2️⃣ Unit Tests<br/>1760 tests<br/>coverage upload"]
     U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
     U --> R["4️⃣ Retrieval Regression<br/>Recall@5 gate<br/>auto-skip if no golden data"]
 

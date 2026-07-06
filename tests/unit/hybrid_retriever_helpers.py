@@ -9,6 +9,34 @@ from src.domain.entities.query import Query
 from src.rag.retrieval.hybrid_retriever import HybridRetriever
 
 
+def feedback_boost_retriever(
+    *,
+    feedback_expand_pool: bool = True,
+    feedback_scores: dict[str, float] | None = None,
+    feedback_scores_side_effect: BaseException | None = None,
+) -> tuple[HybridRetriever, MagicMock, MagicMock]:
+    """HybridRetriever with feedback boost mocks; returns (retriever, dense, bm25)."""
+    dense_mock = MagicMock()
+    dense_mock.retrieve.return_value = [
+        (Chunk(id="c0", document_id="doc", text="chunk 0"), 0.9),
+    ]
+    if feedback_scores_side_effect is not None:
+        dense_mock.vector_store.get_feedback_scores.side_effect = feedback_scores_side_effect
+    else:
+        dense_mock.vector_store.get_feedback_scores.return_value = feedback_scores or {}
+    bm25_mock = MagicMock()
+    bm25_mock.search.return_value = [
+        (Chunk(id="c1", document_id="doc", text="chunk 1"), 1.2),
+    ]
+    hr = HybridRetriever(
+        dense=dense_mock,
+        bm25=bm25_mock,
+        feedback_boost_multiplier=0.1,
+        feedback_expand_pool=feedback_expand_pool,
+    )
+    return hr, dense_mock, bm25_mock
+
+
 async def assert_optional_retriever_participates_in_rrf(
     retriever_kwarg: str,
     *,

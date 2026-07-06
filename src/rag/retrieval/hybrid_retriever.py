@@ -49,6 +49,7 @@ class HybridRetriever:
         hierarchical_retriever: HierarchicalRetriever | None = None,
         fusion_mode: str = "rrf",
         feedback_boost_multiplier: float = 0.0,
+        feedback_expand_pool: bool = True,
     ) -> None:
         self._dense = dense
         self._bm25 = bm25
@@ -59,10 +60,14 @@ class HybridRetriever:
         self.hierarchical = hierarchical_retriever
         self._fusion_mode = fusion_mode
         self._feedback_boost_multiplier = feedback_boost_multiplier
+        self._feedback_expand_pool = feedback_expand_pool
+
+    def _uses_expanded_pool(self) -> bool:
+        return self._feedback_boost_multiplier > 0 and self._feedback_expand_pool
 
     def _candidate_limit(self, top_k: int) -> int:
         """Return the per-source candidate cap before fusion."""
-        cap = _MAX_CANDIDATES_FEEDBACK if self._feedback_boost_multiplier > 0 else _MAX_CANDIDATES
+        cap = _MAX_CANDIDATES_FEEDBACK if self._uses_expanded_pool() else _MAX_CANDIDATES
         return min(top_k * _EXPANSION, cap)
 
     # ── Public ─────────────────────────────────────────────────────────────────
@@ -149,7 +154,7 @@ class HybridRetriever:
 
         hyde_active = self.hyde is not None and use_hyde
         fusion_top_k = top_k
-        if self._feedback_boost_multiplier > 0:
+        if self._uses_expanded_pool():
             fusion_top_k = self._candidate_limit(top_k)
         if (
             self._fusion_mode == "weighted_linear"

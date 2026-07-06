@@ -19,6 +19,9 @@ evals:
 benchmark:
 	uv run python scripts/benchmark.py
 
+benchmark-techniques:
+	uv run python scripts/benchmark_techniques.py
+
 lint:
 	uv run ruff check src tests
 	uv run mypy src

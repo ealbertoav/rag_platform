@@ -4,6 +4,15 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
+> **Current focus:** Phase 15 — Evaluation Operationalization. **T-150 ✅ done** (PR #29 — technique benchmark matrix, `make benchmark-techniques`, `TechniqueBenchmark` orchestrator).
+>
+> **Next tasks (recommended order):**
+> 1. **T-151** — Chunk size optimization sweep (`scripts/benchmark_chunk_sizes.py`)
+> 2. **T-152** — Populate golden QA dataset + CI eval regression gates
+> 3. **T-161 / T-162** — Phase 16 production hardening (secrets, health probes)
+> 4. **T-171** — Mypy CI gate hardening
+> 5. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+
 ---
 
 ## Phase 0 — Foundation
@@ -1805,32 +1814,40 @@
 > **Motivation:** Operationalize the evaluation framework from Phase 4 — benchmark RAG techniques side-by-side, tune chunk sizes, and enforce CI regression gates with real golden data.
 >
 > **Depends on:** Phase 4 (T-040–T-043), Phase 11–14 technique flags
+>
+> **Progress:** T-150 complete · T-151 and T-152 remaining
 
 ---
 
 ### T-150 · Evaluation-Driven Technique Benchmark
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Benchmark script that compares RAG techniques side-by-side (baseline vs expansion vs HyDE vs CCH vs Self-RAG vs feedback loop) — inspired by RAG_Techniques `choose_chunk_size.py` and `evaluation/` notebooks.
 - **Inputs:** T-043 (`RAGBenchmark`), T-040 (golden dataset), Phases 11–14 technique flags (incl. T-145 `quality.feedback_loop`, T-146 backend selection)
 - **Outputs:** Comparison table with Recall@5, Faithfulness, Relevance, and latency per technique configuration.
 - **Files:**
   - `scripts/benchmark_techniques.py` — CLI to run technique matrix
+  - `scripts/_benchmark_utils.py` — shared QA loading (`prepare_qa_pairs`, placeholder filter)
   - `src/evals/e2e/technique_benchmark.py` — orchestrates config permutations
-  - `configs/evals.yaml` — add `technique_benchmark.configs` list
+  - `configs/evals.yaml` — `technique_benchmark.configs` list
+  - `tests/unit/test_technique_benchmark.py` — unit coverage
   - `tests/benchmarks/test_technique_benchmark.py` — skip on placeholder data
+  - `tests/unit/test_benchmark_utils.py` — shared CLI helper tests
 - **Usage:**
   ```bash
+  make benchmark-techniques
   uv run python scripts/benchmark_techniques.py \
-    --techniques baseline,multi_query,hyde,cch,reliable_rag,feedback_loop \
+    --techniques baseline,multi_query,hyde,cch,reliable_rag,self_rag,feedback_loop \
     --max-samples 50
   ```
 - **Output:** `data/exports/technique_benchmark_{timestamp}.json` + Rich summary table
 - **Acceptance Criteria:**
   - Runs baseline with zero new techniques enabled
   - Each technique toggled independently via config override (no code changes between runs)
-  - `feedback_loop` technique pre-seeds chunk feedback scores and compares Recall@5 with boost on vs off
+  - `feedback_loop` technique uses `temporary_feedback_seed` to pre-seed chunk scores and compares Recall@5 with boost on vs off at identical fusion pool size
+  - `self_rag` technique runs via `AgentPipeline` adapter
   - Skips gracefully when golden dataset contains only placeholders
   - `make benchmark-techniques` Makefile target added
+- **Notes:** `temporary_config` applies env overrides and reloads settings per technique. Pipelines and benchmarks share `build_vector_store_from_settings`. Generation metrics accept optional `parametric_answer` on `EvalSample` for Self-RAG runs. Feedback-loop benchmark disables `expand_candidate_pool` so A/B compares boost effect only.
 
 ---
 
@@ -2157,6 +2174,6 @@ T-163 + T-164 + T-165 ──► T-172
 12. **Phase 12 — Priority 2 (Index-Time Enrichment):** T-120 → T-121 → T-122 → T-123 → T-124 → T-125 → T-126 _(~3 sessions)_
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
-15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 → T-151 → T-152 _(~1 session)_
+15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 → T-152 _(~1 session; T-150 done in PR #29)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 → T-162 → T-163 → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_
