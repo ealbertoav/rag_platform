@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import queue
+import time
 from collections.abc import AsyncIterator
-from threading import Lock, Thread
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 from src.core.exceptions import GenerationError
 from src.domain.repositories.llm_repository import LLMRepository
+from src.observability.tracing import get_tracer
 
 if TYPE_CHECKING:
     from llama_cpp import Llama
 
 logger = logging.getLogger(__name__)
+_tracer = get_tracer("rag-platform.llm")
 
 _SENTINEL = object()
+# Backpressure when many concurrent streams fill the bridge queue.
+_STREAM_QUEUE_MAXSIZE = 256
 
 
 class LlamaCppProvider(LLMRepository):
@@ -70,8 +74,9 @@ class LlamaCppProvider(LLMRepository):
     def generate_stream(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Return an async iterator that yields tokens as they are produced.
 
-        The synchronous llama.cpp generator runs in a background thread; tokens
-        are forwarded via a queue, so the event loop is never blocked.
+        Synchronous llama.cpp streaming runs in "asyncio.to_thread"; tokens
+        cross into the event loop via a bounded "asyncio.Queue" so consumers
+        await natively without "run_in_executor" polling.
         """
         return self._stream_tokens(prompt, context, **kwargs)
 
@@ -133,9 +138,13 @@ class LlamaCppProvider(LLMRepository):
     async def _stream_tokens(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Async generator: yields tokens from a sync llama.cpp stream via a thread."""
         full_prompt = _join(prompt, context)
-        token_queue: queue.Queue[object] = queue.Queue()
+        loop = asyncio.get_running_loop()
+        token_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
 
-        def _run() -> None:
+        def _enqueue(item: object) -> None:
+            asyncio.run_coroutine_threadsafe(token_queue.put(item), loop).result()
+
+        def _producer() -> None:
             try:
                 with self._lock:
                     model = self._get_model()
@@ -149,27 +158,31 @@ class LlamaCppProvider(LLMRepository):
                         choices = chunk["choices"]  # type: ignore[union-attr,index]
                         delta = str(choices[0]["delta"].get("content", ""))
                         if delta:
-                            token_queue.put(delta)
+                            _enqueue(delta)
             except Exception as exc:
-                token_queue.put(exc)
+                _enqueue(exc)
             finally:
-                token_queue.put(_SENTINEL)
+                _enqueue(_SENTINEL)
 
-        loop = asyncio.get_event_loop()
-        thread = Thread(target=_run, daemon=True)
-        thread.start()
+        worker = asyncio.create_task(asyncio.to_thread(_producer))
+        queue_wait_ms = 0.0
 
-        try:
-            while True:
-                item = await loop.run_in_executor(None, lambda: token_queue.get())  # type: ignore[misc]
-                if item is _SENTINEL:
-                    break
-                if isinstance(item, Exception):
-                    raise GenerationError("llama.cpp stream failed", cause=item) from item
-                if isinstance(item, str):
-                    yield item
-        finally:
-            thread.join(timeout=5)
+        with _tracer.start_as_current_span("llm.stream") as span:
+            try:
+                while True:
+                    t0 = time.monotonic()
+                    item = await token_queue.get()
+                    queue_wait_ms += (time.monotonic() - t0) * 1000
+
+                    if item is _SENTINEL:
+                        break
+                    if isinstance(item, Exception):
+                        raise GenerationError("llama.cpp stream failed", cause=item) from item
+                    if isinstance(item, str):
+                        yield item
+            finally:
+                span.set_attribute("queue_wait_ms", round(queue_wait_ms, 1))
+                await worker
 
 
 def _join(prompt: str, context: str) -> str:
