@@ -44,6 +44,7 @@ class TestYamlDefaults:
         assert settings.llm.context_size == 32768
         assert settings.llm.temperature == 0.1
         assert settings.llm.max_tokens == 2048
+        assert settings.llm.disable_disk_cache is False
         assert "<|im_end|>" in settings.llm.stop_tokens
 
     def test_embedding_defaults_from_yaml(self):
@@ -179,6 +180,11 @@ class TestEnvVarOverride:
         s = Settings()
         assert s.retrieval.hybrid_alpha == pytest.approx(0.5)
 
+    def test_disable_disk_cache_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("LLM__DISABLE_DISK_CACHE", "true")
+        s = Settings()
+        assert s.llm.disable_disk_cache is True
+
 
 class TestValidation:
     def test_hybrid_alpha_out_of_range(self):
@@ -187,7 +193,7 @@ class TestValidation:
 
     def test_api_port_out_of_range(self):
         with pytest.raises(ValidationError):
-            APISettings(port=99999)
+            APISettings.model_validate({"port": 99999})
 
     def test_invalid_llm_provider(self):
         with pytest.raises(ValidationError):
@@ -203,4 +209,4 @@ class TestValidation:
 
     def test_compression_max_tokens_must_be_positive(self):
         with pytest.raises(ValidationError):
-            CompressionSettings(max_tokens=0)
+            CompressionSettings.model_validate({"max_tokens": 0})

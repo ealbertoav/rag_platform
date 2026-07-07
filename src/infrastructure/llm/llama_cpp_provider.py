@@ -37,6 +37,7 @@ class LlamaCppProvider(LLMRepository):
         temperature: float = 0.1,
         max_tokens: int = 2048,
         stop_tokens: list[str] | None = None,
+        disable_disk_cache: bool = False,
     ) -> None:
         self.model_path = model_path
         self.context_size = context_size
@@ -44,6 +45,7 @@ class LlamaCppProvider(LLMRepository):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.stop_tokens: list[str] = stop_tokens or ["<|im_end|>"]
+        self.disable_disk_cache = disable_disk_cache
         self._model: Llama | None = None
         self._lock = Lock()
 
@@ -87,6 +89,7 @@ class LlamaCppProvider(LLMRepository):
             temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
             stop_tokens=list(cfg.stop_tokens),
+            disable_disk_cache=cfg.disable_disk_cache,
         )
 
     # ── Internals ──────────────────────────────────────────────────────────────
@@ -103,11 +106,13 @@ class LlamaCppProvider(LLMRepository):
                 n_gpu_layers=self.n_gpu_layers,
                 verbose=False,
             )
+            self._apply_prompt_cache_policy(llama)
             logger.info(
-                "llama.cpp model loaded: %s (ctx=%d, gpu_layers=%d)",
+                "llama.cpp model loaded: %s (ctx=%d, gpu_layers=%d, disable_disk_cache=%s)",
                 self.model_path,
                 self.context_size,
                 self.n_gpu_layers,
+                self.disable_disk_cache,
             )
             self._model = llama
             return llama
@@ -115,6 +120,15 @@ class LlamaCppProvider(LLMRepository):
             raise GenerationError(
                 f"Cannot load llama.cpp model from {self.model_path!r}", cause=exc
             ) from exc
+
+    def _apply_prompt_cache_policy(self, llama: Llama) -> None:
+        """Configure llama.cpp prompt cache — never disk-backed when disabled (T-162)."""
+        if self.disable_disk_cache:
+            llama.set_cache(None)
+            return
+        from llama_cpp.llama_cache import LlamaRAMCache
+
+        llama.set_cache(LlamaRAMCache())
 
     async def _stream_tokens(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Async generator: yields tokens from a sync llama.cpp stream via a thread."""

@@ -7,7 +7,7 @@
 > **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31 — golden dataset helpers, regression gate, QA/retrieval sync).
 >
 > **Next tasks (recommended order):**
-> 1. **T-162** — Transitive dependency CVE mitigation (diskcache)
+> 1. **T-163** — Async llama.cpp streaming
 > 2. **T-171** — Mypy CI gate hardening
 > 3. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
@@ -2002,7 +2002,7 @@
 ---
 
 ### T-162 · Transitive Dependency CVE Mitigation (diskcache)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Formalize monitoring and mitigation for CVE-2025-69872 in `diskcache` (transitive via `llama-cpp-python`). No PyPI fix available as of 2025-06 — track upstream and apply compensating controls.
 - **Inputs:** T-161 (dependency scanning), T-030 (`llama_cpp_provider.py`), `pyproject.toml` CVE comment
 - **Outputs:** Documented risk acceptance, optional cache disable switch, automated upstream version check.
@@ -2226,5 +2226,5 @@ T-163 + T-164 + T-165 ──► T-172
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
-16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → **T-162** → T-163 → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-162**)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ → **T-163** → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-163**)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_
