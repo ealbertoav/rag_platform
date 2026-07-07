@@ -15,7 +15,6 @@ from packaging.version import InvalidVersion, Version
 CVE_ID = "CVE-2025-69872"
 PYPI_DISKCACHE_URL = "https://pypi.org/pypi/diskcache/json"
 VULNERABLE_MAX_VERSION = "5.6.3"
-PATCHED_MIN_VERSION = "5.6.4"
 WEAVE_MIN_PATCHED_VERSION = "5.6.3.post1"
 WEAVE_DIST_NAME = "diskcache-weave"
 DISKCACHE_DIST_NAME = "diskcache"
@@ -76,11 +75,26 @@ def get_installed_diskcache_info() -> tuple[str, str] | None:
     return None
 
 
+def exceeds_vulnerable_version_line(
+    version: str | None,
+    *,
+    vulnerable_max: str = VULNERABLE_MAX_VERSION,
+) -> bool:
+    """Return True when *version* is strictly newer than the known-vulnerable ceiling."""
+    if version is None:
+        return False
+    parsed = parse_version(version)
+    vulnerable_max_version = parse_version(vulnerable_max)
+    if parsed is None or vulnerable_max_version is None:
+        return False
+    return parsed > vulnerable_max_version
+
+
 def is_patched_installation(
     distribution: str,
     version: str,
     *,
-    patched_min: str = PATCHED_MIN_VERSION,
+    vulnerable_max: str = VULNERABLE_MAX_VERSION,
     weave_min: str = WEAVE_MIN_PATCHED_VERSION,
 ) -> bool:
     """Return True when the installed distribution satisfies T-162 mitigations."""
@@ -90,8 +104,7 @@ def is_patched_installation(
     if distribution == WEAVE_DIST_NAME:
         weave_min_version = parse_version(weave_min)
         return weave_min_version is not None and parsed >= weave_min_version
-    patched_min_version = parse_version(patched_min)
-    return patched_min_version is not None and parsed >= patched_min_version
+    return exceeds_vulnerable_version_line(version, vulnerable_max=vulnerable_max)
 
 
 def is_upstream_fix_available(
@@ -100,13 +113,7 @@ def is_upstream_fix_available(
     vulnerable_max: str = VULNERABLE_MAX_VERSION,
 ) -> bool:
     """Return True when PyPI publishes a release newer than the known-vulnerable line."""
-    if pypi_latest is None:
-        return False
-    latest = parse_version(pypi_latest)
-    vulnerable_max_version = parse_version(vulnerable_max)
-    if latest is None or vulnerable_max_version is None:
-        return False
-    return latest > vulnerable_max_version
+    return exceeds_vulnerable_version_line(pypi_latest, vulnerable_max=vulnerable_max)
 
 
 def check_diskcache_cve(

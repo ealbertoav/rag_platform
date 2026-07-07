@@ -38,4 +38,4 @@ Formal risk acceptance and compensating controls for accepted dependency CVEs.
 export LLM__DISABLE_DISK_CACHE=true
 ```
 
-When upstream `diskcache` publishes a fixed release above 5.6.3, upgrade the direct override in `pyproject.toml`, remove or renew the T-161 allowlist entry, and re-run `make audit-deps`.
+When upstream `diskcache` publishes a fixed release above 5.6.3 (including post-releases such as `5.6.3.post1`), upgrade the direct override in `pyproject.toml`, remove or renew the T-161 allowlist entry, and re-run `make audit-deps`.

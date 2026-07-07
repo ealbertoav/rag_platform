@@ -13,6 +13,7 @@ from src.core.diskcache_cve_check import (
     WEAVE_DIST_NAME,
     CheckExitCode,
     check_diskcache_cve,
+    exceeds_vulnerable_version_line,
     fetch_pypi_latest_version,
     get_installed_diskcache_info,
     is_patched_installation,
@@ -31,12 +32,32 @@ class TestParseVersion:
         assert parse_version("not-a-version") is None
 
 
+class TestExceedsVulnerableVersionLine:
+    def test_post_release_exceeds_vulnerable_ceiling(self):
+        assert exceeds_vulnerable_version_line("5.6.3.post1") is True
+
+    def test_vulnerable_line_does_not_exceed_itself(self):
+        assert exceeds_vulnerable_version_line("5.6.3") is False
+
+    def test_none_version_does_not_exceed(self):
+        assert exceeds_vulnerable_version_line(None) is False
+
+    def test_invalid_version_does_not_exceed(self):
+        assert exceeds_vulnerable_version_line("bad-version") is False
+
+    def test_invalid_vulnerable_max_does_not_exceed(self):
+        assert exceeds_vulnerable_version_line("5.6.4", vulnerable_max="bad-version") is False
+
+
 class TestUpstreamFixAvailability:
     def test_no_fix_when_latest_is_vulnerable_line(self):
         assert is_upstream_fix_available("5.6.3") is False
 
     def test_fix_available_when_latest_exceeds_vulnerable_max(self):
         assert is_upstream_fix_available("5.6.4") is True
+
+    def test_fix_available_when_latest_is_post_release(self):
+        assert is_upstream_fix_available("5.6.3.post1") is True
 
     def test_missing_latest_is_not_available(self):
         assert is_upstream_fix_available(None) is False
@@ -55,11 +76,20 @@ class TestPatchedInstallation:
     def test_upstream_patched_version(self):
         assert is_patched_installation("diskcache", "5.6.4") is True
 
+    def test_upstream_post_release_counts_as_patched(self):
+        assert is_patched_installation("diskcache", "5.6.3.post1") is True
+
     def test_upstream_vulnerable_version(self):
         assert is_patched_installation("diskcache", "5.6.3") is False
 
     def test_invalid_version_is_not_patched(self):
         assert is_patched_installation("diskcache", "bad-version") is False
+
+    def test_invalid_weave_min_is_not_patched(self):
+        assert (
+            is_patched_installation(WEAVE_DIST_NAME, "5.6.3.post1", weave_min="bad-version")
+            is False
+        )
 
 
 class TestCheckDiskcacheCve:
@@ -86,6 +116,14 @@ class TestCheckDiskcacheCve:
     def test_fix_available_with_upstream_patch_exits_ok(self):
         result = check_diskcache_cve(pypi_latest="5.6.4", installed=("diskcache", "5.6.4"))
         assert result.exit_code == CheckExitCode.OK
+
+    def test_fix_available_with_upstream_post_release_exits_ok(self):
+        result = check_diskcache_cve(
+            pypi_latest="5.6.3.post1",
+            installed=("diskcache", "5.6.3.post1"),
+        )
+        assert result.exit_code == CheckExitCode.OK
+        assert "mitigates" in result.message
 
     def test_fix_available_without_install_exits_two(self):
         result = check_diskcache_cve(pypi_latest="5.6.4", installed=None)
