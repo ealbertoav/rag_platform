@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 import time
 from collections.abc import AsyncIterator
-from threading import Lock
+from threading import Event, Lock
 from typing import TYPE_CHECKING, Any
 
 from src.core.exceptions import GenerationError
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 _tracer = get_tracer("rag-platform.llm")
 
 _SENTINEL = object()
-# Backpressure when many concurrent streams fill the bridge queue.
+# Backpressure when many concurrent streams fill the asyncio bridge queue.
 _STREAM_QUEUE_MAXSIZE = 256
 
 
@@ -75,8 +76,8 @@ class LlamaCppProvider(LLMRepository):
         """Return an async iterator that yields tokens as they are produced.
 
         Synchronous llama.cpp streaming runs in "asyncio.to_thread"; tokens
-        cross into the event loop via a bounded "asyncio.Queue" so consumers
-        await natively without "run_in_executor" polling.
+        cross into the event loop via an unbounded thread queue and a bounded
+        "asyncio.Queue" bridge so backpressure never blocks the inference lock.
         """
         return self._stream_tokens(prompt, context, **kwargs)
 
@@ -138,11 +139,9 @@ class LlamaCppProvider(LLMRepository):
     async def _stream_tokens(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Async generator: yields tokens from a sync llama.cpp stream via a thread."""
         full_prompt = _join(prompt, context)
-        loop = asyncio.get_running_loop()
+        thread_queue: queue.Queue[object] = queue.Queue()
         token_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
-
-        def _enqueue(item: object) -> None:
-            asyncio.run_coroutine_threadsafe(token_queue.put(item), loop).result()
+        cancelled = Event()
 
         def _producer() -> None:
             try:
@@ -155,17 +154,49 @@ class LlamaCppProvider(LLMRepository):
                         stop=self.stop_tokens,
                         stream=True,
                     ):
+                        if cancelled.is_set():
+                            break
                         choices = chunk["choices"]  # type: ignore[union-attr,index]
                         delta = str(choices[0]["delta"].get("content", ""))
                         if delta:
-                            _enqueue(delta)
+                            thread_queue.put(delta)
             except Exception as exc:
-                _enqueue(exc)
+                if not cancelled.is_set():
+                    thread_queue.put(exc)
             finally:
-                _enqueue(_SENTINEL)
+                thread_queue.put(_SENTINEL)
 
+        async def _bridge() -> None:
+            try:
+                while True:
+                    bridge_item = await asyncio.to_thread(thread_queue.get)
+                    if cancelled.is_set():
+                        if bridge_item is _SENTINEL:
+                            break
+                        continue
+                    await token_queue.put(bridge_item)
+                    if bridge_item is _SENTINEL:
+                        break
+            except Exception as exc:
+                if not cancelled.is_set():
+                    await token_queue.put(exc)
+                    await token_queue.put(_SENTINEL)
+
+        bridge_task = asyncio.create_task(_bridge())
         worker = asyncio.create_task(asyncio.to_thread(_producer))
         queue_wait_ms = 0.0
+
+        async def _release_worker() -> None:
+            cancelled.set()
+            # Drain only the asyncio queue so a blocked bridge put can resume.
+            # Do not drain thread_queue here: the bridge must still observe _SENTINEL.
+            while True:
+                try:
+                    token_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            await worker
+            await bridge_task
 
         with _tracer.start_as_current_span("llm.stream") as span:
             try:
@@ -182,7 +213,7 @@ class LlamaCppProvider(LLMRepository):
                         yield item
             finally:
                 span.set_attribute("queue_wait_ms", round(queue_wait_ms, 1))
-                await worker
+                await _release_worker()
 
 
 def _join(prompt: str, context: str) -> str:

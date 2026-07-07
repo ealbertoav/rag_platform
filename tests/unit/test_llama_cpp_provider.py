@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +13,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from src.core.exceptions import GenerationError
+from src.infrastructure.llm import llama_cpp_provider
 from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
 
 
@@ -30,13 +33,19 @@ def _provider(model: MagicMock | None = None) -> LlamaCppProvider:
 def _stream_mock(tokens: list[str], *, delay_s: float = 0.0) -> MagicMock:
     m = MagicMock()
 
-    def _iter_chunks(**_: object):
-        for token in tokens:
-            if delay_s:
-                import time
+    def _iter_chunks(**kwargs: object):
+        if not kwargs.get("stream"):
+            return {"choices": [{"message": {"content": "test response"}}]}
 
-                time.sleep(delay_s)
-            yield {"choices": [{"delta": {"content": token}}]}
+        def _token_stream():
+            for token in tokens:
+                if delay_s:
+                    import time
+
+                    time.sleep(delay_s)
+                yield {"choices": [{"delta": {"content": token}}]}
+
+        return _token_stream()
 
     m.create_chat_completion.side_effect = _iter_chunks
     return m
@@ -47,6 +56,53 @@ def _setup_span_exporter() -> tuple[TracerProvider, InMemorySpanExporter]:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     return provider, exporter
+
+
+def _async_gen(
+    provider: LlamaCppProvider, prompt: str, context: str = ""
+) -> AsyncGenerator[str, None]:
+    return cast(AsyncGenerator[str, None], provider.generate_stream(prompt, context))
+
+
+async def _collect_stream(provider: LlamaCppProvider, question: str) -> list[str]:
+    return [t async for t in provider.generate_stream(question, "")]
+
+
+def _token_stream_mock(count: int, *, delay_s: float = 0.005) -> MagicMock:
+    return _stream_mock([f"t{i}" for i in range(count)], delay_s=delay_s)
+
+
+async def _cancel_stream_after_first_token(
+    provider: LlamaCppProvider,
+    *,
+    prompt: str = "q",
+    expected_first: str = "t0",
+    queue_maxsize: int = 1,
+) -> None:
+    with patch.object(llama_cpp_provider, "_STREAM_QUEUE_MAXSIZE", queue_maxsize):
+        stream = _async_gen(provider, prompt)
+        assert await stream.__anext__() == expected_first
+        await asyncio.wait_for(stream.aclose(), timeout=2.0)
+
+
+async def _assert_generate_after_cancel(
+    provider: LlamaCppProvider, prompt: str = "after-cancel"
+) -> None:
+    result = await asyncio.wait_for(
+        asyncio.to_thread(provider.generate, prompt, ""),
+        timeout=2.0,
+    )
+    assert result == "test response"
+
+
+def _inference_lock_held(provider: LlamaCppProvider) -> bool:
+    """Return whether the provider serialization lock is currently held."""
+    lock = provider._lock  # noqa: SLF001
+    return lock.locked()
+
+
+async def _assert_lock_released(provider: LlamaCppProvider) -> None:
+    assert not _inference_lock_held(provider)
 
 
 class TestConcurrentStreaming:
@@ -112,6 +168,23 @@ class TestConcurrentStreaming:
         assert first == second == ["x", "y", "z"]
         assert second_ms <= first_ms * 1.05 + 1.0
 
+    @pytest.mark.asyncio
+    async def test_backpressure_does_not_block_inference_lock(self):
+        """Slow SSE consumers must not hold self._lock once tokens are produced."""
+        mock = _stream_mock([f"t{i}" for i in range(32)], delay_s=0.0)
+        provider = _provider(mock)
+
+        with patch.object(llama_cpp_provider, "_STREAM_QUEUE_MAXSIZE", 2):
+            stream = _async_gen(provider, "slow-consumer")
+            assert await stream.__anext__() == "t0"
+
+            result = await asyncio.wait_for(
+                asyncio.to_thread(provider.generate, "concurrent", ""),
+                timeout=2.0,
+            )
+            assert result == "test response"
+            await asyncio.wait_for(stream.aclose(), timeout=2.0)
+
 
 class TestStreamTracing:
     @pytest.mark.asyncio
@@ -145,3 +218,94 @@ class TestStreamTracing:
         with pytest.raises(GenerationError, match="stream failed"):
             async for _ in provider.generate_stream("prompt", "context"):
                 pass
+
+
+class TestStreamBridge:
+    @pytest.mark.asyncio
+    async def test_bridge_put_failure_raises_generation_error(self):
+        """Bridge delivery failures must surface as GenerationError, not empty output."""
+        provider = _provider(_stream_mock(["only"]))
+        real_put = asyncio.Queue.put
+        bridge_calls = 0
+
+        async def _failing_put(queue: asyncio.Queue[object], item: object) -> None:
+            nonlocal bridge_calls
+            bridge_calls += 1
+            if bridge_calls == 1 and isinstance(item, str):
+                raise RuntimeError("bridge put failed")
+            await real_put(queue, item)
+
+        with (
+            patch.object(asyncio.Queue, "put", _failing_put),
+            pytest.raises(GenerationError, match="stream failed") as exc_info,
+        ):
+            await _collect_stream(provider, "q")
+
+        assert isinstance(exc_info.value.cause, RuntimeError)
+        await _assert_lock_released(provider)
+
+    @pytest.mark.asyncio
+    async def test_bridge_drops_items_after_cancelled(self):
+        """Cover bridge discard path when cancellation races with pending thread items."""
+        provider = _provider(_token_stream_mock(8))
+        await _cancel_stream_after_first_token(provider)
+        await _assert_lock_released(provider)
+
+
+class TestStreamCancellation:
+    @pytest.mark.asyncio
+    async def test_early_close_releases_inference_lock(self):
+        """Client disconnect must not leave self._lock held (Bugbot T-163)."""
+        provider = _provider(_token_stream_mock(32))
+        await _cancel_stream_after_first_token(provider, queue_maxsize=2)
+        await _assert_generate_after_cancel(provider)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_stream_allows_subsequent_streams(self):
+        """A canceled stream must not block later streaming requests."""
+        provider = _provider(_stream_mock(["a", "b", "c"], delay_s=0.01))
+        await _cancel_stream_after_first_token(provider, expected_first="a")
+
+        tokens = await asyncio.wait_for(_collect_stream(provider, "q2"), timeout=2.0)
+        assert tokens == ["a", "b", "c"]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_stream_allows_generate_while_queue_saturated(self):
+        """Cover cancel during bridge backpressure without leaving the lock held."""
+        provider = _provider(_token_stream_mock(16, delay_s=0.01))
+        await _cancel_stream_after_first_token(provider)
+        await _assert_lock_released(provider)
+        await _assert_generate_after_cancel(provider)
+
+    @pytest.mark.asyncio
+    async def test_bridge_thread_get_failure_raises_generation_error(self):
+        """Cover the bridge exception handler when thread_queue.get fails."""
+        provider = _provider(_stream_mock(["x"]))
+        real_get = llama_cpp_provider.queue.Queue.get
+        calls = 0
+
+        def _failing_get(
+            thread_queue: llama_cpp_provider.queue.Queue,
+            block: bool = True,
+            timeout: float | None = None,
+        ) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("thread bridge failed")
+            return real_get(thread_queue, block, timeout)
+
+        with (
+            patch.object(llama_cpp_provider.queue.Queue, "get", _failing_get),
+            pytest.raises(GenerationError, match="stream failed") as exc_info,
+        ):
+            await _collect_stream(provider, "q")
+
+        assert isinstance(exc_info.value.cause, OSError)
+
+    @pytest.mark.asyncio
+    async def test_bridge_exits_on_sentinel_after_cancel(self):
+        """Cover bridge sentinel exit path after client disconnect."""
+        provider = _provider(_token_stream_mock(12))
+        await _cancel_stream_after_first_token(provider)
+        await _assert_lock_released(provider)
