@@ -11,6 +11,7 @@ import pytest
 
 from src.core.dependency_audit import (
     AuditStatus,
+    CveAllowlistEntry,
     DependencyVulnerability,
     audit_dependencies,
     cvss_v3_base_score,
@@ -93,7 +94,13 @@ class TestLoadAllowlist:
     def test_skips_invalid_entries(self, tmp_path: Path):
         path = tmp_path / "allowlist.yaml"
         path.write_text(
-            "entries:\n  - id: ''\n  - not-a-dict\n  - id: CVE-2024-9999\n",
+            "entries:\n"
+            "  - id: ''\n"
+            "  - not-a-dict\n"
+            "  - id: CVE-2024-9999\n"
+            "    packages: []\n"
+            "    reason: valid\n"
+            "    review_date: '2099-01-01'\n",
             encoding="utf-8",
         )
         entries = load_allowlist(path)
@@ -110,6 +117,51 @@ class TestLoadAllowlist:
         path.write_text("entries: []\n", encoding="utf-8")
         with patch.object(Path, "read_text", side_effect=OSError("denied")):
             assert load_allowlist(path) == []
+
+    def test_skips_entry_with_invalid_review_date(self, tmp_path: Path):
+        path = tmp_path / "allowlist.yaml"
+        path.write_text(
+            "entries:\n"
+            "  - id: CVE-2024-3333\n"
+            "    packages: []\n"
+            "    reason: bad date\n"
+            "    review_date: not-a-date\n",
+            encoding="utf-8",
+        )
+        assert load_allowlist(path) == []
+
+    def test_skips_entry_with_missing_review_date(self, tmp_path: Path):
+        path = tmp_path / "allowlist.yaml"
+        path.write_text(
+            "entries:\n  - id: CVE-2024-3333\n    packages: []\n    reason: no date\n",
+            encoding="utf-8",
+        )
+        assert load_allowlist(path) == []
+
+    def test_skips_entry_with_string_packages(self, tmp_path: Path):
+        path = tmp_path / "allowlist.yaml"
+        path.write_text(
+            "entries:\n"
+            "  - id: CVE-2024-4444\n"
+            "    packages: diskcache\n"
+            "    reason: wrong type\n"
+            "    review_date: '2099-01-01'\n",
+            encoding="utf-8",
+        )
+        assert load_allowlist(path) == []
+
+    def test_normalizes_package_names(self, tmp_path: Path):
+        path = tmp_path / "allowlist.yaml"
+        path.write_text(
+            "entries:\n"
+            "  - id: CVE-2024-5555\n"
+            "    packages: [Disk_Cache]\n"
+            "    reason: normalize\n"
+            "    review_date: '2099-01-01'\n",
+            encoding="utf-8",
+        )
+        entries = load_allowlist(path)
+        assert entries[0].packages == frozenset({"disk-cache"})
 
 
 class TestPipAuditParsing:
@@ -211,6 +263,16 @@ class TestAllowlistMatching:
         entries = load_allowlist(path)
         vuln = _vuln(vuln_id="CVE-2024-3333")
         assert is_allowlisted(vuln, entries) is False
+
+    def test_entry_without_review_date_not_allowlisted(self):
+        entry = CveAllowlistEntry(
+            cve_id="CVE-2024-0001",
+            packages=frozenset(),
+            reason="programmatic",
+            review_date=None,
+        )
+        vuln = _vuln(vuln_id="CVE-2024-0001")
+        assert is_allowlisted(vuln, [entry]) is False
 
 
 class TestCvssScoring:
@@ -348,6 +410,25 @@ class TestAuditDependencies:
         assert result.status == AuditStatus.PASSED
         assert len(result.low_severity) == 1
 
+    def test_invalid_allowlist_entry_does_not_suppress_blocking(self, tmp_path: Path):
+        allowlist = tmp_path / "allowlist.yaml"
+        allowlist.write_text(
+            "entries:\n"
+            "  - id: CVE-2024-0001\n"
+            "    packages: demo\n"
+            "    reason: string packages should not match\n"
+            "    review_date: '2099-01-01'\n",
+            encoding="utf-8",
+        )
+        output = _audit_output(_sample_audit_payload())
+        result = audit_dependencies(
+            audit_output=output,
+            allowlist_path=allowlist,
+            severity_lookup=lambda _id: 9.8,
+        )
+        assert result.status == AuditStatus.FAILED
+        assert len(result.blocking) == 1
+
 
 class TestMainAndHelpers:
     def test_main_exits_nonzero_on_failure(self):
@@ -421,19 +502,6 @@ class TestMainAndHelpers:
         with patch("src.core.dependency_audit.subprocess.run", return_value=completed):
             output = run_pip_audit()
         assert "CVE-2024-0001" in output
-
-    def test_load_allowlist_invalid_review_date(self, tmp_path: Path):
-        path = tmp_path / "allowlist.yaml"
-        path.write_text(
-            "entries:\n"
-            "  - id: CVE-2024-3333\n"
-            "    packages: []\n"
-            "    reason: bad date\n"
-            "    review_date: not-a-date\n",
-            encoding="utf-8",
-        )
-        entries = load_allowlist(path)
-        assert entries[0].review_date is None
 
     def test_cvss_scope_unchanged_high_impact(self):
         vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"

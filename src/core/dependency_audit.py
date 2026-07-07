@@ -72,6 +72,15 @@ def _parse_review_date(raw: object) -> date | None:
         return None
 
 
+def _parse_packages(raw: object) -> frozenset[str] | None:
+    """Return normalized package names or None when the field is not a list."""
+    if not isinstance(raw, list):
+        return None
+    return frozenset(
+        _normalize_package_name(pkg) for pkg in raw if isinstance(pkg, str) and pkg.strip()
+    )
+
+
 def load_allowlist(path: Path | None = None) -> list[CveAllowlistEntry]:
     """Load CVE allowlist entries from YAML."""
     allowlist_path = path or CVE_ALLOWLIST_PATH
@@ -93,21 +102,19 @@ def load_allowlist(path: Path | None = None) -> list[CveAllowlistEntry]:
         cve_id = entry.get("id")
         if not isinstance(cve_id, str) or not cve_id.strip():
             continue
-        packages_raw = entry.get("packages", [])
-        packages: set[str] = set()
-        if isinstance(packages_raw, list):
-            packages = {
-                _normalize_package_name(pkg)
-                for pkg in packages_raw
-                if isinstance(pkg, str) and pkg.strip()
-            }
+        packages = _parse_packages(entry.get("packages", []))
+        if packages is None:
+            continue
+        review_date = _parse_review_date(entry.get("review_date"))
+        if review_date is None:
+            continue
         reason = entry.get("reason", "")
         parsed.append(
             CveAllowlistEntry(
                 cve_id=cve_id.strip().upper(),
-                packages=frozenset(packages),
+                packages=packages,
                 reason=reason if isinstance(reason, str) else "",
-                review_date=_parse_review_date(entry.get("review_date")),
+                review_date=review_date,
             )
         )
     return parsed
@@ -182,11 +189,13 @@ def is_allowlisted(
     package = _normalize_package_name(vuln.package)
     ids = _vuln_ids(vuln)
     for entry in allowlist:
+        if entry.review_date is None:
+            continue
         if entry.cve_id not in ids:
             continue
         if entry.packages and package not in entry.packages:
             continue
-        if entry.review_date is not None and current > entry.review_date:
+        if current > entry.review_date:
             continue
         return True
     return False
