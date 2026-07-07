@@ -28,6 +28,10 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Golden dataset & CI eval gates (T-152):** Populate and validate `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json` via `make evals` (requires `make ingest` first; filters placeholders, expands chunks until ≥ 20 evaluable QA pairs). Sync retrieval goldens without LLM regeneration via `make sync-retrieval-goldens`. CI runs `scripts/check_regression_gate.py` when real data is committed — enforces QA/retrieval sync, minimum sample counts, and per-row oracle Recall@5 floors from `retrieval_baseline.json`. Extend evals with human-in-the-loop feedback via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152).
 
+> **Automated dependency scanning (T-161):** CI runs `pip-audit` on every PR via the `dependency-scan` job — blocks high/critical CVEs (CVSS ≥ 7.0) in direct and transitive dependencies. Known unfixable risks are allowlisted in `configs/cve-allowlist.yaml` with review dates. Run locally with `make audit-deps`. See [Automated Dependency Scanning (T-161)](#automated-dependency-scanning-t-161).
+
+> **diskcache CVE mitigation (T-162):** Compensating controls for CVE-2025-69872 (`diskcache` transitive via `llama-cpp-python`): `diskcache-weave` fork override, RAM-only prompt cache by default, emergency kill switch (`LLM__DISABLE_DISK_CACHE=true`), upstream PyPI monitor (`./scripts/check_diskcache_cve.sh`), and weekly Dependabot PRs for `llama-cpp-python`. Formal risk acceptance in [docs/security-advisories.md](docs/security-advisories.md). See [diskcache CVE Mitigation (T-162)](#diskcache-cve-mitigation-t-162).
+
 ---
 
 ## Table of Contents
@@ -62,6 +66,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Helm Chart](#helm-chart)
   - [Multi-Replica Feedback (T-146)](#multi-replica-feedback-t-146)
   - [API Rate Limiting (T-160)](#api-rate-limiting-t-160)
+  - [Automated Dependency Scanning (T-161)](#automated-dependency-scanning-t-161)
+  - [diskcache CVE Mitigation (T-162)](#diskcache-cve-mitigation-t-162)
   - [EKS Setup](#eks-setup)
 - [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag)
 - [Agentic RAG](#agentic-rag)
@@ -249,6 +255,7 @@ All configuration lives in `configs/*.yaml` with environment variable overrides.
 # Key settings (use __ as nested delimiter)
 LLM__MODEL_PATH=models/llm/your-model.gguf
 LLM__N_GPU_LAYERS=-1                       # -1 = all layers on Metal
+LLM__DISABLE_DISK_CACHE=false              # true disables llama.cpp prompt cache (T-162)
 EMBEDDINGS__PROVIDER=bge_m3                # bge_m3 | nomic | qwen_embedding | openai | voyage | cohere | gemini
 EMBEDDINGS__DEVICE=mps                     # mps | cuda | cpu
 QDRANT__URL=http://localhost:6333
@@ -338,6 +345,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151) |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
+| `configs/cve-allowlist.yaml` | Accepted CVE allowlist with review dates for `make audit-deps` (T-161/T-162) |
 
 ---
 
@@ -1361,6 +1369,51 @@ uv run pytest tests/unit/test_rate_limit.py -v
 
 Covers all protected routes, burst allowance, per-`X-API-Key` isolation, exempt/public paths, CORS on 429 responses, and regression checks that middleware test apps do not share limiter state.
 
+### Automated Dependency Scanning (T-161)
+
+Every pull request runs a `dependency-scan` CI job that audits the resolved dependency graph from `uv.lock` with [pip-audit](https://pypi.org/project/pip-audit/). High and critical findings (CVSS v3 base score ≥ 7.0) fail the build; medium and low findings are reported only.
+
+Known unfixable or accepted risks are recorded in `configs/cve-allowlist.yaml` with a mandatory `review_date`. Expired entries are ignored automatically — the scan fails until the CVE is fixed or the entry is renewed.
+
+```bash
+make audit-deps
+# or
+./scripts/check_dependencies.sh
+```
+
+Policy details: [docs/dependency-policy.md](docs/dependency-policy.md).
+
+```bash
+# Dependency audit unit tests (allowlist parsing, severity gate)
+uv run pytest tests/unit/test_dependency_audit.py -v
+```
+
+### diskcache CVE Mitigation (T-162)
+
+[CVE-2025-69872](https://nvd.nist.gov/vuln/detail/CVE-2025-69872) affects `diskcache` ≤ 5.6.3 (transitive via `llama-cpp-python`). Pickle-based disk prompt caches are the exposure path; this platform mitigates as follows:
+
+| Control | Detail |
+|---------|--------|
+| Fork override | `pyproject.toml` redirects transitive `diskcache` to `diskcache-weave>=5.6.3.post1` |
+| RAM-only cache | `LlamaCppProvider` uses `LlamaRAMCache` — never `LlamaDiskCache` |
+| Kill switch | `LLM__DISABLE_DISK_CACHE=true` disables all llama.cpp prompt caching |
+| Upstream monitor | `./scripts/check_diskcache_cve.sh` — exit 0 while no PyPI fix; exit 2 when a patched release is available but not applied |
+| Dependabot | Weekly `llama-cpp-python` update PRs (`.github/dependabot.yml`) |
+
+Formal risk acceptance, CVSS, and operator actions: [docs/security-advisories.md](docs/security-advisories.md). Allowlist entry in `configs/cve-allowlist.yaml` (next review **2026-09-01**).
+
+```bash
+LLM__DISABLE_DISK_CACHE=true   # emergency disable prompt caching
+./scripts/check_diskcache_cve.sh
+```
+
+```bash
+# diskcache CVE monitor + llama.cpp cache policy tests
+uv run pytest tests/unit/test_diskcache_cve_check.py tests/unit/test_llm.py -v -k "disk_cache or PromptCache or Diskcache"
+```
+
+When upstream `diskcache` publishes a fixed release above 5.6.3, upgrade the override in `pyproject.toml`, renew or remove the allowlist entry, and re-run `make audit-deps`.
+
 ### EKS Setup
 
 See **[infra/eks/README.md](infra/eks/README.md)** for the complete end-to-end guide covering:
@@ -1719,6 +1772,7 @@ rag_implementation/
 │   ├── neo4j.yaml              # Graph RAG + SQLite metadata store settings
 │   ├── evals.yaml
 │   ├── logging.yaml
+│   ├── cve-allowlist.yaml      # Accepted CVE allowlist for dependency audit (T-161/T-162)
 │   ├── prometheus.yml          # Prometheus scrape config (scrapes api:8000/metrics)
 │   └── otel-collector.yaml     # OTel collector — OTLP gRPC/HTTP receiver, debug exporter
 ├── data/                       # Runtime data (gitignored)
@@ -1749,6 +1803,8 @@ rag_implementation/
 │       ├── pvc-qdrant.yaml     # 50 Gi gp3 for Qdrant
 │       └── pvc-models.yaml     # 30 Gi ReadOnlyMany for model files (EFS on EKS)
 ├── docs/
+│   ├── dependency-policy.md    # pip-audit severity gate + allowlist process (T-161)
+│   ├── security-advisories.md  # Formal CVE risk acceptance (T-162 diskcache)
 │   └── operations/
 │       └── feedback-multi-replica.md  # T-146 deployment guide (HPA, backends, rate limits)
 ├── infra/
@@ -1765,6 +1821,10 @@ rag_implementation/
 │   ├── run_evals.py            # QA dataset generation CLI (T-152 chunk expansion)
 │   ├── sync_retrieval_golden.py # Sync retrieval goldens from QA without LLM (T-152)
 │   ├── check_regression_gate.py # CI regression gate entrypoint (T-152)
+│   ├── check_dependencies.py   # pip-audit wrapper (T-161)
+│   ├── check_dependencies.sh   # CI/local dependency scan entrypoint (T-161)
+│   ├── check_diskcache_cve.py  # diskcache upstream monitor (T-162)
+│   ├── check_diskcache_cve.sh  # CI/local diskcache CVE check entrypoint (T-162)
 │   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
 │   ├── benchmark_techniques.py # Technique matrix CLI (T-150)
 │   ├── benchmark_chunk_sizes.py # Chunk size sweep CLI (T-151)
@@ -1773,7 +1833,7 @@ rag_implementation/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
 ├── src/
 │   ├── api/                    # FastAPI routers + DI + rate_limit middleware (T-160)
-│   ├── core/                   # Settings, logging, exceptions
+│   ├── core/                   # Settings, logging, exceptions, diskcache_cve_check (T-162)
 │   ├── domain/                 # Entities, repository ABCs, services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
@@ -1806,7 +1866,9 @@ rag_implementation/
 │   └── unit/                   # 800+ unit tests (zero external deps)
 ├── .dockerignore
 ├── .env.example
-├── .github/workflows/ci.yml
+├── .github/
+│   ├── dependabot.yml          # Weekly llama-cpp-python updates (T-162)
+│   └── workflows/ci.yml        # dependency-scan · lint · unit · integration · regression
 ├── .pre-commit-config.yaml
 ├── docker-compose.yml          # Full local stack
 ├── docker-compose.override.yml # Dev overrides — hot-reload + Ollama LLM
@@ -1869,6 +1931,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make benchmark` | Run E2E benchmark |
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |
+| `make audit-deps` | Audit dependencies for high/critical CVEs (T-161) |
 | `make lint` | `ruff check` + `mypy` |
 | `make format` | `ruff format` + `ruff check --fix` |
 | `make test` | Unit + integration tests with coverage |
@@ -2696,12 +2759,15 @@ scrape_configs:
 
 ```mermaid
 flowchart LR
-    PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
-    L --> U["2️⃣ Unit Tests<br/>1760 tests<br/>coverage upload"]
-    U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
-    U --> R["4️⃣ Retrieval Regression<br/>check_regression_gate.py<br/>auto-skip if placeholder-only"]
+    PR["Pull Request<br/>or push to main"] --> D["1️⃣ Dependency Scan<br/>pip-audit · allowlist<br/>(T-161)"]
+    PR --> L["2️⃣ Lint<br/>ruff · mypy"]
+    D --> U["3️⃣ Unit Tests<br/>coverage upload"]
+    L --> U
+    U --> I["4️⃣ Integration Tests<br/>auto-skip if models absent"]
+    U --> R["5️⃣ Retrieval Regression<br/>check_regression_gate.py<br/>auto-skip if placeholder-only"]
 
-    L -->|fail| BLOCK["🚫 PR blocked"]
+    D -->|CVE fail| BLOCK["🚫 PR blocked"]
+    L -->|fail| BLOCK
     U -->|fail| BLOCK
     R -->|regression| BLOCK
     I & R -->|pass| MERGE["✅ Ready to merge"]
@@ -2709,6 +2775,8 @@ flowchart LR
     style BLOCK fill:#ffeeee,stroke:#cc0000
     style MERGE fill:#eeffee,stroke:#00aa00
 ```
+
+The `dependency-scan` job runs `./scripts/check_dependencies.sh` (same as `make audit-deps`). Operators can monitor upstream `diskcache` fixes locally with `./scripts/check_diskcache_cve.sh` (T-162); Dependabot opens weekly PRs for `llama-cpp-python` updates.
 
 ---
 
