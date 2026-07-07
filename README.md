@@ -1352,6 +1352,15 @@ flowchart LR
 
 Rejected requests increment `rag_rate_limit_rejected_total{path="..."}` on `/metrics`.
 
+**429 body:** `{"detail": "Rate limit exceeded"}` with a numeric `Retry-After` header (seconds until the sliding window allows the next request).
+
+```bash
+# Rate limit middleware unit tests (in-memory + Redis backends, no live services)
+uv run pytest tests/unit/test_rate_limit.py -v
+```
+
+Covers all protected routes, burst allowance, per-`X-API-Key` isolation, exempt/public paths, CORS on 429 responses, and regression checks that middleware test apps do not share limiter state.
+
 ### EKS Setup
 
 See **[infra/eks/README.md](infra/eks/README.md)** for the complete end-to-end guide covering:
