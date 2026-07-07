@@ -77,6 +77,8 @@ class TestLoadAllowlist:
     def test_loads_committed_allowlist(self):
         entries = load_allowlist()
         assert any(entry.cve_id == "CVE-2025-69872" for entry in entries)
+        diskcache_entry = next(entry for entry in entries if entry.cve_id == "CVE-2025-69872")
+        assert "docs/security-advisories.md" in diskcache_entry.reason
 
     def test_missing_file_returns_empty(self, tmp_path: Path):
         assert load_allowlist(tmp_path / "missing.yaml") == []

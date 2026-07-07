@@ -45,6 +45,7 @@ class LLMSettings(BaseModel):
     temperature: float = 0.1
     max_tokens: int = 2048
     stop_tokens: list[str] = Field(default_factory=lambda: ["<|im_end|>"])
+    disable_disk_cache: bool = False
 
 
 # ── API embedding provider config blocks (all optional) ───────────────────────

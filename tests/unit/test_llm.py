@@ -73,6 +73,42 @@ class TestInterface:
         p = LlamaCppProvider.from_settings()
         assert isinstance(p, LlamaCppProvider)
 
+    def test_from_settings_forwards_disable_disk_cache(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("LLM__DISABLE_DISK_CACHE", "true")
+        from src.core.settings import Settings
+
+        with patch("src.core.settings.settings", Settings()):
+            p = LlamaCppProvider.from_settings()
+        assert p.disable_disk_cache is True
+
+
+class TestPromptCachePolicy:
+    def test_disable_disk_cache_clears_prompt_cache(self):
+        llama = MagicMock()
+        p = LlamaCppProvider(model_path="fake/model.gguf", disable_disk_cache=True)
+        p._apply_prompt_cache_policy(llama)
+        llama.set_cache.assert_called_once_with(None)
+
+    def test_disk_cache_enabled_uses_ram_cache(self):
+        llama = MagicMock()
+        p = LlamaCppProvider(model_path="fake/model.gguf", disable_disk_cache=False)
+        with patch("llama_cpp.llama_cache.LlamaRAMCache") as ram_cache_cls:
+            ram_cache = MagicMock()
+            ram_cache_cls.return_value = ram_cache
+            p._apply_prompt_cache_policy(llama)
+        llama.set_cache.assert_called_once_with(ram_cache)
+
+    def test_get_model_applies_cache_policy(self):
+        llama = MagicMock()
+        p = LlamaCppProvider(model_path="fake/model.gguf", disable_disk_cache=True)
+        with (
+            patch("llama_cpp.Llama", return_value=llama),
+            patch.object(p, "_apply_prompt_cache_policy") as apply_policy,
+        ):
+            loaded = p._get_model()
+        assert loaded is llama
+        apply_policy.assert_called_once_with(llama)
+
 
 # ── generate ──────────────────────────────────────────────────────────────────
 

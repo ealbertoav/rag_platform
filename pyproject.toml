@@ -54,6 +54,7 @@ dependencies = [
     "opentelemetry-instrumentation-openai>=0.62.1",
     "pyrefly>=0.60.0",
     "basedpyright>=1.39.9",
+    "packaging>=26.2",
 ]
 
 [tool.uv]

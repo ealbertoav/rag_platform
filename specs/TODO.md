@@ -4,10 +4,10 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31 — golden dataset helpers, regression gate, QA/retrieval sync).
+> **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **T-162 complete** (PR #34 — diskcache CVE mitigation, upstream monitor, `LLM__DISABLE_DISK_CACHE`).
 >
 > **Next tasks (recommended order):**
-> 1. **T-162** — Transitive dependency CVE mitigation (diskcache)
+> 1. **T-163** — Async llama.cpp streaming
 > 2. **T-171** — Mypy CI gate hardening
 > 3. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
@@ -1940,6 +1940,8 @@
 > **Reference:** `CODE_ANALYSIS_REPORT.md` — Security checklist, Performance bottlenecks, Known vulnerabilities
 >
 > **Depends on:** Phase 3 (T-032 API), Phase 6 (T-061 CI), Phase 8 (T-082 Docker), Phase 9 (T-095 Ingress)
+>
+> **Progress:** T-160 complete · T-161 complete · T-162 complete (PR #34)
 
 ---
 
@@ -2002,20 +2004,33 @@
 ---
 
 ### T-162 · Transitive Dependency CVE Mitigation (diskcache)
-- **Status:** `[ ]`
+- **Status:** `[x]` _(PR #34)_
 - **Goal:** Formalize monitoring and mitigation for CVE-2025-69872 in `diskcache` (transitive via `llama-cpp-python`). No PyPI fix available as of 2025-06 — track upstream and apply compensating controls.
 - **Inputs:** T-161 (dependency scanning), T-030 (`llama_cpp_provider.py`), `pyproject.toml` CVE comment
 - **Outputs:** Documented risk acceptance, optional cache disable switch, automated upstream version check.
 - **Files:**
-  - `docs/security-advisories.md` — diskcache CVE entry with impact assessment and review schedule
-  - `src/core/settings.py` — add `llm.disable_disk_cache: bool = False` (passes through to llama-cpp if supported)
-  - `.github/dependabot.yml` — enable weekly dependency updates for `llama-cpp-python`
-  - `scripts/check_diskcache_cve.sh` — checks PyPI for patched `diskcache` release
+  - `docs/security-advisories.md` — diskcache CVE entry with impact assessment, compensating controls, and review schedule _(done)_
+  - `src/core/diskcache_cve_check.py` — PyPI monitor + version comparison (`exceeds_vulnerable_version_line`, post-release semantics) _(done)_
+  - `src/core/settings.py` — `llm.disable_disk_cache: bool = False` _(done)_
+  - `src/infrastructure/llm/llama_cpp_provider.py` — `_apply_prompt_cache_policy` (RAM-only or disabled via settings) _(done)_
+  - `configs/cve-allowlist.yaml` — allowlist reason links to `docs/security-advisories.md` _(done)_
+  - `.github/dependabot.yml` — weekly `llama-cpp-python` update PRs _(done)_
+  - `scripts/check_diskcache_cve.sh` / `scripts/check_diskcache_cve.py` — CI/local upstream monitor entrypoints _(done)_
+  - `.env.example` — `LLM__DISABLE_DISK_CACHE` _(done)_
+  - `tests/unit/test_diskcache_cve_check.py` — monitor logic, post-release versions, CLI entrypoint _(done)_
+  - `tests/unit/test_llm.py` — cache policy + `from_settings` forwarding _(done)_
+  - `tests/unit/test_settings.py` — `disable_disk_cache` env override _(done)_
+  - `README.md` — T-161/T-162 security docs _(done)_
 - **Acceptance Criteria:**
-  - CVE documented with CVSS, exposure path, and quarterly review date
-  - `LLM__DISABLE_DISK_CACHE=true` disables llama.cpp disk caching when exploit becomes active
-  - T-161 allowlist entry references T-162 doc with expiry date
-  - Script exits 0 when no fix available, exits 2 when fix is available but not applied
+  - [x] CVE documented with CVSS, exposure path, and quarterly review date
+  - [x] `LLM__DISABLE_DISK_CACHE=true` disables llama.cpp prompt caching when exploit becomes active
+  - [x] T-161 allowlist entry references T-162 doc with expiry date
+  - [x] Script exits 0 when no fix available, exits 2 when fix is available but not applied
+- **Usage:**
+  ```bash
+  ./scripts/check_diskcache_cve.sh          # exit 0 = no upstream fix yet; exit 2 = upgrade required
+  LLM__DISABLE_DISK_CACHE=true make serve # emergency kill switch
+  ```
 
 ---
 
@@ -2226,5 +2241,5 @@ T-163 + T-164 + T-165 ──► T-172
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
-16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → **T-162** → T-163 → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-162**)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → **T-163** → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-163**)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_
