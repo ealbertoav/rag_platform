@@ -23,15 +23,42 @@ from src.api.rate_limit import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_config():
+    """Keep the module-global rate-limit state from leaking between tests."""
+    configure_rate_limit(
+        enabled=False,
+        requests_per_minute=60,
+        burst=0,
+        limiter=InMemoryRateLimiter(60, 0),
+    )
+    yield
+    configure_rate_limit(
+        enabled=False,
+        requests_per_minute=60,
+        burst=0,
+        limiter=InMemoryRateLimiter(60, 0),
+    )
+
+
 def _app_with_middleware(
     *,
     enabled: bool = True,
     rpm: int = 2,
     burst: int = 0,
-    limiter: InMemoryRateLimiter | None = None,
+    limiter: InMemoryRateLimiter | RedisRateLimiter | None = None,
     cors_origins: list[str] | None = None,
 ) -> FastAPI:
-    configure_rate_limit(enabled=enabled, requests_per_minute=rpm, burst=burst, limiter=limiter)
+    # Pin an in-memory limiter so middleware tests stay isolated from real Redis.
+    # configure_rate_limit() otherwise calls try_build_redis_rate_limiter(), which
+    # shares sliding-window keys across apps/parametrized cases on the same client IP.
+    limiter_val = limiter if limiter is not None else InMemoryRateLimiter(rpm, burst)
+    configure_rate_limit(
+        enabled=enabled,
+        requests_per_minute=rpm,
+        burst=burst,
+        limiter=limiter_val,
+    )
     app = FastAPI()
     app.add_middleware(RateLimitHTTPMiddleware)
     app.add_middleware(
@@ -62,6 +89,10 @@ def _app_with_middleware(
     async def chat() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.post("/chat/agent")
+    async def chat_agent() -> dict[str, str]:
+        return {"status": "ok"}
+
     @app.get("/ingest/path")
     async def ingest_path() -> dict[str, str]:
         return {"status": "ok"}
@@ -77,11 +108,28 @@ def _app_with_middleware(
     return app
 
 
+class TestAppWithMiddleware:
+    def test_defaults_to_in_memory_limiter(self):
+        _app_with_middleware(enabled=True, rpm=1, burst=0)
+        from src.api.rate_limit import _config
+
+        assert isinstance(_config.limiter, InMemoryRateLimiter)
+
+    def test_does_not_call_redis_builder_when_limiter_unspecified(self):
+        with patch("src.api.rate_limit.try_build_redis_rate_limiter") as try_redis:
+            _app_with_middleware(enabled=True, rpm=1, burst=0)
+        try_redis.assert_not_called()
+
+
 class TestRateLimitHelpers:
     def test_protected_paths(self):
         assert is_protected_path("/feedback") is True
         assert is_protected_path("/feedback/extra") is True
         assert is_protected_path("/chat/stream") is True
+        assert is_protected_path("/chat/agent") is True
+        assert is_protected_path("/chat/agent/full") is True
+        assert is_protected_path("/ingest") is True
+        assert is_protected_path("/evals/run") is True
         assert is_protected_path("/health") is False
         assert is_protected_path("/metrics") is False
         assert is_protected_path("/public") is False
@@ -114,6 +162,12 @@ class TestRateLimitHelpers:
         request.client = None
         assert client_key(request) == "ip:203.0.113.1"
 
+    def test_client_key_uses_direct_ip(self):
+        request = MagicMock()
+        request.headers = {}
+        request.client = MagicMock(host="192.168.1.50")
+        assert client_key(request) == "ip:192.168.1.50"
+
     def test_client_key_unknown_when_no_client(self):
         request = MagicMock()
         request.headers = {}
@@ -133,6 +187,20 @@ class TestInMemoryRateLimiter:
         allowed, retry_after = limiter.allow("client-a")
         assert allowed is False
         assert retry_after >= 1
+
+    def test_burst_allows_extra_requests(self):
+        limiter = InMemoryRateLimiter(requests_per_minute=1, burst=2)
+        assert limiter.allow("client-a")[0] is True
+        assert limiter.allow("client-a")[0] is True
+        assert limiter.allow("client-a")[0] is True
+        assert limiter.allow("client-a")[0] is False
+
+    def test_separate_keys_have_independent_limits(self):
+        limiter = InMemoryRateLimiter(requests_per_minute=1, burst=0)
+        assert limiter.allow("client-a")[0] is True
+        assert limiter.allow("client-b")[0] is True
+        assert limiter.allow("client-a")[0] is False
+        assert limiter.allow("client-b")[0] is False
 
     def test_expires_old_events_from_window(self, monkeypatch):
         limiter = InMemoryRateLimiter(requests_per_minute=1, burst=0)
@@ -207,6 +275,65 @@ class TestRateLimitMiddleware:
             resp = await client.post("/feedback")
             assert resp.status_code == 429
             assert resp.headers.get("Retry-After") is not None
+            assert resp.json() == {"detail": "Rate limit exceeded"}
+
+    async def test_sequential_apps_have_isolated_limiter_state(self):
+        """Regression: a fresh app must not inherit another app's client quota."""
+        app_a = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(
+            transport=ASGITransport(app=app_a),
+            base_url="http://test",
+        ) as client:
+            assert (await client.post("/feedback")).status_code == 200
+            assert (await client.post("/feedback")).status_code == 429
+
+        app_b = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(
+            transport=ASGITransport(app=app_b),
+            base_url="http://test",
+        ) as client:
+            assert (await client.get("/chat")).status_code == 200
+
+    @pytest.mark.parametrize(
+        "method,path",
+        [
+            ("post", "/feedback"),
+            ("get", "/chat"),
+            ("post", "/chat/agent"),
+            ("get", "/ingest/path"),
+            ("get", "/evals/run"),
+        ],
+    )
+    async def test_protected_routes_return_429_when_exceeded(self, method: str, path: str):
+        app = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            first = await client.request(method, path)
+            assert first.status_code == 200
+            second = await client.request(method, path)
+            assert second.status_code == 429
+
+    async def test_public_route_not_rate_limited(self):
+        app = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/feedback")
+            for _ in range(5):
+                assert (await client.get("/public")).status_code == 200
+
+    async def test_per_api_key_isolation(self):
+        app = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            assert (
+                await client.post("/feedback", headers={"X-API-Key": "key-a"})
+            ).status_code == 200
+            assert (
+                await client.post("/feedback", headers={"X-API-Key": "key-b"})
+            ).status_code == 200
+            assert (
+                await client.post("/feedback", headers={"X-API-Key": "key-a"})
+            ).status_code == 429
+            assert (
+                await client.post("/feedback", headers={"X-API-Key": "key-b"})
+            ).status_code == 429
 
     async def test_429_includes_cors_headers_for_cross_origin(self):
         app = _app_with_middleware(enabled=True, rpm=1, burst=0)
@@ -255,8 +382,14 @@ class TestRateLimitConfiguration:
         import logging
 
         with caplog.at_level(logging.INFO, logger="src.api.rate_limit"):
-            configure_rate_limit(enabled=True, requests_per_minute=30, burst=5)
+            configure_rate_limit(
+                enabled=True,
+                requests_per_minute=30,
+                burst=5,
+                limiter=InMemoryRateLimiter(30, 5),
+            )
         assert "API rate limiting enabled" in caplog.text
+        assert "in-memory" in caplog.text
 
     def test_prefers_redis_limiter_when_available(self):
         mock_client = MagicMock()
@@ -273,4 +406,13 @@ class TestRateLimitConfiguration:
             side_effect=OSError("down"),
         ):
             config = configure_rate_limit(enabled=True, requests_per_minute=30, burst=5)
+        assert isinstance(config.limiter, InMemoryRateLimiter)
+
+    def test_uses_settings_defaults_when_no_overrides(self):
+        with patch(
+            "src.api.rate_limit.build_redis_client",
+            side_effect=OSError("down"),
+        ):
+            config = configure_rate_limit()
+        assert config.enabled is False
         assert isinstance(config.limiter, InMemoryRateLimiter)

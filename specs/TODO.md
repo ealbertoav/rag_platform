@@ -1957,7 +1957,7 @@
   - `src/main.py` — register `RateLimitHTTPMiddleware` + `CORSMiddleware` _(done)_
   - `src/infrastructure/cache/redis_client.py` — shared Redis client for rate limit + feedback backend _(done)_
   - `src/observability/metrics.py` — `rag_rate_limit_rejected_total{path}` counter _(done)_
-  - `tests/unit/test_rate_limit.py` — protected routes, exempt paths, Redis/in-memory backends, 429 + Retry-After _(done)_
+  - `tests/unit/test_rate_limit.py` — protected routes (all five prefixes), exempt/public paths, burst allowance, per-key isolation, Redis/in-memory backends, 429 body + `Retry-After`, CORS on 429, autouse config reset, middleware state isolation regression _(done)_
   - `tests/unit/test_redis_client.py` — Redis client helper _(done)_
   - `README.md` — T-160 config, middleware flow, metrics _(done)_
 - **Config schema:**
@@ -1974,9 +1974,14 @@
   - [x] `/health` and `/metrics` exempt from rate limiting
   - [x] `/feedback` included in protected routes when rate limiting enabled (closes T-146 gap)
   - [x] Redis unavailable → in-memory limiter with warning log (graceful degradation)
-  - [x] `pytest tests/unit/test_rate_limit.py` passes
+  - [x] `pytest tests/unit/test_rate_limit.py` passes (38 tests)
   - [x] Client key prefers `X-API-Key`, then `X-Forwarded-For`, then direct IP
   - [x] `OPTIONS` preflight exempt from rate limiting (CORS compatibility)
+  - [x] Burst allows `requests_per_minute + burst` requests per window (in-memory limiter)
+  - [x] Separate client keys (`X-API-Key` / IP) have independent quotas
+  - [x] Middleware test harness pins in-memory limiter — no cross-test Redis key leakage
+  - [x] Sequential test apps do not inherit another app's client quota (regression)
+  - [x] 429 response body is `{"detail": "Rate limit exceeded"}`
 
 ---
 
