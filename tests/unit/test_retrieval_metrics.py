@@ -11,7 +11,7 @@ from src.evals.retrieval import MetricsAtK, RetrievalEvaluator, RetrievalSample
 from src.evals.retrieval.mrr import mrr
 from src.evals.retrieval.ndcg import ndcg_at_k
 from src.evals.retrieval.precision_at_k import precision_at_k
-from src.evals.retrieval.recall_at_k import recall_at_k
+from src.evals.retrieval.recall_at_k import oracle_recall_at_k, recall_at_k
 
 # ── recall_at_k ────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,29 @@ class TestRecallAtK:
     def test_result_in_zero_one(self):
         score = recall_at_k(["a", "b", "c"], ["a", "b", "d"], k=5)
         assert 0.0 <= score <= 1.0
+
+
+class TestOracleRecallAtK:
+    def test_perfect_oracle_single_chunk(self):
+        assert oracle_recall_at_k(["a"], k=5) == pytest.approx(1.0)
+
+    def test_perfect_oracle_multi_chunk_within_k(self):
+        assert oracle_recall_at_k(["a", "b", "c"], k=5) == pytest.approx(1.0)
+
+    def test_perfect_oracle_multi_chunk_exceeds_k(self):
+        ids = [f"c{i}" for i in range(12)]
+        assert oracle_recall_at_k(ids, k=5) == pytest.approx(1.0)
+
+    def test_oracle_differs_from_standard_recall_when_many_relevant(self):
+        ids = [f"c{i}" for i in range(12)]
+        assert recall_at_k(ids, ids, k=5) == pytest.approx(5 / 12)
+        assert oracle_recall_at_k(ids, k=5) == pytest.approx(1.0)
+
+    def test_empty_relevant_returns_zero(self):
+        assert oracle_recall_at_k([], k=5) == pytest.approx(0.0)
+
+    def test_k_zero_returns_zero(self):
+        assert oracle_recall_at_k(["a", "b"], k=0) == pytest.approx(0.0)
 
 
 # ── precision_at_k ─────────────────────────────────────────────────────────────

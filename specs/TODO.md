@@ -4,11 +4,11 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 15 — Evaluation Operationalization. **T-151 ✅ done** (PR #30 — chunk size sweep, `make benchmark-chunk-sizes`, `ChunkSizeSweep` orchestrator, per-size Qdrant collections + chunk/BM25 caches).
+> **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31 — golden dataset helpers, regression gate, QA/retrieval sync).
 >
 > **Next tasks (recommended order):**
-> 1. **T-152** — Populate golden QA dataset + CI eval regression gates
-> 2. **T-161 / T-162** — Phase 16 production hardening (secrets, health probes)
+> 1. **T-161** — Automated dependency scanning (CI)
+> 2. **T-162** — Transitive dependency CVE mitigation (diskcache)
 > 3. **T-171** — Mypy CI gate hardening
 > 4. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
@@ -1814,7 +1814,7 @@
 >
 > **Depends on:** Phase 4 (T-040–T-043), Phase 11–14 technique flags
 >
-> **Progress:** T-150 complete · T-151 complete · T-152 remaining
+> **Progress:** T-150 complete (PR #29) · T-151 complete (PR #30) · T-152 complete (PR #31)
 
 ---
 
@@ -1892,21 +1892,45 @@
 ---
 
 ### T-152 · Golden Dataset Population & CI Gate Hardening
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Replace placeholder golden dataset rows with real QA pairs and enforce eval regression gates in CI — closes the gap identified vs RAG_Techniques eval operationalization. Static analysis gate hardening tracked separately in **T-171**.
 - **Inputs:** T-040 (`SyntheticDatasetBuilder`), T-044 (`/evals/run`), T-061 (CI pipeline)
-- **Outputs:** Populated `datasets/goldens/qa_dataset.json`; CI fails on metric regression with real data.
+- **Outputs:** Populated `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json`; modular CI regression gate that skips on placeholder-only data and fails on metric/sync regressions with real data.
 - **Files:**
-  - `datasets/goldens/qa_dataset.json` — populated by `make evals`
-  - `scripts/run_evals.py` — ensure minimum N pairs generated
-  - `.github/workflows/ci.yml` — retrieval regression gate uses real thresholds
-  - `tests/benchmarks/test_retrieval_evals.py` — baseline comparison
-  - `Makefile` — `evals` target documents prerequisite (`make ingest` first)
+  - `src/evals/golden_dataset.py` — placeholder detection (`is_placeholder_*`), evaluable QA filtering (`is_evaluable_qa_pair`, `filter_real_qa_pairs`), QA→retrieval conversion (`qa_dicts_to_retrieval_rows`), sync (`sync_retrieval_from_qa`, `retrieval_rows_match_qa`), chunk expansion (`generate_until_min_pairs`, `resolve_max_chunks`, `resolve_retrieval_output_path`)
+  - `src/evals/regression_gate.py` — `check_regression_gate()`: min sample counts, QA/retrieval sync, per-row oracle Recall@5 via `oracle_recall_at_k`
+  - `src/evals/retrieval/recall_at_k.py` — `oracle_recall_at_k` for multi-chunk ground-truth recall
+  - `scripts/run_evals.py` — adaptive chunk iteration, minimum pair enforcement, auto-sync retrieval output
+  - `scripts/sync_retrieval_golden.py` — CLI for `make sync-retrieval-goldens`
+  - `scripts/check_regression_gate.py` — CI entrypoint (exit 1 on failure)
+  - `datasets/goldens/qa_dataset.json` — populated real QA pairs (≥ 20)
+  - `datasets/goldens/retrieval_dataset.json` — synced retrieval rows with `relevant_chunk_ids`
+  - `datasets/goldens/retrieval_baseline.json` — committed thresholds (`min_samples`, `min_recall_at_5`)
+  - `configs/evals.yaml` — `min_qa_pairs`, `retrieval_baseline_path`, `retrieval.regression.min_recall_at_5`
+  - `.github/workflows/ci.yml` — `retrieval-regression` job calls `check_regression_gate.py` (replaces inline assertions)
+  - `Makefile` — `evals` and `sync-retrieval-goldens` targets
+  - `tests/unit/test_golden_dataset.py` — placeholder filtering, sync, chunk expansion
+  - `tests/unit/test_regression_gate.py` — gate pass/fail/skip scenarios
+  - `tests/unit/test_sync_retrieval_golden.py` — sync CLI coverage
+  - `tests/unit/test_run_evals.py` — chunk iteration and path resolution
+  - `tests/unit/test_committed_goldens.py` — committed dataset invariants
+  - `tests/benchmarks/test_retrieval_evals.py` — live retrieval benchmark with baseline comparison
+- **Usage:**
+  ```bash
+  make ingest SOURCE=data/raw/
+  make evals
+  make sync-retrieval-goldens   # after manual QA edits
+  uv run python scripts/check_regression_gate.py
+  ```
 - **Acceptance Criteria:**
-  - `make evals` generates ≥ 20 QA pairs from ingested documents
+  - `make evals` generates ≥ 20 evaluable QA pairs from ingested documents (placeholder rows filtered)
+  - `generate_until_min_pairs` expands chunk coverage when dedup leaves fewer than `min_pairs`
+  - `make sync-retrieval-goldens` rebuilds retrieval rows from QA without LLM regeneration
+  - `retrieval_rows_match_qa` fails regression gate when datasets are out of sync
   - `POST /evals/run` returns 200 (not 204) after evals
-  - CI retrieval regression job runs when real golden data present
-  - README documents eval setup workflow and links to T-145 feedback loop + [docs/operations/feedback-multi-replica.md](../docs/operations/feedback-multi-replica.md) for human-in-the-loop eval extensions
+  - CI `retrieval-regression` job runs `check_regression_gate.py`; skips on placeholder-only data; enforces min samples, sync, and oracle Recall@5 floors with real data
+  - README documents eval setup workflow, mermaid flows, and links to T-145 feedback loop + [docs/operations/feedback-multi-replica.md](../docs/operations/feedback-multi-replica.md) for human-in-the-loop eval extensions
+- **Notes:** Oracle Recall@5 uses ground-truth `relevant_chunk_ids` (not live retrieval). Gate failure message recommends `make sync-retrieval-goldens` when sync check fails. `baseline_int` / `baseline_float` coerce committed baseline values safely.
 
 ---
 
@@ -2197,6 +2221,6 @@ T-163 + T-164 + T-165 ──► T-172
 12. **Phase 12 — Priority 2 (Index-Time Enrichment):** T-120 → T-121 → T-122 → T-123 → T-124 → T-125 → T-126 _(~3 sessions)_
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
-15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 _(~1 session; T-150 done in PR #29, T-151 done in PR #30)_
-16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 → T-162 → T-163 → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28)_
+15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → **T-161** → T-162 → T-163 → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-161**)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_

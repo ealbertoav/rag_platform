@@ -26,6 +26,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Chunk size sweep (T-151):** Automate chunk-size tuning by benchmarking multiple `chunk_size` values on the golden QA dataset — each size gets an isolated Qdrant collection (`rag_documents_cs{size}`), optional on-disk chunk/BM25 caches, and a weighted recommendation across Recall@5, Faithfulness, Relevance, and latency. Results export to `data/exports/chunk_size_sweep_{timestamp}.json`. See [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151).
 
+> **Golden dataset & CI eval gates (T-152):** Populate and validate `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json` via `make evals` (requires `make ingest` first; filters placeholders, expands chunks until ≥ 20 evaluable QA pairs). Sync retrieval goldens without LLM regeneration via `make sync-retrieval-goldens`. CI runs `scripts/check_regression_gate.py` when real data is committed — enforces QA/retrieval sync, minimum sample counts, and per-row oracle Recall@5 floors from `retrieval_baseline.json`. Extend evals with human-in-the-loop feedback via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152).
+
 ---
 
 ## Table of Contents
@@ -50,6 +52,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
   - [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151)
+  - [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
@@ -333,7 +336,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
-| `configs/evals.yaml` | Evaluation thresholds, dataset paths, technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151) |
+| `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151) |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
 
 ---
@@ -761,16 +764,36 @@ See [Agentic RAG](#agentic-rag) for action types and when to use the agent endpo
 
 ### Run Evaluations
 
+Golden eval datasets live under `datasets/goldens/`. The repo ships a starter corpus (22 QA pairs); regenerate from your own ingested documents before production benchmarking.
+
 ```bash
-# Generate synthetic QA pairs from ingested documents
+# 1. Ingest documents (prerequisite — populates BM25 + Qdrant)
+make ingest SOURCE=data/raw/
+
+# 2. Generate ≥ 20 evaluable QA pairs (auto-syncs retrieval goldens)
 make evals
+
+# 3. Re-sync retrieval rows after manual QA edits (no LLM regeneration)
+make sync-retrieval-goldens
 
 # With options
 uv run python scripts/run_evals.py \
   --n-pairs 5 \
-  --max-chunks 100 \
-  --output datasets/synthetic/my_dataset.json
+  --min-pairs 20 \
+  --max-chunks 100
 ```
+
+`make evals` writes:
+
+| File | Purpose |
+|------|---------|
+| `datasets/goldens/qa_dataset.json` | End-to-end RAG benchmark (`POST /evals/run`, `make benchmark`) |
+| `datasets/goldens/retrieval_dataset.json` | Retrieval-only Recall@K regression (`tests/benchmarks/test_retrieval_evals.py`) |
+| `datasets/goldens/retrieval_baseline.json` | Committed regression thresholds (`min_samples`, `min_recall_at_5`) for CI |
+
+Placeholder rows (e.g. `chunk-placeholder-1`) are filtered at generation and eval time via `src/evals/golden_dataset.py`. `make sync-retrieval-goldens` rebuilds `retrieval_dataset.json` from evaluable QA rows when you edit QA goldens by hand.
+
+See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152) for the full workflow and CI gate behavior.
 
 ### Rebuild Embeddings
 
@@ -990,6 +1013,68 @@ Recommended chunk_size: 500
 When the golden file contains only placeholder `chunk_id_*` rows, the script exits 0 with a skip report (populate real pairs via `make evals` first). `--dry-run` always succeeds and writes the planned sweep to `data/exports/chunk_size_sweep_{timestamp}.json`. Full results use the same path pattern.
 
 **Default sizes** (defined in `configs/evals.yaml` → `evals.chunk_size_sweep.sizes`): `256`, `500`, `768`, `1024`.
+
+---
+
+### Golden Dataset & Eval Regression Gates (T-152)
+
+Operationalize evaluation with real golden data, QA/retrieval sync validation, and modular CI regression gates.
+
+**Workflow:**
+
+```mermaid
+flowchart LR
+    ING["make ingest<br/>SOURCE=data/raw/"] --> EVALS["make evals<br/>generate_until_min_pairs<br/>≥ 20 evaluable pairs"]
+    EVALS --> FILTER["filter placeholders<br/>is_evaluable_qa_pair"]
+    FILTER --> QA[("qa_dataset.json")]
+    EVALS --> RET[("retrieval_dataset.json")]
+    QA --> SYNC["make sync-retrieval-goldens<br/>(optional · no LLM)"]
+    SYNC --> RET
+    QA --> API["POST /evals/run<br/>200 OK"]
+    QA --> BENCH["make benchmark"]
+    RET --> GATE["check_regression_gate.py"]
+    BASE[("retrieval_baseline.json")] --> GATE
+    GATE -->|pass| CI["CI retrieval-regression ✅"]
+    GATE -->|fail| BLOCK["CI blocked ❌"]
+```
+
+1. **Ingest** — `make ingest SOURCE=...` populates BM25 (required by `SyntheticDatasetBuilder`).
+2. **Generate goldens** — `make evals` progressively expands chunk coverage (`generate_until_min_pairs`) until ≥ 20 evaluable QA pairs are produced; placeholder rows are filtered; retrieval rows are auto-synced from QA content.
+3. **Manual QA edits** — after editing `qa_dataset.json` by hand, run `make sync-retrieval-goldens` to rebuild `retrieval_dataset.json` without LLM regeneration.
+4. **Run live evals** — `POST /evals/run` returns `200` with metric summary when real pairs are present (`204` when empty/placeholder-only).
+5. **CI regression** — the `retrieval-regression` job runs `scripts/check_regression_gate.py`, which skips gracefully on placeholder-only data and otherwise enforces:
+   - minimum real sample counts in both QA and retrieval datasets
+   - `retrieval_rows_match_qa` sync between datasets
+   - per-row oracle Recall@5 ≥ `min_recall_at_5` (ground-truth `relevant_chunk_ids` via `oracle_recall_at_k`)
+
+**Key modules:**
+
+| Module | Role |
+|--------|------|
+| `src/evals/golden_dataset.py` | Placeholder detection, evaluable QA filtering, QA→retrieval conversion, chunk expansion, sync helpers |
+| `src/evals/regression_gate.py` | `check_regression_gate()` — sample counts, sync check, oracle Recall@5 floors |
+| `scripts/check_regression_gate.py` | CI entrypoint (exit 1 on failure) |
+| `scripts/sync_retrieval_golden.py` | CLI for `make sync-retrieval-goldens` |
+
+**Human-in-the-loop extensions:** seed chunk relevance via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) (`POST /feedback`) and follow [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md) for multi-replica feedback before relying on feedback-driven ranking in production evals.
+
+**Regression config** (`configs/evals.yaml` + `datasets/goldens/retrieval_baseline.json`):
+
+```yaml
+evals:
+  min_qa_pairs: 20
+  retrieval:
+    regression:
+      min_recall_at_5: 0.5
+```
+
+```json
+{
+  "min_samples": 20,
+  "min_recall_at_5": 0.5,
+  "oracle_recall_at_5": 1.0
+}
+```
 
 ---
 
@@ -1632,7 +1717,10 @@ rag_implementation/
 │   ├── processed/              # BM25 index (.pkl)
 │   └── exports/                # Benchmark results (.json)
 ├── datasets/
-│   ├── goldens/                # Golden QA + retrieval datasets
+│   ├── goldens/                # Golden QA + retrieval datasets + regression baseline (T-152)
+│   │   ├── qa_dataset.json
+│   │   ├── retrieval_dataset.json
+│   │   └── retrieval_baseline.json
 │   └── synthetic/              # LLM-generated QA pairs
 ├── docker/                     # Dockerfiles (one per service)
 │   ├── Dockerfile.api          # Multi-stage build for FastAPI server
@@ -1665,7 +1753,9 @@ rag_implementation/
 │   ├── _benchmark_utils.py     # Shared CLI utilities (load QA, apply LLM config)
 │   ├── ingest.py               # Document ingestion CLI
 │   ├── rebuild_embeddings.py   # Re-embed all chunks → Qdrant (model migration)
-│   ├── run_evals.py            # QA dataset generation CLI
+│   ├── run_evals.py            # QA dataset generation CLI (T-152 chunk expansion)
+│   ├── sync_retrieval_golden.py # Sync retrieval goldens from QA without LLM (T-152)
+│   ├── check_regression_gate.py # CI regression gate entrypoint (T-152)
 │   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
 │   ├── benchmark_techniques.py # Technique matrix CLI (T-150)
 │   ├── benchmark_chunk_sizes.py # Chunk size sweep CLI (T-151)
@@ -1677,7 +1767,9 @@ rag_implementation/
 │   ├── core/                   # Settings, logging, exceptions
 │   ├── domain/                 # Entities, repository ABCs, services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
-│   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR
+│   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
+│   │   ├── regression_gate.py  # CI regression gate logic (T-152)
+│   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · benchmark_samples helpers
 │   ├── infrastructure/         # BGE-M3, Qdrant, BM25, feedback_store (T-146), Redis client, Neo4j, SQLite metadata, llama.cpp, web search
@@ -1763,7 +1855,8 @@ EMBEDDINGS__DEVICE=cpu
 | `make install` | `uv sync --extra dev --extra evals` |
 | `make serve` | Start API server natively (Metal/MPS) |
 | `make ingest SOURCE=path` | Ingest a file or directory |
-| `make evals` | Generate synthetic QA dataset |
+| `make evals` | Generate golden QA + retrieval datasets (requires `make ingest` first; T-152) |
+| `make sync-retrieval-goldens` | Rebuild retrieval goldens from QA without LLM regeneration (T-152) |
 | `make benchmark` | Run E2E benchmark |
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |
@@ -2429,7 +2522,7 @@ Per-request retrieval constraints for scoped Q&A — inspired by multi-faceted f
 
 ## Evaluation Framework
 
-The platform ships four evaluation layers: synthetic dataset generation (T-040), retrieval metrics (T-041), generation metrics (T-042), end-to-end benchmarking (T-043/T-044), optional **technique comparison** (T-150) for side-by-side RAG configuration tuning, and **chunk size optimization** (T-151) for corpus-specific chunking tuning.
+The platform ships four evaluation layers: synthetic dataset generation (T-040), retrieval metrics (T-041), generation metrics (T-042), end-to-end benchmarking (T-043/T-044), optional **technique comparison** (T-150) for side-by-side RAG configuration tuning, **chunk size optimization** (T-151) for corpus-specific chunking tuning, and **golden dataset hardening** (T-152) for placeholder filtering, QA/retrieval sync, and CI regression gates.
 
 ```mermaid
 flowchart LR
@@ -2486,9 +2579,23 @@ flowchart LR
         WGT --> REC["★ recommended chunk_size"]
     end
 
+    subgraph GOLDEN["🔒 Golden Dataset & CI Gate (T-152)"]
+        IC2[Ingested Chunks] --> EXPAND["generate_until_min_pairs<br/>filter placeholders"]
+        EXPAND --> QA7[("qa_dataset.json")]
+        EXPAND --> RET2[("retrieval_dataset.json")]
+        QA7 --> MATCH{retrieval_rows_match_qa?}
+        RET2 --> MATCH
+        MATCH -->|no| SYNC2["make sync-retrieval-goldens"]
+        SYNC2 --> RET2
+        MATCH -->|yes| GATE2["regression_gate<br/>min_samples · oracle Recall@5"]
+        BASE2[("retrieval_baseline.json")] --> GATE2
+        GATE2 --> CI2["check_regression_gate.py<br/>CI job 4"]
+    end
+
     GEN --> RET
     GEN --> GEN2
     GEN --> E2E
+    GEN --> GOLDEN
     E2E --> TECH
     E2E --> SWEEP
 ```
@@ -2583,7 +2690,7 @@ flowchart LR
     PR["Pull Request<br/>or push to main"] --> L["1️⃣ Lint<br/>ruff · mypy"]
     L --> U["2️⃣ Unit Tests<br/>1760 tests<br/>coverage upload"]
     U --> I["3️⃣ Integration Tests<br/>auto-skip if models absent"]
-    U --> R["4️⃣ Retrieval Regression<br/>Recall@5 gate<br/>auto-skip if no golden data"]
+    U --> R["4️⃣ Retrieval Regression<br/>check_regression_gate.py<br/>auto-skip if placeholder-only"]
 
     L -->|fail| BLOCK["🚫 PR blocked"]
     U -->|fail| BLOCK

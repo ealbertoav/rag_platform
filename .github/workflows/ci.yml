@@ -112,27 +112,7 @@ jobs:
         run: uv sync --group dev
 
       - name: Run retrieval benchmark tests
-        # Skipped automatically when goldens/retrieval_dataset.json has only
-        # the placeholder row (default state before documents are ingested).
         run: uv run pytest tests/benchmarks/test_retrieval_evals.py -v --tb=short
 
-      - name: Assert Recall@5 above threshold
-        # Only runs if the benchmark produced real results (non-placeholder data).
-        run: |
-          python - <<'EOF'
-          import json, pathlib, sys
-          path = pathlib.Path("datasets/goldens/retrieval_dataset.json")
-          if not path.exists():
-              print("No retrieval dataset — skipping regression gate.")
-              sys.exit(0)
-          data = json.loads(path.read_text())
-          real = [d for d in data if not all(
-              str(r).startswith("chunk_id_")
-              for r in d.get("relevant_chunk_ids", [])
-          )]
-          if not real:
-              print("Only placeholder data — skipping regression gate.")
-              sys.exit(0)
-          # If real data exists, the benchmark job already enforces thresholds.
-          print(f"Regression gate: {len(real)} real samples present.")
-          EOF
+      - name: Assert golden dataset and Recall@5 regression gate
+        run: uv run python scripts/check_regression_gate.py

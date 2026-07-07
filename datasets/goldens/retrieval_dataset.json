@@ -1,7 +1,156 @@
 [
   {
     "id": "retrieval_001",
-    "query": "Example retrieval query",
-    "relevant_chunk_ids": ["chunk_id_1", "chunk_id_2", "chunk_id_3"]
+    "query": "What vector database does the RAG platform use?",
+    "relevant_chunk_ids": [
+      "rag_c001"
+    ]
+  },
+  {
+    "id": "retrieval_002",
+    "query": "How does hybrid search combine dense and sparse retrieval?",
+    "relevant_chunk_ids": [
+      "rag_c002"
+    ]
+  },
+  {
+    "id": "retrieval_003",
+    "query": "What embedding model is the default for retrieval?",
+    "relevant_chunk_ids": [
+      "rag_c003"
+    ]
+  },
+  {
+    "id": "retrieval_004",
+    "query": "Which LLM runtime powers local generation?",
+    "relevant_chunk_ids": [
+      "rag_c004"
+    ]
+  },
+  {
+    "id": "retrieval_005",
+    "query": "What is the purpose of the cross-encoder reranker?",
+    "relevant_chunk_ids": [
+      "rag_c005"
+    ]
+  },
+  {
+    "id": "retrieval_006",
+    "query": "How do you ingest documents into the platform?",
+    "relevant_chunk_ids": [
+      "rag_c006"
+    ]
+  },
+  {
+    "id": "retrieval_007",
+    "query": "What chunking strategies are supported?",
+    "relevant_chunk_ids": [
+      "rag_c007"
+    ]
+  },
+  {
+    "id": "retrieval_008",
+    "query": "What does HyDE retrieval do at query time?",
+    "relevant_chunk_ids": [
+      "rag_c008"
+    ]
+  },
+  {
+    "id": "retrieval_009",
+    "query": "What is multi-query expansion?",
+    "relevant_chunk_ids": [
+      "rag_c009"
+    ]
+  },
+  {
+    "id": "retrieval_010",
+    "query": "How does contextual compression reduce token usage?",
+    "relevant_chunk_ids": [
+      "rag_c010"
+    ]
+  },
+  {
+    "id": "retrieval_011",
+    "query": "What is Reliable RAG relevancy grading?",
+    "relevant_chunk_ids": [
+      "rag_c011"
+    ]
+  },
+  {
+    "id": "retrieval_012",
+    "query": "What is the Self-RAG decision loop?",
+    "relevant_chunk_ids": [
+      "rag_c012"
+    ]
+  },
+  {
+    "id": "retrieval_013",
+    "query": "How does the retrieval feedback loop work?",
+    "relevant_chunk_ids": [
+      "rag_c013"
+    ]
+  },
+  {
+    "id": "retrieval_014",
+    "query": "Which feedback backends support multi-replica deployments?",
+    "relevant_chunk_ids": [
+      "rag_c014"
+    ]
+  },
+  {
+    "id": "retrieval_015",
+    "query": "What metrics does POST /evals/run report?",
+    "relevant_chunk_ids": [
+      "rag_c015"
+    ]
+  },
+  {
+    "id": "retrieval_016",
+    "query": "How is the golden QA dataset generated?",
+    "relevant_chunk_ids": [
+      "rag_c016"
+    ]
+  },
+  {
+    "id": "retrieval_017",
+    "query": "What is MMR diversity retrieval?",
+    "relevant_chunk_ids": [
+      "rag_c017"
+    ]
+  },
+  {
+    "id": "retrieval_018",
+    "query": "How does parent context enrichment work?",
+    "relevant_chunk_ids": [
+      "rag_c018"
+    ]
+  },
+  {
+    "id": "retrieval_019",
+    "query": "What does explainable retrieval add to chat/full?",
+    "relevant_chunk_ids": [
+      "rag_c019"
+    ]
+  },
+  {
+    "id": "retrieval_020",
+    "query": "How are source highlights validated?",
+    "relevant_chunk_ids": [
+      "rag_c020"
+    ]
+  },
+  {
+    "id": "retrieval_021",
+    "query": "What CI job guards retrieval metric regression?",
+    "relevant_chunk_ids": [
+      "rag_c021"
+    ]
+  },
+  {
+    "id": "retrieval_022",
+    "query": "How do you compare RAG techniques side by side?",
+    "relevant_chunk_ids": [
+      "rag_c022"
+    ]
   }
 ]

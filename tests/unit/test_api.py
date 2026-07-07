@@ -381,9 +381,32 @@ class TestChatAgent:
 class TestEvals:
     @pytest.mark.asyncio
     async def test_empty_dataset_returns_204(self, app_client):
-        # QA dataset has only placeholder rows in the test environment.
-        async with _client(app_client) as c:
-            resp = await c.post("/evals/run")
+        from unittest.mock import AsyncMock, patch
+
+        from src.evals.e2e.rag_benchmark import BenchmarkReport
+
+        empty_report = BenchmarkReport(
+            timestamp="20250101T000000",
+            total_samples=0,
+            mean_recall_at_5=0.0,
+            mean_faithfulness=0.0,
+            mean_relevance=0.0,
+            mean_context_precision=0.0,
+            mean_hallucination=0.0,
+            recall_threshold=0.5,
+            faithfulness_threshold=0.8,
+            relevance_threshold=0.75,
+            context_precision_threshold=0.7,
+            hallucination_threshold=0.1,
+            passed=False,
+        )
+        with patch(
+            "src.domain.services.evaluation_service.EvaluationService.run",
+            new_callable=AsyncMock,
+            return_value=empty_report,
+        ):
+            async with _client(app_client) as c:
+                resp = await c.post("/evals/run")
         assert resp.status_code == 204
 
     @pytest.mark.asyncio

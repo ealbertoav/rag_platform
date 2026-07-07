@@ -1,10 +1,10 @@
-"""T-041 benchmark tests — Retrieval Evals against the golden dataset.
+"""T-041 / T-152 benchmark tests — Retrieval Evals against the golden dataset.
 
 Run with:
     uv run pytest tests/benchmarks/test_retrieval_evals.py -v -s
 
-The tests are skipped when the golden retrieval dataset is empty (default state
-before documents are ingested and the dataset is populated).
+The tests are skipped when the golden retrieval dataset is empty or contains only
+placeholder rows (default state before documents are ingested and evals are run).
 """
 
 from __future__ import annotations
@@ -12,31 +12,52 @@ from __future__ import annotations
 import pytest
 
 from src.core.constants import DATASETS_DIR
+from src.evals.golden_dataset import (
+    MIN_QA_PAIRS,
+    count_real_qa_pairs,
+    is_placeholder_retrieval_row,
+    load_qa_dicts,
+    retrieval_rows_match_qa,
+)
+from src.evals.regression_gate import load_real_retrieval_rows, load_regression_baseline
 from src.evals.retrieval import (
     RetrievalEvaluator,
     RetrievalSample,
     load_retrieval_dataset,
+    oracle_recall_at_k,
 )
 
 _GOLDEN_PATH = DATASETS_DIR / "goldens" / "retrieval_dataset.json"
+_BASELINE_PATH = DATASETS_DIR / "goldens" / "retrieval_baseline.json"
+_QA_PATH = DATASETS_DIR / "goldens" / "qa_dataset.json"
 
 
-def _load_samples() -> list[RetrievalSample]:
-    """Load golden dataset; returns an empty list if the file has only the placeholder."""
+def _load_baseline() -> dict[str, object]:
+    return load_regression_baseline(_BASELINE_PATH)
+
+
+def _load_real_samples() -> list[RetrievalSample]:
+    """Load golden dataset; returns an empty list if only placeholder rows are present."""
+    if not load_real_retrieval_rows(_GOLDEN_PATH):
+        return []
     try:
         samples = load_retrieval_dataset(_GOLDEN_PATH)
-        # Skip if only the example placeholder row is present
-        # Skip placeholder rows (relevant_ids start with "chunk_id_")
-        return [s for s in samples if not all(r.startswith("chunk_id_") for r in s.relevant_ids)]
+        return [
+            s
+            for s in samples
+            if s.relevant_ids
+            and not is_placeholder_retrieval_row({"relevant_chunk_ids": s.relevant_ids})
+        ]
     except (OSError, ValueError, KeyError):
         return []
 
 
-_SAMPLES = _load_samples()
+_SAMPLES = _load_real_samples()
+_BASELINE = _load_baseline()
 
 pytestmark = pytest.mark.skipif(
     len(_SAMPLES) == 0,
-    reason="Golden retrieval dataset is empty — populate via T-040 first.",
+    reason="Golden retrieval dataset is empty — populate via `make evals` first.",
 )
 
 
@@ -48,6 +69,17 @@ def evaluator() -> RetrievalEvaluator:
 class TestRetrievalBenchmark:
     def test_dataset_loaded(self):
         assert len(_SAMPLES) > 0
+
+    def test_minimum_sample_count(self):
+        min_samples = _BASELINE.get("min_samples", MIN_QA_PAIRS)
+        assert isinstance(min_samples, int)
+        assert len(_SAMPLES) >= min_samples
+        assert count_real_qa_pairs(_QA_PATH) >= min_samples
+
+    def test_retrieval_matches_qa_golden(self):
+        qa_pairs = load_qa_dicts(_QA_PATH)
+        real_rows = load_real_retrieval_rows(_GOLDEN_PATH)
+        assert retrieval_rows_match_qa(qa_pairs, real_rows)
 
     def test_evaluate_returns_metrics_for_each_k(self, evaluator):
         results = evaluator.evaluate(_SAMPLES)
@@ -65,6 +97,21 @@ class TestRetrievalBenchmark:
         recalls = [m.recall for m in results]
         for a, b in zip(recalls[:-1], recalls[1:], strict=False):
             assert a <= b + 1e-9  # non-decreasing
+
+    def test_oracle_recall_meets_baseline(self):
+        """Ground-truth retrieval (retrieved=relevant) must meet the committed baseline."""
+        recall_at_5 = sum(oracle_recall_at_k(s.relevant_ids, k=5) for s in _SAMPLES) / len(_SAMPLES)
+        expected = _BASELINE.get("oracle_recall_at_5", 1.0)
+        assert isinstance(expected, (int, float))
+        assert recall_at_5 >= float(expected) - 1e-9
+
+    def test_recall_at_5_above_regression_threshold(self):
+        """Per-sample oracle Recall@5 must clear the CI regression floor."""
+        min_recall = _BASELINE.get("min_recall_at_5", 0.5)
+        assert isinstance(min_recall, (int, float))
+        for sample in _SAMPLES:
+            score = oracle_recall_at_k(sample.relevant_ids, k=5)
+            assert score >= float(min_recall)
 
     def test_print_summary_table(self, evaluator, capsys):
         results = evaluator.evaluate(_SAMPLES)

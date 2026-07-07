@@ -17,3 +17,15 @@ def recall_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> fl
     top_k = set(retrieved_ids[:k])
     relevant = set(relevant_ids)
     return len(top_k & relevant) / len(relevant)
+
+
+def oracle_recall_at_k(relevant_ids: list[str], k: int) -> float:
+    """Recall@K when all ground-truth relevant chunks are ranked before any other result.
+
+    Oracle evaluation only considers the first *k* relevant documents as the
+    recall target, since only that many can appear in the top-*k* retrieved
+    slots. This avoids penalising multi-chunk golden rows where len(relevant) > k.
+    """
+    if not relevant_ids or k <= 0:
+        return 0.0
+    return recall_at_k(relevant_ids, relevant_ids[:k], k)
