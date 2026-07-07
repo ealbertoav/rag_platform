@@ -23,15 +23,42 @@ from src.api.rate_limit import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_config():
+    """Keep the module-global rate-limit state from leaking between tests."""
+    configure_rate_limit(
+        enabled=False,
+        requests_per_minute=60,
+        burst=0,
+        limiter=InMemoryRateLimiter(60, 0),
+    )
+    yield
+    configure_rate_limit(
+        enabled=False,
+        requests_per_minute=60,
+        burst=0,
+        limiter=InMemoryRateLimiter(60, 0),
+    )
+
+
 def _app_with_middleware(
     *,
     enabled: bool = True,
     rpm: int = 2,
     burst: int = 0,
-    limiter: InMemoryRateLimiter | None = None,
+    limiter: InMemoryRateLimiter | RedisRateLimiter | None = None,
     cors_origins: list[str] | None = None,
 ) -> FastAPI:
-    configure_rate_limit(enabled=enabled, requests_per_minute=rpm, burst=burst, limiter=limiter)
+    # Pin an in-memory limiter so middleware tests stay isolated from real Redis.
+    # configure_rate_limit() otherwise calls try_build_redis_rate_limiter(), which
+    # shares sliding-window keys across apps/parametrized cases on the same client IP.
+    limiter_val = limiter if limiter is not None else InMemoryRateLimiter(rpm, burst)
+    configure_rate_limit(
+        enabled=enabled,
+        requests_per_minute=rpm,
+        burst=burst,
+        limiter=limiter_val,
+    )
     app = FastAPI()
     app.add_middleware(RateLimitHTTPMiddleware)
     app.add_middleware(
@@ -79,6 +106,19 @@ def _app_with_middleware(
         return {"status": "ok"}
 
     return app
+
+
+class TestAppWithMiddleware:
+    def test_defaults_to_in_memory_limiter(self):
+        _app_with_middleware(enabled=True, rpm=1, burst=0)
+        from src.api.rate_limit import _config
+
+        assert isinstance(_config.limiter, InMemoryRateLimiter)
+
+    def test_does_not_call_redis_builder_when_limiter_unspecified(self):
+        with patch("src.api.rate_limit.try_build_redis_rate_limiter") as try_redis:
+            _app_with_middleware(enabled=True, rpm=1, burst=0)
+        try_redis.assert_not_called()
 
 
 class TestRateLimitHelpers:
@@ -237,6 +277,23 @@ class TestRateLimitMiddleware:
             assert resp.headers.get("Retry-After") is not None
             assert resp.json() == {"detail": "Rate limit exceeded"}
 
+    async def test_sequential_apps_have_isolated_limiter_state(self):
+        """Regression: a fresh app must not inherit another app's client quota."""
+        app_a = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(
+            transport=ASGITransport(app=app_a),
+            base_url="http://test",
+        ) as client:
+            assert (await client.post("/feedback")).status_code == 200
+            assert (await client.post("/feedback")).status_code == 429
+
+        app_b = _app_with_middleware(enabled=True, rpm=1, burst=0)
+        async with AsyncClient(
+            transport=ASGITransport(app=app_b),
+            base_url="http://test",
+        ) as client:
+            assert (await client.get("/chat")).status_code == 200
+
     @pytest.mark.parametrize(
         "method,path",
         [
@@ -325,8 +382,14 @@ class TestRateLimitConfiguration:
         import logging
 
         with caplog.at_level(logging.INFO, logger="src.api.rate_limit"):
-            configure_rate_limit(enabled=True, requests_per_minute=30, burst=5)
+            configure_rate_limit(
+                enabled=True,
+                requests_per_minute=30,
+                burst=5,
+                limiter=InMemoryRateLimiter(30, 5),
+            )
         assert "API rate limiting enabled" in caplog.text
+        assert "in-memory" in caplog.text
 
     def test_prefers_redis_limiter_when_available(self):
         mock_client = MagicMock()
