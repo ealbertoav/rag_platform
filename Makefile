@@ -1,6 +1,6 @@
 .PHONY: install sync serve ingest evals sync-retrieval-goldens benchmark lint format test test-unit test-e2e clean qdrant-up \
         docker-build docker-up docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
-        benchmark-chunk-sizes
+        benchmark-chunk-sizes audit-deps
 
 install:
 	uv sync --extra dev --extra evals
@@ -30,6 +30,9 @@ benchmark-techniques:
 
 benchmark-chunk-sizes:
 	uv run python scripts/benchmark_chunk_sizes.py
+
+audit-deps:
+	./scripts/check_dependencies.sh
 
 lint:
 	uv run ruff check src tests

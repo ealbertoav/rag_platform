@@ -55,6 +55,7 @@ METADATA_DB_PATH = PROCESSED_DIR / "metadata.db"
 MODELS_DIR = ROOT / "models"
 DATASETS_DIR = ROOT / "datasets"
 PROMPTS_DIR = ROOT / "src" / "prompts"
+CVE_ALLOWLIST_PATH = ROOT / "configs" / "cve-allowlist.yaml"
 
 # ── Retrieval ──────────────────────────────────────────────────────────────────
 RRF_K = 60  # constant in Reciprocal Rank Fusion: score = Σ 1/(k + rank_i)
