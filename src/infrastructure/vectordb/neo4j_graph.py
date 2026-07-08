@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import logging
 from typing import Any, cast
 
+from src.core.async_bridge import run_async
 from src.core.exceptions import RetrievalError
 from src.domain.entities.retrieval_filter import RetrievalFilter
 
@@ -128,11 +128,11 @@ class Neo4jGraphRepository:
         document_id: str = "",
     ) -> None:
         """Synchronous wrapper for ingestion paths that are not async."""
-        asyncio.run(self.upsert(relations, chunk_id, document_id))
+        run_async(self.upsert(relations, chunk_id, document_id))
 
     def close_sync(self) -> None:
         """Synchronous wrapper for shutdown hooks."""
-        asyncio.run(self.close())
+        run_async(self.close())
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
@@ -157,8 +157,8 @@ class Neo4jGraphRepository:
 # ── Cypher helpers ─────────────────────────────────────────────────────────────
 
 
-def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: str) -> None:
-    tx.run(
+async def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: str) -> None:
+    await tx.run(
         """
         MERGE (s:Entity {name: $subject})
           ON CREATE SET s.type = $subject_type
@@ -180,14 +180,14 @@ def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: st
     )
 
 
-def _search_chunks(
+async def _search_chunks(
     tx: Any,
     entity_names: list[str],
     top_k: int,
     document_ids: list[str] | None = None,
 ) -> list[tuple[str, float]]:
     if document_ids:
-        result = tx.run(
+        result = await tx.run(
             """
             MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
             WHERE e.name IN $names AND c.document_id IN $document_ids
@@ -202,7 +202,7 @@ def _search_chunks(
             document_ids=document_ids,
         )
     else:
-        result = tx.run(
+        result = await tx.run(
             """
             MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
             WHERE e.name IN $names
@@ -215,4 +215,7 @@ def _search_chunks(
             n_entities=len(entity_names),
             top_k=top_k,
         )
-    return [(row["chunk_id"], float(row["score"])) for row in result]
+    rows: list[tuple[str, float]] = []
+    async for row in result:
+        rows.append((row["chunk_id"], float(row["score"])))
+    return rows

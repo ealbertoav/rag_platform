@@ -171,7 +171,7 @@ class TestGraphRetriever:
 
     @pytest.mark.asyncio
     async def test_document_id_filter_scoped_in_graph_before_limit(self):
-        """In-scope chunks must be considered even when globally out-ranked."""
+        """In-scope chunks must be considered even when globally outranked."""
         chunk_in = Chunk(id="c-in", document_id="doc-a", text="text in")
         ex = EntityExtractor(_llm_mock())
         graph = _neo4j_mock([("c-in", 0.5)])
@@ -359,6 +359,23 @@ class TestNeo4jGraphRepository:
             repo.upsert_sync([GraphRelation("A", "r", "B")], chunk_id="c0", document_id="doc")
         mock_upsert.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_upsert_sync_works_inside_running_loop(self):
+        """FastAPI ingest calls sync upsert from an async handler event loop."""
+        repo = Neo4jGraphRepository()
+        with patch.object(repo, "upsert", new_callable=AsyncMock) as mock_upsert:
+            repo.upsert_sync([GraphRelation("A", "r", "B")], chunk_id="c0", document_id="doc")
+        mock_upsert.assert_awaited_once()
+
+    def test_upsert_sync_reuses_background_loop_across_calls(self):
+        """Multi-chunk CLI ingestion must not break on a cached async driver."""
+        repo = Neo4jGraphRepository()
+        with patch.object(repo, "upsert", new_callable=AsyncMock) as mock_upsert:
+            rel = GraphRelation("A", "r", "B")
+            repo.upsert_sync([rel], chunk_id="c0", document_id="doc")
+            repo.upsert_sync([rel], chunk_id="c1", document_id="doc")
+        assert mock_upsert.await_count == 2
+
     def test_close_sync_delegates_to_async(self):
         repo = Neo4jGraphRepository()
         with patch.object(repo, "close", new_callable=AsyncMock) as mock_close:
@@ -382,29 +399,49 @@ class TestNeo4jGraphRepository:
         )
 
 
+class _AsyncRecordIter:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+        self._index = 0
+
+    def __aiter__(self) -> _AsyncRecordIter:
+        return self
+
+    async def __anext__(self) -> dict[str, object]:
+        if self._index >= len(self._rows):
+            raise StopAsyncIteration
+        row = self._rows[self._index]
+        self._index += 1
+        return row
+
+
 class TestNeo4jCypherHelpers:
-    def test_upsert_relation_runs_cypher(self):
+    @pytest.mark.asyncio
+    async def test_upsert_relation_runs_cypher(self):
         from src.infrastructure.vectordb.neo4j_graph import GraphRelation, _upsert_relation
 
         tx = MagicMock()
+        tx.run = AsyncMock()
         rel = GraphRelation(subject="A", relation="rel", object="B")
-        _upsert_relation(tx, rel, "c1", "doc-1")
-        tx.run.assert_called_once()
+        await _upsert_relation(tx, rel, "c1", "doc-1")
+        tx.run.assert_awaited_once()
 
-    def test_search_chunks_returns_scores(self):
+    @pytest.mark.asyncio
+    async def test_search_chunks_returns_scores(self):
         from src.infrastructure.vectordb.neo4j_graph import _search_chunks
 
         tx = MagicMock()
-        tx.run.return_value = [{"chunk_id": "c1", "score": 0.75}]
-        results = _search_chunks(tx, ["A", "B"], top_k=5)
+        tx.run = AsyncMock(return_value=_AsyncRecordIter([{"chunk_id": "c1", "score": 0.75}]))
+        results = await _search_chunks(tx, ["A", "B"], top_k=5)
         assert results == [("c1", 0.75)]
 
-    def test_search_chunks_scopes_document_ids_in_cypher(self):
+    @pytest.mark.asyncio
+    async def test_search_chunks_scopes_document_ids_in_cypher(self):
         from src.infrastructure.vectordb.neo4j_graph import _search_chunks
 
         tx = MagicMock()
-        tx.run.return_value = [{"chunk_id": "c1", "score": 1.0}]
-        _search_chunks(tx, ["A"], top_k=2, document_ids=["doc-a"])
+        tx.run = AsyncMock(return_value=_AsyncRecordIter([{"chunk_id": "c1", "score": 1.0}]))
+        await _search_chunks(tx, ["A"], top_k=2, document_ids=["doc-a"])
         cypher = tx.run.call_args[0][0]
         assert "c.document_id IN $document_ids" in cypher
         assert tx.run.call_args[1]["document_ids"] == ["doc-a"]
