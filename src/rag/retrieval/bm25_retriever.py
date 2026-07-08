@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.infrastructure.vectordb.bm25 import BM25Index
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 
 class BM25Retriever:
@@ -15,19 +19,25 @@ class BM25Retriever:
     entities without needing to know how BM25 is built or persisted.
     """
 
-    def __init__(self, index: BM25Index) -> None:
+    def __init__(self, index: BM25Index | DiskBM25Index) -> None:
         self._index = index
 
     @property
-    def bm25_index(self) -> BM25Index:
+    def bm25_index(self) -> BM25Index | DiskBM25Index:
         return self._index
 
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
     def from_disk(cls, index_path: Path | None = None) -> BM25Retriever:
-        """Load an existing index from disk (or create empty if none exists)."""
-        return cls(BM25Index.load_or_create(index_path))
+        """Load an existing JSON memory index (or create empty if none exists).
+
+        Always uses the memory backend so eval caches and explicit ".json" /
+        ".pkl" paths stay valid even when "retrieval.bm25.backend" is
+        "disk". For the production disk store, construct via
+        "BM25Index.load_or_create(backend="disk")" (or omit "index_path").
+        """
+        return cls(BM25Index.load_or_create(index_path, backend="memory"))
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -53,7 +63,7 @@ class BM25Retriever:
         self._index.save()
 
     def get_by_id(self, chunk_id: str) -> object:
-        """Return the ``Chunk`` with *chunk_id* from the index, or ``None``."""
+        """Return the "Chunk" with *chunk_id* from the index, or "None"."""
         return self._index.get_by_id(chunk_id)
 
     @property

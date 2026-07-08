@@ -172,6 +172,20 @@ class DiversitySettings(BaseModel):
     lambda_: float = Field(default=0.7, ge=0.0, le=1.0, alias="lambda")
 
 
+class BM25Settings(BaseModel):
+    """Lexical BM25 backend selection (T-165).
+
+    ``memory`` (default) keeps the full Okapi model in RAM — fine for typical
+    corpora.  ``disk`` stores postings + chunk payloads as memmapped segments
+    so search memory stays bounded for 100K–1M+ chunk corpora.
+    """
+
+    backend: Literal["memory", "disk"] = "memory"
+    disk_path: str = "data/processed/bm25_disk"
+    # Max chunks per on-disk segment (disk backend only).
+    segment_size: int = Field(default=10_000, ge=1)
+
+
 class ReliableRAGSettings(BaseModel):
     enabled: bool = False
     min_score: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -232,6 +246,7 @@ class RetrievalSettings(BaseModel):
     # Used only when hybrid_fusion=weighted_linear. RRF (default) ignores this value.
     hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0)
     hybrid_fusion: Literal["rrf", "weighted_linear"] = "rrf"
+    bm25: BM25Settings = Field(default_factory=BM25Settings)
     hype: HyPESettings = Field(default_factory=HyPESettings)
     hyde: HyDESettings = Field(default_factory=HyDESettings)
     adaptive: AdaptiveSettings = Field(default_factory=AdaptiveSettings)

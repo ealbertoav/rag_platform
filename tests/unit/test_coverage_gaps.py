@@ -1395,25 +1395,3 @@ class TestFinalCoverageGaps:
         with patch("src.rag.pipelines.chat_pipeline.explain_and_highlight") as combined:
             await pipeline.chat_full("q", explain=True)
             combined.assert_not_called()
-
-    def test_ingestion_hierarchical_and_hype_indexers(self, tmp_path: Path):
-        from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
-
-        path = tmp_path / "doc.md"
-        path.write_text("content")
-        base = embedded_chunk(0)
-        summary = embedded_chunk(1)
-        hype = embedded_chunk(2)
-        hierarchical = MagicMock()
-        hierarchical.index.return_value = ([base], [summary])
-        hype_indexer = MagicMock()
-        hype_indexer.index.return_value = [hype]
-
-        pipeline, _, vector_store, _ = mock_ingestion_pipeline([base])
-        pipeline._hierarchical_indexer = hierarchical
-        pipeline._hype_indexer = hype_indexer
-        pipeline.ingest_file(path)
-
-        upserted = vector_store.upsert.call_args.args[0]
-        assert any(c.id == summary.id for c in upserted)
-        assert any(c.id == hype.id for c in upserted)

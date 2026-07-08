@@ -12,8 +12,22 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult, content_hash
-from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
+from tests.unit.ingestion_helpers import (
+    disk_bm25_index,
+    embedded_chunk,
+    index_reingest_corpus,
+    ingest_with_hierarchical_and_hype_indexers,
+    memory_bm25_index,
+    mock_ingestion_pipeline,
+    mock_reingest_metadata,
+    real_bm25_reingest_pipeline,
+    reingest_corpus_chunks,
+    reingest_fresh_chunk,
+    vector_store_with_upsert_failure,
+    write_reingest_doc,
+)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -168,6 +182,13 @@ class TestIngestionPipelineFile:
         _, kwargs = metadata.upsert_document.call_args
         assert kwargs["chunk_count"] == 1
 
+    def test_hierarchical_and_hype_indexers_extend_upsert(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("content")
+        upserted, summary, hype = ingest_with_hierarchical_and_hype_indexers(path)
+        assert any(c.id == summary.id for c in upserted)
+        assert any(c.id == hype.id for c in upserted)
+
     def test_no_upsert_when_no_chunks(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")
@@ -176,6 +197,70 @@ class TestIngestionPipelineFile:
         vector_store.upsert.assert_not_called()
         bm25.add.assert_not_called()
         assert result.chunk_count == 0
+
+    def test_reingest_empty_chunks_purges_real_bm25(self, tmp_path: Path):
+        from src.infrastructure.vectordb.bm25 import BM25Index
+
+        _, _, stale = reingest_corpus_chunks()
+        bm25 = BM25Index()
+        bm25.index([stale])
+        pipeline, _, vector_store, _ = real_bm25_reingest_pipeline(
+            bm25,
+            prepared_chunks=[],
+            metadata=mock_reingest_metadata(),
+        )
+        result = pipeline.ingest_file(write_reingest_doc(tmp_path))
+        assert result.chunk_count == 0
+        vector_store.delete.assert_called_once_with(["old-chunk-1"])
+        assert bm25.get_by_id("old-chunk-1") is None
+        assert bm25.search("kubernetes", top_k=1) == []
+
+    @pytest.mark.parametrize(
+        "bm25_factory",
+        [memory_bm25_index, disk_bm25_index],
+        ids=["memory", "disk"],
+    )
+    def test_reingest_upsert_failure_keeps_indexes_consistent(self, tmp_path: Path, bm25_factory):
+        bm25 = bm25_factory(tmp_path)
+        index_reingest_corpus(bm25)
+        vector_store = vector_store_with_upsert_failure()
+        pipeline, _, _, _ = real_bm25_reingest_pipeline(
+            bm25,
+            prepared_chunks=[reingest_fresh_chunk()],
+            vector_store=vector_store,
+        )
+        with pytest.raises(RuntimeError, match="qdrant down"):
+            pipeline.ingest_file(write_reingest_doc(tmp_path))
+        vector_store.delete.assert_not_called()
+        assert bm25.get_by_id("old-chunk-1") is not None
+        assert bm25.size == 3
+
+    def test_reingest_success_purges_both_indexes_together(self, tmp_path: Path):
+        from src.infrastructure.vectordb.bm25 import BM25Index
+
+        fresh = Chunk(
+            id="new-chunk-1",
+            document_id="doc-1",
+            text="fresh vector database content",
+            embedding=[0.1] * 4,
+        )
+        bm25 = BM25Index()
+        index_reingest_corpus(bm25)
+        pipeline, _, vector_store, _ = real_bm25_reingest_pipeline(
+            bm25,
+            prepared_chunks=[fresh],
+        )
+        result = pipeline.ingest_file(write_reingest_doc(tmp_path))
+        assert result.chunk_count == 1
+        vector_store.upsert.assert_called_once()
+        vector_store.delete.assert_called_once_with(["old-chunk-1"])
+        assert bm25.get_by_id("old-chunk-1") is None
+        assert bm25.get_by_id("new-chunk-1") is not None
+        assert bm25.size == 3
+        assert not any(chunk.id == "old-chunk-1" for chunk, _ in bm25.search("kubernetes", top_k=5))
+        assert any(
+            chunk.id == "new-chunk-1" for chunk, _ in bm25.search("vector database", top_k=5)
+        )
 
     def test_load_error_raises_ingestion_error(self, tmp_path: Path):
         path = tmp_path / "ghost.pdf"
@@ -224,6 +309,36 @@ class TestIngestionPipelineDirectory:
         pipeline, _, _, bm25 = mock_ingestion_pipeline()
         pipeline.save_indexes()
         bm25.save.assert_called_once()
+
+    def test_ingest_file_rebuilds_bm25_once(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("# Doc\n\nContent.")
+        bm25 = BM25Index()
+        service = MagicMock()
+        service.prepare.return_value = [embedded_chunk()]
+        pipeline = IngestionPipeline(
+            service=service,
+            vector_store=MagicMock(),
+            bm25=bm25,
+        )
+        with patch.object(bm25, "_rebuild", wraps=bm25._rebuild) as mock_rebuild:
+            pipeline.ingest_file(path)
+        assert mock_rebuild.call_count == 1
+
+    def test_ingest_file_disk_flushes_bm25_once(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("# Doc\n\nContent.")
+        bm25 = DiskBM25Index(tmp_path / "bm25_disk", segment_size=2)
+        service = MagicMock()
+        service.prepare.return_value = [embedded_chunk()]
+        pipeline = IngestionPipeline(
+            service=service,
+            vector_store=MagicMock(),
+            bm25=bm25,
+        )
+        with patch.object(bm25, "_flush_to_disk", wraps=bm25._flush_to_disk) as mock_flush:
+            pipeline.ingest_file(path)
+        assert mock_flush.call_count == 1
 
     def test_ingest_directory_rebuilds_bm25_once(self, tmp_path: Path):
         for i in range(3):

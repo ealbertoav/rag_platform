@@ -92,9 +92,9 @@ def main() -> None:
         print("Error: BM25 index is empty. Run `make ingest SOURCE=...` first.", file=sys.stderr)
         sys.exit(1)
 
-    chunks = bm25.chunks
+    total_chunks = bm25.size
     initial_limit = resolve_max_chunks(
-        len(chunks),
+        total_chunks,
         min_pairs=args.min_pairs,
         n_pairs_per_chunk=args.n_pairs,
         max_chunks=args.max_chunks,
@@ -117,7 +117,8 @@ def main() -> None:
     )
     pairs, chunk_limit = generate_until_min_pairs(
         builder,
-        chunks,
+        total_chunks=total_chunks,
+        iter_chunks=bm25.iter_chunks,
         min_pairs=args.min_pairs,
         n_pairs_per_chunk=args.n_pairs,
         dedup_threshold=args.dedup_threshold,

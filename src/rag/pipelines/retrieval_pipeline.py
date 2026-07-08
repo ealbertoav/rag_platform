@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from src.core.settings import Settings
     from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.infrastructure.vectordb.bm25 import BM25Index
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
@@ -141,7 +142,7 @@ class RetrievalPipeline:
     def from_settings(
         cls,
         llm: LLMRepository | None = None,
-        bm25_index: BM25Index | None = None,
+        bm25_index: BM25Index | DiskBM25Index | None = None,
         vector_store: VectorStoreRepository | None = None,
     ) -> RetrievalPipeline:
         """Build the full retrieval pipeline from settings.

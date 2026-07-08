@@ -30,6 +30,7 @@ from src.rag.ranking.score_fusion import rrf_fuse
 if TYPE_CHECKING:
     from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.infrastructure.vectordb.bm25 import BM25Index
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,7 @@ class AgentPipeline:
     def from_settings(
         cls,
         max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-        bm25_index: BM25Index | None = None,
+        bm25_index: BM25Index | DiskBM25Index | None = None,
         vector_store: VectorStoreRepository | None = None,
     ) -> AgentPipeline:
         from src.core.settings import settings

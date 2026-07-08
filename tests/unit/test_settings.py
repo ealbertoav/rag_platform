@@ -60,6 +60,9 @@ class TestYamlDefaults:
         assert settings.retrieval.hybrid_fusion == "rrf"
         assert settings.retrieval.rse.enabled is False
         assert settings.retrieval.rse.max_segment_tokens == 1500
+        assert settings.retrieval.bm25.backend == "memory"
+        assert settings.retrieval.bm25.disk_path == "data/processed/bm25_disk"
+        assert settings.retrieval.bm25.segment_size == 10_000
 
     def test_neo4j_defaults_from_yaml(self):
         assert settings.neo4j.enabled is False

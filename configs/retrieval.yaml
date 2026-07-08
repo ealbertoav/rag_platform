@@ -22,6 +22,10 @@ retrieval:
   top_k_final: 5               # max chunks passed to generation after rerank/compression
   hybrid_alpha: 0.7            # weighted_linear only: 1.0 = dense, 0.0 = BM25
   hybrid_fusion: rrf             # rrf (default) | weighted_linear
+  bm25:
+    backend: memory              # memory (default) | disk (mmap/segmented — T-165)
+    disk_path: data/processed/bm25_disk
+    segment_size: 10000          # chunks per on-disk segment (disk backend)
   hype:
     enabled: false               # HyPE question-question matching at query time (T-122)
     n_questions: 3

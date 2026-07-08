@@ -21,6 +21,7 @@ import sys
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
 from src.core.constants import API_EMBEDDING_PROVIDERS, SELF_HOSTED_EMBEDDING_DEFAULT_DIMS
+from src.domain.entities.chunk import Chunk
 from src.infrastructure.embeddings.batch_reindex import (
     API_BATCH_SIZE,
     embed_and_upsert_batch,
@@ -144,9 +145,9 @@ def main() -> None:
 
     # ── Load chunks from BM25 index ────────────────────────────────────────────
     bm25 = BM25Index.load_or_create()
-    chunks = bm25.chunks
+    total_chunks = bm25.size
 
-    if not chunks:
+    if total_chunks == 0:
         print("BM25 index is empty — ingest documents first.", file=sys.stderr)
         sys.exit(1)
 
@@ -154,10 +155,10 @@ def main() -> None:
     is_api = provider_name in API_EMBEDDING_PROVIDERS
     batch_size = args.batch_size or (API_BATCH_SIZE if is_api else _DEFAULT_BATCH_SIZE)
 
-    print(f"Found {len(chunks)} chunks in BM25 index.")
+    print(f"Found {total_chunks} chunks in BM25 index.")
     if args.dry_run:
         if is_api:
-            n_batches = (len(chunks) + batch_size - 1) // batch_size
+            n_batches = (total_chunks + batch_size - 1) // batch_size
             print(
                 f"Dry-run: would make ~{n_batches} API call(s) to {provider_name} "
                 f"(batch_size={batch_size})."
@@ -189,29 +190,44 @@ def main() -> None:
         MofNCompleteColumn(),
         TimeElapsedColumn(),
     ) as progress:
-        task = progress.add_task("Re-embedding", total=len(chunks))
+        task = progress.add_task("Re-embedding", total=total_chunks)
 
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            progress.update(task, description=f"[cyan]Batch {i // batch_size + 1}")
+        batch: list[Chunk] = []
+        batch_index = 0
+        for chunk in bm25.iter_chunks():
+            batch.append(chunk)
+            if len(batch) < batch_size:
+                continue
+            progress.update(task, description=f"[cyan]Batch {batch_index + 1}")
             try:
                 embed_and_upsert_batch(embedder, vector_store, batch)
                 ok += len(batch)
                 maybe_sleep_between_api_batches(
                     provider_name,
-                    batch_start=i,
+                    batch_start=batch_index * batch_size,
                     batch_size=batch_size,
-                    total_chunks=len(chunks),
+                    total_chunks=total_chunks,
                 )
             except Exception as exc:
-                print(f"\nBatch {i}–{i + len(batch)} failed: {exc}", file=sys.stderr)
-                errors += 1
-            finally:
-                progress.advance(task, len(batch))
+                errors += len(batch)
+                print(f"\n[error] Batch {batch_index + 1} failed: {exc}", file=sys.stderr)
+            progress.advance(task, len(batch))
+            batch = []
+            batch_index += 1
 
-    print(f"\n✓ Re-embedded {ok}/{len(chunks)} chunks → Qdrant '{settings.qdrant.collection}'")
+        if batch:
+            progress.update(task, description=f"[cyan]Batch {batch_index + 1}")
+            try:
+                embed_and_upsert_batch(embedder, vector_store, batch)
+                ok += len(batch)
+            except Exception as exc:
+                errors += len(batch)
+                print(f"\n[error] Batch {batch_index + 1} failed: {exc}", file=sys.stderr)
+            progress.advance(task, len(batch))
+
+    print(f"\n✓ Re-embedded {ok}/{total_chunks} chunks → Qdrant '{settings.qdrant.collection}'")
     if errors:
-        print(f"  {errors} batch(es) failed — check logs above.", file=sys.stderr)
+        print(f"  {errors} chunk(s) failed — check logs above.", file=sys.stderr)
         sys.exit(1)
 
 

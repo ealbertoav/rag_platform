@@ -55,9 +55,10 @@ def _golden_pairs(count: int = MIN_QA_PAIRS) -> list[QAPair]:
 
 
 def _bm25_mock(chunk_count: int = 10) -> MagicMock:
+    chunk_list = [_chunk(i) for i in range(chunk_count)]
     bm25 = MagicMock()
     bm25.size = chunk_count
-    bm25.chunks = [_chunk(i) for i in range(chunk_count)]
+    bm25.iter_chunks = lambda: iter(chunk_list)
     return bm25
 
 
@@ -102,7 +103,7 @@ class TestRunEvalsMain:
 
         bm25 = MagicMock()
         bm25.size = 2
-        bm25.chunks = [_chunk(0), _chunk(1)]
+        bm25.iter_chunks = lambda: iter([_chunk(0), _chunk(1)])
 
         monkeypatch.setattr(
             sys,

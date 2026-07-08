@@ -5,6 +5,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
@@ -16,6 +17,9 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +63,7 @@ class IngestionPipeline:
         self,
         service: IngestionService,
         vector_store: VectorStoreRepository,
-        bm25: BM25Index,
+        bm25: BM25Index | DiskBM25Index,
         metadata: MetadataRepository | None = None,
         graph_indexer: object | None = None,
         augmentor: object | None = None,
@@ -88,6 +92,7 @@ class IngestionPipeline:
             raise IngestionError(f"Cannot load {path.name}", cause=exc) from exc
 
         doc_hash = content_hash(source, document.content)
+        old_chunk_ids: list[str] = []
 
         if self._metadata is not None:
             existing = self._metadata.get_by_source(source)
@@ -109,30 +114,34 @@ class IngestionPipeline:
                     skipped=True,
                 )
             if existing is not None:
-                self._remove_document_chunks(existing.id)
+                old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
 
-        chunks = self._service.prepare(document)
-        if not chunks:
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            if self._metadata is not None:
-                self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
-            return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
+        with self._bm25.deferred_rebuild():
+            chunks = self._service.prepare(document)
 
-        indexed_chunks = list(chunks)
-        if self._hierarchical_indexer is not None:
-            chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)  # type: ignore[attr-defined]
+            if not chunks:
+                self._purge_superseded_chunks(old_chunk_ids)
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                if self._metadata is not None:
+                    self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
+                return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
+
             indexed_chunks = list(chunks)
-            indexed_chunks.extend(summary_chunks)
-        if self._augmentor is not None:
-            augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
-            indexed_chunks.extend(augmented)
-        if self._hype_indexer is not None:
-            hype_chunks = self._hype_indexer.index(chunks)  # type: ignore[attr-defined]
-            indexed_chunks.extend(hype_chunks)
+            if self._hierarchical_indexer is not None:
+                chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)  # type: ignore[attr-defined]
+                indexed_chunks = list(chunks)
+                indexed_chunks.extend(summary_chunks)
+            if self._augmentor is not None:
+                augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
+                indexed_chunks.extend(augmented)
+            if self._hype_indexer is not None:
+                hype_chunks = self._hype_indexer.index(chunks)  # type: ignore[attr-defined]
+                indexed_chunks.extend(hype_chunks)
 
-        self._index_graph(chunks, document.id)
-        self._vector_store.upsert(indexed_chunks)
-        self._bm25_add(indexed_chunks)
+            self._index_graph(chunks, document.id)
+            self._vector_store.upsert(indexed_chunks)
+            self._purge_superseded_chunks(old_chunk_ids)
+            self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
@@ -209,13 +218,16 @@ class IngestionPipeline:
         if indexable:
             self._bm25.add(indexable)
 
+    def _purge_superseded_chunks(self, chunk_ids: list[str]) -> None:
+        """Remove superseded chunk IDs from dense and lexical indexes together."""
+        if chunk_ids:
+            self._vector_store.delete(chunk_ids)
+            self._bm25.remove_by_ids(chunk_ids)
+
     def _remove_document_chunks(self, metadata_doc_id: str) -> None:
         if self._metadata is None:
             return
-        old_ids = self._metadata.get_chunk_ids(metadata_doc_id)
-        if old_ids:
-            self._vector_store.delete(old_ids)
-            self._bm25.remove_by_ids(old_ids)
+        self._purge_superseded_chunks(self._metadata.get_chunk_ids(metadata_doc_id))
 
     def _index_graph(self, chunks: list[Chunk], document_id: str) -> None:
         if self._graph_indexer is None:
@@ -230,7 +242,7 @@ class IngestionPipeline:
     @classmethod
     def from_settings(
         cls,
-        bm25: BM25Index | None = None,
+        bm25: BM25Index | DiskBM25Index | None = None,
         vector_store: VectorStoreRepository | None = None,
     ) -> IngestionPipeline:
         """Build the pipeline from application settings (real dependencies)."""

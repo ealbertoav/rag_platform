@@ -4,13 +4,12 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **T-162 complete** (PR #34). **T-163 complete**. **T-164 complete** (PR #36 — Neo4j `AsyncGraphDatabase`, sync wrappers via `async_bridge`, connection pool setting).
+> **Current focus:** Phase 17 — Code Quality & Type Safety. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16 complete** — T-160–T-165 (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
 >
 > **Next tasks (recommended order):**
-> 1. **T-165** — Disk-backed BM25 index (scale)
-> 2. **T-170** — Type ignore audit & reduction
-> 3. **T-171** — Mypy CI gate hardening
-> 4. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+> 1. **T-170** — Type ignore audit & reduction
+> 2. **T-171** — Mypy CI gate hardening
+> 3. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
 ---
 
@@ -178,6 +177,8 @@
   - `search(query, top_k)` returns `list[tuple[Chunk, float]]` sorted by score
   - Supports incremental updates (re-index on new chunks)
   - `deferred_rebuild()` context defers rebuilds until exit; `rebuild()` flushes pending changes
+  - `iter_chunks()` yields chunks without copying the full corpus _(T-165)_
+  - `load_or_create(backend=...)` factory selects memory or disk backend _(T-165)_
 
 ---
 
@@ -198,6 +199,8 @@
   ```
 - **Acceptance Criteria:**
   - Idempotent: re-ingesting same file updates existing chunks (deduplicate by hash)
+  - Re-ingest purges superseded chunk IDs from Qdrant + BM25 inside one `deferred_rebuild()` scope _(T-165 hardening)_
+  - Hierarchical summaries (T-125) and HyPE questions (T-122) indexed in the same deferred scope when enabled _(T-165)_
   - `ingest_directory()` defers BM25 rebuild until the batch completes (single rebuild per directory)
   - Progress reported via `tqdm` or Rich
   - Errors on individual chunks logged and skipped (pipeline continues)
@@ -213,7 +216,7 @@
   - `scripts/rebuild_embeddings.py`
 - **Flags:** `--batch-size`, `--dry-run`, `--recreate-collection`
 - **Acceptance Criteria:**
-  - Reads source-of-truth chunks from `BM25Index` (persisted pickle)
+  - Reads source-of-truth chunks from `BM25Index` via `iter_chunks()` (memory or disk backend — T-165)
   - Embeds with `BGEM3EmbeddingProvider.embed_both()` in configurable batches
   - Upserts into Qdrant; per-batch errors logged and counted without aborting
   - `--dry-run` counts chunks without writing
@@ -1790,7 +1793,7 @@
   1. **Multi-replica ops:** `docs/operations/feedback-multi-replica.md` documents safe deployment modes (1 replica, HPA ≥ 2 with CAS, optional Redis backend).
   2. **Rate limiting:** `/feedback` included in `src/api/rate_limit.py` protected routes when `api.rate_limit.enabled=true` (**T-160**).
   3. **Pluggable backend:** `FeedbackStore` with Redis `HINCRBYFLOAT` or SQL `UPSERT … score += delta` behind `accumulate_feedback_score`.
-  4. **Shared BM25 PVC:** skip BM25 save on shutdown when unchanged (`BM25Index._dirty`); full disk-backed reload deferred to **T-165**.
+  4. **Shared BM25 PVC:** skip BM25 save on shutdown when unchanged (`BM25Index._dirty`); disk-backed segmented index with bounded search RAM addressed in **T-165** (PR #37).
 - **Acceptance Criteria:**
   - [x] No `bm25_index.save()` on feedback path
   - [x] `accumulate_feedback_score` uses compare-and-set retries (not process-local lock only)
@@ -1942,7 +1945,7 @@
 >
 > **Depends on:** Phase 3 (T-032 API), Phase 6 (T-061 CI), Phase 8 (T-082 Docker), Phase 9 (T-095 Ingress)
 >
-> **Progress:** T-160 complete · T-161 complete · T-162 complete (PR #34) · T-163 complete · T-164 complete (PR #36)
+> **Progress:** T-160 complete · T-161 complete · T-162 complete (PR #34) · T-163 complete · T-164 complete (PR #36) · T-165 complete (PR #37)
 
 ---
 
@@ -2080,22 +2083,29 @@
 ---
 
 ### T-165 · Disk-Backed BM25 Index (Scale)
-- **Status:** `[ ]`
+- **Status:** `[x]` — PR #37
 - **Goal:** Extend the in-memory BM25 index (T-014) with a disk-backed mode for corpora exceeding 1M chunks — addresses the code analysis scalability note without replacing the current default.
 - **Inputs:** T-014 (`bm25.py`), T-015 (ingestion pipeline), T-146 (BM25 dirty-tracking skip-save on shutdown — partial mitigation for shared PVC)
 - **Outputs:** Configurable BM25 backend: `memory` (default) or `disk` (mmap/segmented index).
 - **Files:**
-  - `src/infrastructure/vectordb/bm25_disk.py` — disk-backed index implementation
-  - `src/infrastructure/vectordb/bm25.py` — factory selects backend from settings
-  - `src/core/settings.py` — add `retrieval.bm25.backend: Literal["memory", "disk"]`
-  - `configs/retrieval.yaml` — add `bm25.backend`, `bm25.disk_path`
-  - `tests/unit/test_bm25_disk.py`
+  - `src/infrastructure/vectordb/bm25_disk.py` — segmented/mmap disk-backed index; Okapi scoring matched to `rank_bm25` _(done)_
+  - `src/infrastructure/vectordb/bm25.py` — `BM25Index.load_or_create(backend=...)`, `iter_chunks()`, soft-view stats caching _(done)_
+  - `src/rag/pipelines/ingestion_pipeline.py` — single-doc `deferred_rebuild()`, atomic purge of superseded chunks on re-ingest, hierarchical/HyPE in same scope _(done)_
+  - `src/rag/retrieval/bm25_retriever.py` — accepts memory/disk index; `from_disk()` pins memory backend for eval caches _(done)_
+  - `src/core/settings.py` — `retrieval.bm25.backend: Literal["memory", "disk"]`, `disk_path`, `segment_size` _(done)_
+  - `configs/retrieval.yaml` — `bm25.backend`, `bm25.disk_path`, `bm25.segment_size` _(done)_
+  - `.env.example` — `RETRIEVAL__BM25__*` overrides _(done)_
+  - `scripts/rebuild_embeddings.py`, `scripts/run_evals.py`, `scripts/compare_embedding_providers.py` — stream via `iter_chunks()` _(done)_
+  - `src/evals/golden_dataset.py` — iterator-based chunk windowing for eval generation _(done)_
+  - `tests/unit/test_bm25_disk.py` — unit + 100K scale + memory-bound checks _(done)_
+  - `tests/unit/test_ingestion.py`, `tests/unit/ingestion_helpers.py` — re-ingest purge + deferred scope coverage _(done)_
 - **Acceptance Criteria:**
-  - Default `backend=memory` — zero behavior change
-  - `backend=disk` indexes and searches correctly for 100K+ chunk fixture
-  - Incremental updates work (re-ingest adds/removes chunks)
-  - Memory usage for disk backend stays bounded regardless of corpus size
-  - README documents when to switch backends
+  - [x] Default `backend=memory` — zero behavior change
+  - [x] `backend=disk` indexes and searches correctly for 100K+ chunk fixture
+  - [x] Incremental updates work (re-ingest adds/removes chunks)
+  - [x] Memory usage for disk backend stays bounded regardless of corpus size
+  - [x] README documents when to switch backends
+- **Notes:** Disk mode stores chunk JSONL + memmapped lengths + per-segment postings under `disk_path`. Search RAM is IDF/DF + id map + one segment's postings. Prefer `memory` below ~1M chunks / typical enterprise corpora; switch to `disk` when BM25 RSS becomes a problem. Eval sweep caches (`data/chunks/{size}/bm25_index.json`) remain JSON memory indexes regardless of global backend.
 
 ---
 
@@ -2166,7 +2176,7 @@
   4. Graph retrieval with Neo4j enabled — query latency
   5. Concurrent feedback on same `chunk_id` across simulated API pods — zero lost increments (**T-146**; validates Qdrant CAS / Redis backend under load) — **implemented** in `test_feedback_concurrency.py`
 - **Acceptance Criteria:**
-  - [ ] Baseline captured and committed after T-163–T-165 land
+  - [ ] Baseline captured and committed — **unblocked** now that T-163–T-165 are complete; next step after T-170/T-171 or in parallel
   - [x] Scenario 5 runnable independently via `pytest tests/benchmarks/test_feedback_concurrency.py`
   - [ ] `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
   - [ ] `make benchmark-infra` documented in README
@@ -2247,5 +2257,5 @@ T-163 + T-164 + T-165 ──► T-172
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
-16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → **T-165** _(~2 sessions; T-146 closed in PR #28; **next: T-165**)_
-17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
+17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** **T-170** → T-171 → T-172 _(~1 session; T-172 scenario 5 done; **next: T-170**)_
