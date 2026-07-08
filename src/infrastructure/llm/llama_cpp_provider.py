@@ -1,21 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import queue
+import time
 from collections.abc import AsyncIterator
-from threading import Lock, Thread
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from typing import TYPE_CHECKING, Any
 
 from src.core.exceptions import GenerationError
 from src.domain.repositories.llm_repository import LLMRepository
+from src.observability.tracing import get_tracer
 
 if TYPE_CHECKING:
     from llama_cpp import Llama
 
 logger = logging.getLogger(__name__)
+_tracer = get_tracer("rag-platform.llm")
 
 _SENTINEL = object()
+# Backpressure when many concurrent streams fill the asyncio bridge queue.
+_STREAM_QUEUE_MAXSIZE = 256
+# Isolated from the default asyncio thread pool (retrieval, feedback, etc.).
+_STREAM_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llama-cpp-stream")
+atexit.register(_STREAM_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
 
 class LlamaCppProvider(LLMRepository):
@@ -70,8 +80,9 @@ class LlamaCppProvider(LLMRepository):
     def generate_stream(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Return an async iterator that yields tokens as they are produced.
 
-        The synchronous llama.cpp generator runs in a background thread; tokens
-        are forwarded via a queue, so the event loop is never blocked.
+        Synchronous llama.cpp streaming runs on a dedicated thread pool; tokens
+        cross into the event loop via an unbounded thread queue and a bounded
+        "asyncio.Queue" bridge so backpressure never blocks the inference lock.
         """
         return self._stream_tokens(prompt, context, **kwargs)
 
@@ -132,10 +143,17 @@ class LlamaCppProvider(LLMRepository):
 
     async def _stream_tokens(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Async generator: yields tokens from a sync llama.cpp stream via a thread."""
+        loop = asyncio.get_running_loop()
         full_prompt = _join(prompt, context)
-        token_queue: queue.Queue[object] = queue.Queue()
+        thread_queue: queue.Queue[object] = queue.Queue()
+        token_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
+        items_ready = asyncio.Event()
+        cancelled = Event()
 
-        def _run() -> None:
+        def _signal_items() -> None:
+            items_ready.set()
+
+        def _producer() -> None:
             try:
                 with self._lock:
                     model = self._get_model()
@@ -146,30 +164,86 @@ class LlamaCppProvider(LLMRepository):
                         stop=self.stop_tokens,
                         stream=True,
                     ):
+                        if cancelled.is_set():
+                            break
                         choices = chunk["choices"]  # type: ignore[union-attr,index]
                         delta = str(choices[0]["delta"].get("content", ""))
                         if delta:
-                            token_queue.put(delta)
+                            thread_queue.put(delta)
+                            loop.call_soon_threadsafe(_signal_items)
             except Exception as exc:
-                token_queue.put(exc)
+                if not cancelled.is_set():
+                    thread_queue.put(exc)
+                    loop.call_soon_threadsafe(_signal_items)
             finally:
-                token_queue.put(_SENTINEL)
+                thread_queue.put(_SENTINEL)
+                loop.call_soon_threadsafe(_signal_items)
 
-        loop = asyncio.get_event_loop()
-        thread = Thread(target=_run, daemon=True)
-        thread.start()
+        async def _bridge() -> None:
+            try:
+                while True:
+                    forwarded_sentinel = False
+                    while True:
+                        try:
+                            bridge_item = thread_queue.get_nowait()
+                        except queue.Empty:
+                            break
 
-        try:
+                        if cancelled.is_set():
+                            if bridge_item is _SENTINEL:
+                                forwarded_sentinel = True
+                                break
+                            continue
+
+                        await token_queue.put(bridge_item)
+                        if bridge_item is _SENTINEL:
+                            forwarded_sentinel = True
+                            break
+
+                    if forwarded_sentinel:
+                        break
+
+                    items_ready.clear()
+                    if not thread_queue.empty():
+                        continue
+                    await items_ready.wait()
+            except Exception as exc:
+                if not cancelled.is_set():
+                    await token_queue.put(exc)
+                    await token_queue.put(_SENTINEL)
+
+        bridge_task = asyncio.create_task(_bridge())
+        worker = loop.run_in_executor(_STREAM_EXECUTOR, _producer)
+        queue_wait_ms = 0.0
+
+        async def _release_worker() -> None:
+            cancelled.set()
+            # Drain only the asyncio queue so a blocked bridge put can resume.
+            # Do not drain thread_queue here: the bridge must still observe _SENTINEL.
             while True:
-                item = await loop.run_in_executor(None, lambda: token_queue.get())  # type: ignore[misc]
-                if item is _SENTINEL:
+                try:
+                    token_queue.get_nowait()
+                except asyncio.QueueEmpty:
                     break
-                if isinstance(item, Exception):
-                    raise GenerationError("llama.cpp stream failed", cause=item) from item
-                if isinstance(item, str):
-                    yield item
-        finally:
-            thread.join(timeout=5)
+            await worker
+            await bridge_task
+
+        with _tracer.start_as_current_span("llm.stream") as span:
+            try:
+                while True:
+                    t0 = time.monotonic()
+                    item = await token_queue.get()
+                    queue_wait_ms += (time.monotonic() - t0) * 1000
+
+                    if item is _SENTINEL:
+                        break
+                    if isinstance(item, Exception):
+                        raise GenerationError("llama.cpp stream failed", cause=item) from item
+                    if isinstance(item, str):
+                        yield item
+            finally:
+                span.set_attribute("queue_wait_ms", round(queue_wait_ms, 1))
+                await _release_worker()
 
 
 def _join(prompt: str, context: str) -> str:

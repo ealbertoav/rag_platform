@@ -7,9 +7,8 @@
 > **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **T-162 complete** (PR #34 — diskcache CVE mitigation, upstream monitor, `LLM__DISABLE_DISK_CACHE`).
 >
 > **Next tasks (recommended order):**
-> 1. **T-163** — Async llama.cpp streaming
-> 2. **T-171** — Mypy CI gate hardening
-> 3. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+> 1. **T-171** — Mypy CI gate hardening
+> 2. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
 ---
 
@@ -2035,7 +2034,7 @@
 ---
 
 ### T-163 · Async llama.cpp Streaming
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Replace the thread + queue streaming pattern in `LlamaCppProvider` with native async bindings (when available) or `asyncio.to_thread` isolation — addresses the code analysis performance bottleneck under concurrent load.
 - **Inputs:** T-030 (`llama_cpp_provider.py`), T-031 (`ChatPipeline`)
 - **Outputs:** Non-blocking streaming that does not contend with the FastAPI event loop under concurrent requests.
@@ -2241,5 +2240,5 @@ T-163 + T-164 + T-165 ──► T-172
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
-16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → **T-163** → T-164 → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-163**)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → **T-164** → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-164**)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_
