@@ -249,6 +249,7 @@ class Neo4jSettings(BaseModel):
     password: SecretStr = SecretStr("")
     database: str = "neo4j"
     max_hops: int = Field(default=2, ge=1, le=5)
+    max_connection_pool_size: int = Field(default=100, ge=1)
     extract_entities_on_ingest: bool = True
 
     @model_validator(mode="after")

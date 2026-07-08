@@ -242,11 +242,11 @@ class TestAgentPipelineChat:
         chat = _chat_mock(decision_response=_GRAPH_LOOKUP)
         # Wire in a graph retriever mock
         graph_mock = MagicMock()
-        graph_mock.search.return_value = [(_chunk(99), 1.0)]
+        graph_mock.search = AsyncMock(return_value=[(_chunk(99), 1.0)])
         chat.retrieval.service.hybrid.graph = graph_mock
         p = AgentPipeline(pipeline=chat)
         await p.chat_full("EKS IAM question")
-        graph_mock.search.assert_called_once()
+        graph_mock.search.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_graph_lookup_without_retriever_returns_empty(self):
@@ -260,7 +260,7 @@ class TestAgentPipelineChat:
     async def test_graph_lookup_exception_is_swallowed(self):
         chat = _chat_mock(decision_response=_GRAPH_LOOKUP)
         graph_mock = MagicMock()
-        graph_mock.search.side_effect = RuntimeError("graph down")
+        graph_mock.search = AsyncMock(side_effect=RuntimeError("graph down"))
         chat.retrieval.service.hybrid.graph = graph_mock
         p = AgentPipeline(pipeline=chat)
         result = await p.chat_full("EKS IAM question")

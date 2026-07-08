@@ -89,7 +89,7 @@ class GraphRetriever:
         self._graph = graph
         self._bm25 = bm25
 
-    def search(
+    async def search(
         self,
         query: str,
         top_k: int,
@@ -103,7 +103,7 @@ class GraphRetriever:
 
         fetch_k = _graph_fetch_limit(top_k, filters)
         try:
-            id_score_pairs = self._graph.search_by_entities(
+            id_score_pairs = await self._graph.search_by_entities(
                 entity_names,
                 fetch_k,
                 filters=filters,

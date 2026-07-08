@@ -1097,7 +1097,7 @@ class TestNeo4jGaps:
         repo = Neo4jGraphRepository(uri="bolt://localhost", user="neo4j", password="pw")
         mock_driver = MagicMock()
         fake_neo4j = MagicMock()
-        fake_neo4j.GraphDatabase.driver.return_value = mock_driver
+        fake_neo4j.AsyncGraphDatabase.driver.return_value = mock_driver
         with patch.dict("sys.modules", {"neo4j": fake_neo4j}):
             assert repo._get_driver() is mock_driver
             assert repo._get_driver() is mock_driver

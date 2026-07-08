@@ -28,6 +28,6 @@ class GraphIndexer:
             if not relations:
                 continue
             try:
-                self._graph.upsert(relations, chunk_id=chunk.id, document_id=document_id)
+                self._graph.upsert_sync(relations, chunk_id=chunk.id, document_id=document_id)
             except Exception as exc:
                 logger.warning("Failed to index graph relations for chunk %s: %s", chunk.id, exc)

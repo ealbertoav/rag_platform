@@ -5,6 +5,7 @@ neo4j:
   password: ""
   database: neo4j
   max_hops: 2
+  max_connection_pool_size: 100
   extract_entities_on_ingest: true
 
 metadata:
