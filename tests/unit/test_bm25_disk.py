@@ -197,6 +197,73 @@ class TestDiskBM25Index:
         assert len(streamed) == 1
         assert streamed[0].id == "chunk-00099"
 
+    def test_iter_chunks_survives_concurrent_flush(self, tmp_path: Path):
+        import threading
+        import time
+
+        idx = DiskBM25Index(tmp_path / "disk", segment_size=2)
+        idx.index(_CORPUS)
+        flush_started = threading.Event()
+        flush_done = threading.Event()
+        original_flush = idx._flush_to_disk
+
+        def flush_with_sync() -> None:
+            flush_started.set()
+            flush_done.wait(timeout=5)
+            original_flush()
+
+        collected: list[Chunk] = []
+        errors: list[BaseException] = []
+
+        def stream_chunks() -> None:
+            try:
+                flush_started.wait(timeout=5)
+                for chunk in idx.iter_chunks():
+                    collected.append(chunk)
+                    if len(collected) == 2:
+                        flush_done.set()
+                        time.sleep(0.02)
+            except BaseException as exc:  # pragma: no cover - surfaced via errors
+                errors.append(exc)
+
+        with patch.object(idx, "_flush_to_disk", side_effect=flush_with_sync):
+            reader = threading.Thread(target=stream_chunks)
+            reader.start()
+            idx.add([_chunk("concurrent append during iteration", idx=88)])
+            reader.join(timeout=10)
+
+        assert not errors
+        assert {c.id for c in collected} == {c.id for c in _CORPUS} | {"chunk-00088"}
+
+    def test_iter_chunks_retries_after_vector_store_error(self, disk_index: DiskBM25Index):
+        disk_index.index(_CORPUS[:2])
+        calls = {"n": 0}
+        original = disk_index._get_by_id_unlocked
+
+        def flaky_get(chunk_id: str):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise VectorStoreError("stale segment read")
+            return original(chunk_id)
+
+        with patch.object(disk_index, "_get_by_id_unlocked", side_effect=flaky_get):
+            streamed = list(disk_index.iter_chunks())
+        assert {c.id for c in streamed} == {"chunk-00000", "chunk-00001"}
+
+    def test_iter_chunks_skips_already_yielded_on_restart(self, disk_index: DiskBM25Index):
+        disk_index.index(_CORPUS[:3])
+        original_get = disk_index._get_by_id_unlocked
+
+        def get_with_invalidation(chunk_id: str):
+            if chunk_id == "chunk-00001":
+                with disk_index._lock:
+                    disk_index._mutation_generation += 1
+            return original_get(chunk_id)
+
+        with patch.object(disk_index, "_get_by_id_unlocked", side_effect=get_with_invalidation):
+            streamed = list(disk_index.iter_chunks())
+        assert len(streamed) == 3
+
     def test_update_chunk_metadata(self, disk_index: DiskBM25Index):
         disk_index.index(_CORPUS)
         assert disk_index.update_chunk_metadata("chunk-00001", {}) is False

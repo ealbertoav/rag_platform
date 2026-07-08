@@ -118,30 +118,35 @@ class IngestionPipeline:
                 if old_chunk_ids:
                     self._vector_store.delete(old_chunk_ids)
 
-        chunks = self._service.prepare(document)
-        if not chunks:
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            if self._metadata is not None:
-                self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
-            return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
-
-        indexed_chunks = list(chunks)
-        if self._hierarchical_indexer is not None:
-            chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)  # type: ignore[attr-defined]
-            indexed_chunks = list(chunks)
-            indexed_chunks.extend(summary_chunks)
-        if self._augmentor is not None:
-            augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
-            indexed_chunks.extend(augmented)
-        if self._hype_indexer is not None:
-            hype_chunks = self._hype_indexer.index(chunks)  # type: ignore[attr-defined]
-            indexed_chunks.extend(hype_chunks)
-
-        self._index_graph(chunks, document.id)
-        self._vector_store.upsert(indexed_chunks)
         with self._bm25.deferred_rebuild():
-            if old_chunk_ids:
-                self._bm25.remove_by_ids(old_chunk_ids)
+            try:
+                chunks = self._service.prepare(document)
+            except Exception:
+                self._purge_stale_bm25(old_chunk_ids)
+                raise
+
+            if not chunks:
+                self._purge_stale_bm25(old_chunk_ids)
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                if self._metadata is not None:
+                    self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
+                return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
+
+            indexed_chunks = list(chunks)
+            if self._hierarchical_indexer is not None:
+                chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)  # type: ignore[attr-defined]
+                indexed_chunks = list(chunks)
+                indexed_chunks.extend(summary_chunks)
+            if self._augmentor is not None:
+                augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
+                indexed_chunks.extend(augmented)
+            if self._hype_indexer is not None:
+                hype_chunks = self._hype_indexer.index(chunks)  # type: ignore[attr-defined]
+                indexed_chunks.extend(hype_chunks)
+
+            self._index_graph(chunks, document.id)
+            self._vector_store.upsert(indexed_chunks)
+            self._purge_stale_bm25(old_chunk_ids)
             self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -219,13 +224,18 @@ class IngestionPipeline:
         if indexable:
             self._bm25.add(indexable)
 
+    def _purge_stale_bm25(self, chunk_ids: list[str]) -> None:
+        """Drop superseded lexical rows after vector-store deletes on re-ingesting."""
+        if chunk_ids:
+            self._bm25.remove_by_ids(chunk_ids)
+
     def _remove_document_chunks(self, metadata_doc_id: str) -> None:
         if self._metadata is None:
             return
         old_ids = self._metadata.get_chunk_ids(metadata_doc_id)
         if old_ids:
             self._vector_store.delete(old_ids)
-            self._bm25.remove_by_ids(old_ids)
+            self._purge_stale_bm25(old_ids)
 
     def _index_graph(self, chunks: list[Chunk], document_id: str) -> None:
         if self._graph_indexer is None:

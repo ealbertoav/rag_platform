@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from src.domain.entities.chunk import Chunk
@@ -38,3 +39,22 @@ def mock_ingestion_pipeline(
         graph_indexer=graph_indexer,
     )
     return pipeline, service, vector_store, bm25
+
+
+def ingest_with_hierarchical_and_hype_indexers(path: Path) -> tuple[list[Chunk], Chunk, Chunk]:
+    """Ingest *path* with mocked hierarchical and HyPE indexers.
+
+    Returns ``(upserted_chunks, summary_chunk, hype_chunk)``.
+    """
+    base = embedded_chunk(0)
+    summary = embedded_chunk(1)
+    hype = embedded_chunk(2)
+    hierarchical = MagicMock()
+    hierarchical.index.return_value = ([base], [summary])
+    hype_indexer = MagicMock()
+    hype_indexer.index.return_value = [hype]
+    pipeline, _, vector_store, _ = mock_ingestion_pipeline([base])
+    pipeline._hierarchical_indexer = hierarchical
+    pipeline._hype_indexer = hype_indexer
+    pipeline.ingest_file(path)
+    return vector_store.upsert.call_args.args[0], summary, hype

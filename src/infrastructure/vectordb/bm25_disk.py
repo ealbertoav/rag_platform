@@ -399,24 +399,37 @@ class DiskBM25Index:
             return self._read_size_unlocked()
 
     def iter_chunks(self) -> Generator[Chunk, None, None]:
-        """Yield live chunks one at a time without materializing the full corpus."""
-        with self._lock:
-            plan: list[Chunk | tuple[int, int]] = []
-            for chunk_id in self._iter_live_chunk_ids_unlocked():
-                pending = self._pending_chunks.get(chunk_id)
-                if pending is not None:
-                    plan.append(pending)
-                else:
-                    loc = self._id_map.get(chunk_id)
-                    if loc is not None:
-                        plan.append(loc)
-        for payload in plan:
-            if isinstance(payload, Chunk):
-                yield payload
-            else:
-                chunk = self._load_chunk(*payload)
+        """Yield live chunks one at a time without materializing the full corpus.
+
+        Each chunk is resolved under the index lock, so concurrent flushes cannot
+        read segment files after the on-disk tree is replaced. If a flush lands
+        mid-iteration, already-yielded IDs are skipped and the scan restarts.
+        """
+        yielded: set[str] = set()
+        while True:
+            restart = False
+            with self._lock:
+                generation = self._mutation_generation
+                chunk_ids = list(self._iter_live_chunk_ids_unlocked())
+
+            for chunk_id in chunk_ids:
+                if chunk_id in yielded:
+                    continue
+                with self._lock:
+                    if self._mutation_generation != generation:
+                        restart = True
+                        break
+                    try:
+                        chunk = self._get_by_id_unlocked(chunk_id)
+                    except VectorStoreError:
+                        restart = True
+                        break
                 if chunk is not None:
+                    yielded.add(chunk_id)
                     yield chunk
+
+            if not restart:
+                return
 
     @property
     def chunks(self) -> list[Chunk]:

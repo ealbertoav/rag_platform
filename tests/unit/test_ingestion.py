@@ -14,7 +14,11 @@ from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.vectordb.bm25 import BM25Index
 from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult, content_hash
-from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
+from tests.unit.ingestion_helpers import (
+    embedded_chunk,
+    ingest_with_hierarchical_and_hype_indexers,
+    mock_ingestion_pipeline,
+)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -169,6 +173,13 @@ class TestIngestionPipelineFile:
         _, kwargs = metadata.upsert_document.call_args
         assert kwargs["chunk_count"] == 1
 
+    def test_hierarchical_and_hype_indexers_extend_upsert(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("content")
+        upserted, summary, hype = ingest_with_hierarchical_and_hype_indexers(path)
+        assert any(c.id == summary.id for c in upserted)
+        assert any(c.id == hype.id for c in upserted)
+
     def test_no_upsert_when_no_chunks(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")
@@ -177,6 +188,35 @@ class TestIngestionPipelineFile:
         vector_store.upsert.assert_not_called()
         bm25.add.assert_not_called()
         assert result.chunk_count == 0
+
+    def test_reingest_empty_chunks_purges_real_bm25(self, tmp_path: Path):
+        from src.domain.entities.chunk import Chunk
+        from src.infrastructure.vectordb.bm25 import BM25Index
+
+        path = tmp_path / "doc.md"
+        path.write_text("version two")
+        stale = Chunk(id="old-chunk-1", document_id="doc-1", text="stale kubernetes terms")
+        bm25 = BM25Index()
+        bm25.index([stale])
+        metadata = MagicMock()
+        metadata.get_by_source.return_value = MagicMock(
+            id="doc-meta-1",
+            content_hash="old-hash",
+            chunk_count=1,
+        )
+        metadata.get_chunk_ids.return_value = ["old-chunk-1"]
+        service = MagicMock()
+        service.prepare.return_value = []
+        pipeline = IngestionPipeline(
+            service=service,
+            vector_store=MagicMock(),
+            bm25=bm25,
+            metadata=metadata,
+        )
+        result = pipeline.ingest_file(path)
+        assert result.chunk_count == 0
+        assert bm25.get_by_id("old-chunk-1") is None
+        assert bm25.search("kubernetes", top_k=1) == []
 
     def test_load_error_raises_ingestion_error(self, tmp_path: Path):
         path = tmp_path / "ghost.pdf"
