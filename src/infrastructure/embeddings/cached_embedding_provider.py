@@ -223,7 +223,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
             self._next_retry_at = float("inf")  # don't retry — package won't appear
             return None
         try:
-            client: Redis = _Redis.from_url(  # type: ignore[assignment]
+            client = _Redis.from_url(
                 self._redis_url,
                 password=self._redis_password or None,
                 decode_responses=True,
@@ -236,7 +236,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
                 _redact_redis_url(self._redis_url),
             )
             return client
-        except (_ConnError, _RedisError, OSError) as exc:  # type: ignore[misc]
+        except (_ConnError, _RedisError, OSError) as exc:
             self._next_retry_at = time.monotonic() + _RECONNECT_COOLDOWN
             logger.warning("Redis unavailable (%s); will retry in %.0fs", exc, _RECONNECT_COOLDOWN)
             return None
@@ -246,7 +246,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         try:
             pipeline.execute()
         except Exception as exc:  # noqa: BLE001
-            from redis.exceptions import RedisError as _RedisError  # type: ignore[import-untyped]
+            from redis.exceptions import RedisError as _RedisError
 
             if isinstance(exc, _RedisError):
                 logger.warning(
@@ -260,11 +260,11 @@ class CachedEmbeddingProvider(EmbeddingRepository):
                 raise
 
     def _mget(self, client: Redis, keys: list[str]) -> list[str | None]:
-        from redis.exceptions import RedisError as _RedisError  # type: ignore[import-untyped]
+        from redis.exceptions import RedisError as _RedisError
 
         try:
             return cast(list[str | None], client.mget(keys))
-        except _RedisError as exc:  # type: ignore[misc]
+        except _RedisError as exc:
             logger.warning(
                 "Redis mget failed (%s); bypassing cache for this batch, will retry in %.0fs",
                 exc,

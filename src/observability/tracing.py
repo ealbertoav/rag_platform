@@ -4,12 +4,13 @@ import functools
 import inspect
 import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import ParamSpec, TypeVar, cast
 
 from opentelemetry import trace
 from opentelemetry.trace import Span, StatusCode
 
-_F = TypeVar("_F", bound=Callable[..., object])
+P = ParamSpec("P")
+R = TypeVar("R")
 
 # Module-level tracer — the global TracerProvider is set up in core.logging.
 _tracer = trace.get_tracer("rag-platform")
@@ -28,7 +29,7 @@ def traced(
     span_name: str | None = None,
     *,
     record_exception: bool = True,
-) -> Callable[[_F], _F]:
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorator that wraps a sync or async function in an OTel span.
 
     Usage:
@@ -43,7 +44,7 @@ def traced(
     and sets the span status to ERROR.
     """
 
-    def decorator(fn: _F) -> _F:
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         module = str(getattr(fn, "__module__", None) or __name__)
         qualname = str(getattr(fn, "__qualname__", None) or repr(fn))
         name = span_name or f"{module}.{qualname}"
@@ -52,27 +53,27 @@ def traced(
         if inspect.iscoroutinefunction(fn):
 
             @functools.wraps(fn)
-            async def async_wrapper(*args: object, **kwargs: object) -> object:
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
                 with tracer.start_as_current_span(name) as span:
                     t0 = time.monotonic()
                     try:
-                        result = await fn(*args, **kwargs)  # type: ignore[misc]
+                        result = await fn(*args, **kwargs)
                         _set_latency(span, t0)
-                        return result
+                        return cast(R, result)
                     except Exception as exc:
                         if record_exception:
                             span.record_exception(exc)
                             span.set_status(StatusCode.ERROR, str(exc))
                         raise
 
-            return async_wrapper  # type: ignore[return-value]
+            return cast(Callable[P, R], async_wrapper)
 
         @functools.wraps(fn)
-        def sync_wrapper(*args: object, **kwargs: object) -> object:
+        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             with tracer.start_as_current_span(name) as span:
                 t0 = time.monotonic()
                 try:
-                    result = fn(*args, **kwargs)  # type: ignore[misc]
+                    result = fn(*args, **kwargs)
                     _set_latency(span, t0)
                     return result
                 except Exception as exc:
@@ -81,7 +82,7 @@ def traced(
                         span.set_status(StatusCode.ERROR, str(exc))
                     raise
 
-        return sync_wrapper  # type: ignore[return-value]
+        return cast(Callable[P, R], sync_wrapper)
 
     return decorator
 

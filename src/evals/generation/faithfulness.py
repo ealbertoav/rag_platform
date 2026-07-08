@@ -26,6 +26,6 @@ class FaithfulnessMetric(RagasMetric):
         return []
 
     def _get_ragas_metric(self) -> object:
-        from ragas.metrics import faithfulness  # type: ignore[import-untyped]
+        from ragas.metrics import faithfulness
 
         return faithfulness

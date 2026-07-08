@@ -26,6 +26,6 @@ class ContextPrecisionMetric(RagasMetric):
         return []
 
     def _get_ragas_metric(self) -> object:
-        from ragas.metrics import context_precision  # type: ignore[import-untyped]
+        from ragas.metrics import context_precision
 
         return context_precision

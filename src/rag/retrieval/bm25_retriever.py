@@ -62,7 +62,7 @@ class BM25Retriever:
     def save(self) -> None:
         self._index.save()
 
-    def get_by_id(self, chunk_id: str) -> object:
+    def get_by_id(self, chunk_id: str) -> Chunk | None:
         """Return the "Chunk" with *chunk_id* from the index, or "None"."""
         return self._index.get_by_id(chunk_id)
 

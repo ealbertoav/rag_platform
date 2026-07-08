@@ -5,7 +5,11 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25 import BM25Index
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 import yaml
 from rich.console import Console
@@ -15,13 +19,13 @@ from src.core.constants import CHUNKS_DIR, EXPORTS_DIR, ROOT, SUPPORTED_EXTENSIO
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.evals.e2e.benchmark_samples import (
+    BenchmarkPipeline,
     GenerationMetricAccumulator,
     pair_str,
     pipeline_error_logger,
     score_pipeline_question,
 )
 from src.evals.e2e.technique_benchmark import (
-    BenchmarkPipeline,
     has_real_qa_data,
     temporary_config,
 )
@@ -71,7 +75,7 @@ class ChunkSizeResult:
     error: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        return dataclasses.asdict(self)  # type: ignore[return-value]
+        return cast(dict[str, object], dataclasses.asdict(self))
 
 
 @dataclasses.dataclass
@@ -349,7 +353,7 @@ def index_chunks_for_size(
     *,
     cache_dir: Path | None = None,
     base_collection: str = "rag_documents",
-) -> tuple[VectorStoreRepository, object, list[Chunk]]:
+) -> tuple[VectorStoreRepository, BM25Index, list[Chunk]]:
     """Embed and replace the per-size Qdrant collection + BM25 cache."""
     from src.infrastructure.vectordb.bm25 import BM25Index
     from src.infrastructure.vectordb.qdrant import QdrantVectorStore
@@ -369,12 +373,15 @@ def index_chunks_for_size(
 def build_sweep_pipeline(
     *,
     vector_store: VectorStoreRepository,
-    bm25_index: object | None = None,
+    bm25_index: BM25Index | DiskBM25Index | None = None,
 ) -> BenchmarkPipeline:
     """Construct a ChatPipeline for chunk-size sweep evaluation."""
     from src.rag.pipelines.chat_pipeline import ChatPipeline
 
-    return ChatPipeline.from_settings(bm25_index=bm25_index, vector_store=vector_store)  # type: ignore[return-value]
+    return cast(
+        BenchmarkPipeline,
+        ChatPipeline.from_settings(bm25_index=bm25_index, vector_store=vector_store),
+    )
 
 
 def remap_relevant_chunks(

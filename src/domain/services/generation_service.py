@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from string import Template
 from uuid import uuid4
@@ -87,5 +87,5 @@ class GenerationService:
         return template.substitute(context=context)
 
     @staticmethod
-    async def _no_context_stream() -> AsyncIterator[str]:  # type: ignore[misc]
+    async def _no_context_stream() -> AsyncGenerator[str, None]:
         yield _NO_CONTEXT_REPLY

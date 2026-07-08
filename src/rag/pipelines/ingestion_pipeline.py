@@ -12,6 +12,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from src.core.constants import SUPPORTED_EXTENSIONS
 from src.core.exceptions import DocumentLoadError, IngestionError
 from src.domain.entities.chunk import Chunk
+from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.metadata_repository import DocumentRecord, MetadataRepository
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.domain.services.ingestion_service import IngestionService
@@ -20,6 +21,10 @@ from src.infrastructure.vectordb.bm25 import BM25Index
 
 if TYPE_CHECKING:
     from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
+    from src.rag.enrichment.document_augmentation import DocumentAugmentor
+    from src.rag.enrichment.hierarchical_indexer import HierarchicalIndexer
+    from src.rag.enrichment.hype_indexer import HyPEIndexer
+    from src.rag.ingestion.graph_indexer import GraphIndexer
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +70,10 @@ class IngestionPipeline:
         vector_store: VectorStoreRepository,
         bm25: BM25Index | DiskBM25Index,
         metadata: MetadataRepository | None = None,
-        graph_indexer: object | None = None,
-        augmentor: object | None = None,
-        hype_indexer: object | None = None,
-        hierarchical_indexer: object | None = None,
+        graph_indexer: GraphIndexer | None = None,
+        augmentor: DocumentAugmentor | None = None,
+        hype_indexer: HyPEIndexer | None = None,
+        hierarchical_indexer: HierarchicalIndexer | None = None,
     ) -> None:
         self._service = service
         self._vector_store = vector_store
@@ -128,14 +133,14 @@ class IngestionPipeline:
 
             indexed_chunks = list(chunks)
             if self._hierarchical_indexer is not None:
-                chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)  # type: ignore[attr-defined]
+                chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)
                 indexed_chunks = list(chunks)
                 indexed_chunks.extend(summary_chunks)
             if self._augmentor is not None:
-                augmented = self._augmentor.augment(chunks)  # type: ignore[attr-defined]
+                augmented = self._augmentor.augment(chunks)
                 indexed_chunks.extend(augmented)
             if self._hype_indexer is not None:
-                hype_chunks = self._hype_indexer.index(chunks)  # type: ignore[attr-defined]
+                hype_chunks = self._hype_indexer.index(chunks)
                 indexed_chunks.extend(hype_chunks)
 
             self._index_graph(chunks, document.id)
@@ -233,7 +238,7 @@ class IngestionPipeline:
         if self._graph_indexer is None:
             return
         try:
-            self._graph_indexer.index_chunks(chunks, document_id)  # type: ignore[attr-defined]
+            self._graph_indexer.index_chunks(chunks, document_id)
         except Exception as exc:
             logger.warning("Graph indexing failed for %s: %s", document_id, exc)
 
@@ -292,7 +297,7 @@ class IngestionPipeline:
         )
 
 
-def _build_graph_indexer() -> object | None:
+def _build_graph_indexer() -> GraphIndexer | None:
     """Build graph entity indexer when Neo4j ingest extraction is enabled."""
     from src.core.settings import settings
 
@@ -314,7 +319,7 @@ def _build_graph_indexer() -> object | None:
         return None
 
 
-def _build_augmentor(embedder: object, cfg: object) -> object | None:
+def _build_augmentor(embedder: EmbeddingRepository, cfg: object) -> DocumentAugmentor | None:
     """Build document augmentor when synthetic question generation is enabled."""
     if not getattr(cfg, "enabled", False):
         return None
@@ -325,7 +330,7 @@ def _build_augmentor(embedder: object, cfg: object) -> object | None:
         llm = LlamaCppProvider.from_settings()
         return DocumentAugmentor(
             llm=llm,
-            embedder=embedder,  # type: ignore[arg-type]
+            embedder=embedder,
             n_questions=getattr(cfg, "n_questions", 3),
         )
     except Exception as exc:
@@ -333,7 +338,7 @@ def _build_augmentor(embedder: object, cfg: object) -> object | None:
         return None
 
 
-def _build_hype_indexer(embedder: object, cfg: object) -> object | None:
+def _build_hype_indexer(embedder: EmbeddingRepository, cfg: object) -> HyPEIndexer | None:
     """Build HyPE indexer when hypothetical prompt embeddings are enabled."""
     if not getattr(cfg, "enabled", False):
         return None
@@ -344,7 +349,7 @@ def _build_hype_indexer(embedder: object, cfg: object) -> object | None:
         llm = LlamaCppProvider.from_settings()
         return HyPEIndexer(
             llm=llm,
-            embedder=embedder,  # type: ignore[arg-type]
+            embedder=embedder,
             n_questions=getattr(cfg, "n_questions", 3),
         )
     except Exception as exc:
@@ -352,7 +357,10 @@ def _build_hype_indexer(embedder: object, cfg: object) -> object | None:
         return None
 
 
-def _build_hierarchical_indexer(embedder: object, cfg: object) -> object | None:
+def _build_hierarchical_indexer(
+    embedder: EmbeddingRepository,
+    cfg: object,
+) -> HierarchicalIndexer | None:
     """Build a hierarchical summary indexer when two-tier indexing is enabled."""
     if not getattr(cfg, "enabled", False):
         return None
@@ -361,7 +369,7 @@ def _build_hierarchical_indexer(embedder: object, cfg: object) -> object | None:
         from src.rag.enrichment.hierarchical_indexer import HierarchicalIndexer
 
         llm = LlamaCppProvider.from_settings()
-        return HierarchicalIndexer(llm=llm, embedder=embedder)  # type: ignore[arg-type]
+        return HierarchicalIndexer(llm=llm, embedder=embedder)
     except Exception as exc:
         logger.warning("Hierarchical indexer unavailable: %s", exc)
         return None

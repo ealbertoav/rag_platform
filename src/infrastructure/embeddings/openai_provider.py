@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from tenacity import (
     before_sleep_log,
@@ -120,7 +120,7 @@ class OpenAIEmbeddingProvider(EmbeddingRepository):
         kwargs: dict[str, object] = {"input": texts, "model": self.model}
         if self.dimensions is not None:
             kwargs["dimensions"] = self.dimensions
-        response = client.embeddings.create(**kwargs)  # type: ignore[arg-type]
+        response = client.embeddings.create(**cast(Any, kwargs))
         return [list(item.embedding) for item in sorted(response.data, key=lambda x: x.index)]
 
     def _get_client(self) -> Any:

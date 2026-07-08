@@ -22,6 +22,6 @@ class RelevanceMetric(RagasMetric):
         return []
 
     def _get_ragas_metric(self) -> object:
-        from ragas.metrics import answer_relevancy  # type: ignore[import-untyped]
+        from ragas.metrics import answer_relevancy
 
         return answer_relevancy

@@ -7,6 +7,7 @@ from src.domain.entities.query import Query
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.vector_store_repository import SearchResult, VectorStoreRepository
 from src.rag.enrichment.document_augmentation import resolve_synthetic_questions
+from src.rag.enrichment.parent_context_resolver import ChunkLookup
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class HyPERetriever:
         self,
         embedder: EmbeddingRepository,
         vector_store: VectorStoreRepository,
-        chunk_lookup: object,
+        chunk_lookup: ChunkLookup,
     ) -> None:
         self._embedder = embedder
         self._vector_store = vector_store
@@ -39,7 +40,7 @@ class HyPERetriever:
         )
         resolved = resolve_synthetic_questions(
             hype_hits,
-            self._lookup.get_by_id,  # type: ignore[attr-defined]
+            self._lookup.get_by_id,
         )
         logger.debug("HyPE retrieval: %d hits → %d source chunks", len(hype_hits), len(resolved))
         return resolved[:top_k]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
@@ -24,13 +24,13 @@ def get_chunker(
     """Return a chunker for *strategy*, forwarding *kwargs* to its constructor."""
     match strategy:
         case "recursive":
-            chunker: Chunker = RecursiveChunker(**kwargs)  # type: ignore[arg-type]
+            chunker: Chunker = RecursiveChunker(**cast(Any, kwargs))
         case "semantic":
-            chunker = SemanticChunker(**kwargs)  # type: ignore[arg-type]
+            chunker = SemanticChunker(**cast(Any, kwargs))
         case "parent_child":
-            chunker = ParentChildChunker(**kwargs)  # type: ignore[arg-type]
+            chunker = ParentChildChunker(**cast(Any, kwargs))
         case "proposition":
-            chunker = PropositionChunker(**kwargs)  # type: ignore[arg-type]
+            chunker = PropositionChunker(**cast(Any, kwargs))
         case _:
             raise ValueError(f"Unknown chunking strategy: {strategy!r}")
 

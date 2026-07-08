@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.core.exceptions import EmbeddingError
 from src.domain.repositories.embedding_repository import (
@@ -103,13 +103,16 @@ class BGEM3EmbeddingProvider(EmbeddingRepository):
         if not texts:
             return {"dense_vecs": [], "lexical_weights": []}
         try:
-            return self._get_model().encode(  # type: ignore[no-any-return]
-                texts,
-                batch_size=self.batch_size,
-                max_length=self.max_length,
-                return_dense=return_dense,
-                return_sparse=return_sparse,
-                return_colbert_vecs=False,
+            return cast(
+                dict[str, Any],
+                self._get_model().encode(
+                    texts,
+                    batch_size=self.batch_size,
+                    max_length=self.max_length,
+                    return_dense=return_dense,
+                    return_sparse=return_sparse,
+                    return_colbert_vecs=False,
+                ),
             )
         except Exception as exc:
             raise EmbeddingError(f"BGE-M3 encode failed for {len(texts)} texts", cause=exc) from exc

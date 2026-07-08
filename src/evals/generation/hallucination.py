@@ -57,8 +57,8 @@ class HallucinationMetric:
     # ── internal ───────────────────────────────────────────────────────────────
 
     def _deepeval_score(self, sample: EvalSample) -> float:
-        from deepeval.metrics import HallucinationMetric as _HM  # type: ignore[import-untyped]
-        from deepeval.test_case import LLMTestCase  # type: ignore[import-untyped]
+        from deepeval.metrics import HallucinationMetric as _HM
+        from deepeval.test_case import LLMTestCase
 
         test_case = LLMTestCase(
             input=sample.question,

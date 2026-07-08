@@ -4,9 +4,10 @@ import dataclasses
 import json
 import logging
 from pathlib import Path
+from typing import cast
 
 from src.domain.entities.evaluation import EvalSample
-from src.evals.e2e.benchmark_samples import pair_str, pair_str_list
+from src.evals.e2e.benchmark_samples import BenchmarkPipeline, pair_str, pair_str_list
 from src.evals.generation.context_precision import ContextPrecisionMetric
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.hallucination import HallucinationMetric
@@ -30,7 +31,7 @@ class SampleResult:
     hallucination: float
 
     def to_dict(self) -> dict[str, object]:
-        return dataclasses.asdict(self)  # type: ignore[return-value]
+        return cast(dict[str, object], dataclasses.asdict(self))
 
 
 @dataclasses.dataclass
@@ -116,7 +117,7 @@ class RAGBenchmark:
 
     async def run(
         self,
-        pipeline: object,  # ChatPipeline — avoid circular import
+        pipeline: BenchmarkPipeline,
         qa_pairs: list[dict[str, object]],
         timestamp: str,
     ) -> BenchmarkReport:
@@ -132,7 +133,7 @@ class RAGBenchmark:
                 continue
 
             try:
-                run = await pipeline.benchmark(question)  # type: ignore[attr-defined]
+                run = await pipeline.benchmark(question)
             except Exception as exc:
                 logger.error("Pipeline failed for question %d: %s", i, exc)
                 results.append(
