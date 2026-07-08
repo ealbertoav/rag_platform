@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -169,6 +170,48 @@ class TestConcurrentStreaming:
         assert second_ms <= first_ms * 1.05 + 1.0
 
     @pytest.mark.asyncio
+    async def test_concurrent_streams_survive_saturated_default_executor(self):
+        """Streams must keep delivering tokens when the default thread pool is busy."""
+        mock = _stream_mock(["a", "b"], delay_s=0.01)
+        provider = _provider(mock)
+
+        async def _collect(idx: int) -> list[str]:
+            return [t async for t in provider.generate_stream(f"q-{idx}", "")]
+
+        async def _saturate_default_pool() -> None:
+            await asyncio.gather(*(asyncio.to_thread(time.sleep, 0.5) for _ in range(32)))
+
+        blocker = asyncio.create_task(_saturate_default_pool())
+        await asyncio.sleep(0.01)
+        try:
+            collectors = (_collect(i) for i in range(10))
+            results = await asyncio.wait_for(asyncio.gather(*collectors), timeout=15.0)
+        finally:
+            blocker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await blocker
+
+        assert len(results) == 10
+        assert all(tokens == ["a", "b"] for tokens in results)
+
+    @pytest.mark.asyncio
+    async def test_stream_bridge_does_not_use_default_to_thread(self):
+        """Bridge polling must stay on the event loop, not the shared thread pool."""
+        provider = _provider(_stream_mock(["x", "y"]))
+        real_to_thread = asyncio.to_thread
+
+        async def _forbidden_to_thread(func, *_args, **_kwargs):
+            name = getattr(func, "__name__", func)
+            raise AssertionError(f"streaming must not use asyncio.to_thread (got {name!r})")
+
+        with patch.object(asyncio, "to_thread", side_effect=_forbidden_to_thread):
+            tokens = await _collect_stream(provider, "q")
+
+        assert tokens == ["x", "y"]
+        # Sanity: default pool still works for unrelated blocking work.
+        assert await real_to_thread(lambda: "ok") == "ok"
+
+    @pytest.mark.asyncio
     async def test_backpressure_does_not_block_inference_lock(self):
         """Slow SSE consumers must not hold self._lock once tokens are produced."""
         mock = _stream_mock([f"t{i}" for i in range(32)], delay_s=0.0)
@@ -222,7 +265,30 @@ class TestStreamTracing:
 
 class TestStreamBridge:
     @pytest.mark.asyncio
-    async def test_bridge_put_failure_raises_generation_error(self):
+    async def test_bridge_rechecks_queue_before_wait(self):
+        """Cover race where items land after drain but before items_ready.wait()."""
+        provider = _provider(_stream_mock(["a", "b"], delay_s=0.01))
+        real_empty = llama_cpp_provider.queue.Queue.empty
+        real_clear = asyncio.Event.clear
+        recheck_once = {"pending": False}
+
+        def _empty_with_recheck(q: llama_cpp_provider.queue.Queue) -> bool:
+            if recheck_once["pending"] and real_empty(q):
+                recheck_once["pending"] = False
+                return False
+            return real_empty(q)
+
+        def _clear_and_flag(ev: asyncio.Event) -> None:
+            real_clear(ev)
+            recheck_once["pending"] = True
+
+        with (
+            patch.object(llama_cpp_provider.queue.Queue, "empty", _empty_with_recheck),
+            patch.object(asyncio.Event, "clear", _clear_and_flag),
+        ):
+            tokens = await _collect_stream(provider, "q")
+
+        assert tokens == ["a", "b"]
         """Bridge delivery failures must surface as GenerationError, not empty output."""
         provider = _provider(_stream_mock(["only"]))
         real_put = asyncio.Queue.put
@@ -278,25 +344,21 @@ class TestStreamCancellation:
         await _assert_generate_after_cancel(provider)
 
     @pytest.mark.asyncio
-    async def test_bridge_thread_get_failure_raises_generation_error(self):
-        """Cover the bridge exception handler when thread_queue.get fails."""
+    async def test_bridge_get_nowait_failure_raises_generation_error(self):
+        """Cover the bridge exception handler when thread_queue.get_nowait fails."""
         provider = _provider(_stream_mock(["x"]))
-        real_get = llama_cpp_provider.queue.Queue.get
+        real_get_nowait = llama_cpp_provider.queue.Queue.get_nowait
         calls = 0
 
-        def _failing_get(
-            thread_queue: llama_cpp_provider.queue.Queue,
-            block: bool = True,
-            timeout: float | None = None,
-        ) -> object:
+        def _failing_get_nowait(thread_queue: llama_cpp_provider.queue.Queue) -> object:
             nonlocal calls
             calls += 1
             if calls == 1:
                 raise OSError("thread bridge failed")
-            return real_get(thread_queue, block, timeout)
+            return real_get_nowait(thread_queue)
 
         with (
-            patch.object(llama_cpp_provider.queue.Queue, "get", _failing_get),
+            patch.object(llama_cpp_provider.queue.Queue, "get_nowait", _failing_get_nowait),
             pytest.raises(GenerationError, match="stream failed") as exc_info,
         ):
             await _collect_stream(provider, "q")
