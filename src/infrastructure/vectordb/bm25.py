@@ -231,14 +231,25 @@ class BM25Index:
     ) -> BM25Index | DiskBM25Index:
         """Return a loaded index if the file exists, otherwise an empty one.
 
-        Backend selection (T-165): when *backend* is omitted, reads
-        "settings.retrieval.bm25.backend" (default "memory").  "disk"
-        returns a: class:`~src.infrastructure.vectordb.bm25_disk.DiskBM25Index`
-        rooted at *index_path* or "retrieval.bm25.disk_path".
+        Backend selection (T-165):
+        - Explicit "backend=" always wins.
+        - With no "index_path", falls back to "settings.retrieval.bm25.backend"
+          (default "memory"). "disk" opens
+          "DiskBM25Index" at "retrieval.bm25.disk_path".
+        - An explicit "index_path" without "backend=" always uses the
+          legacy JSON memory index so eval caches, "BM25Retriever.from_disk",
+          and tests keep working when the global setting is "disk".
+          Pass "backend="disk"" to treat that path as a segmented root.
         """
         from src.core.settings import settings
 
-        selected: BM25Backend = backend or settings.retrieval.bm25.backend
+        if backend is not None:
+            selected: BM25Backend = backend
+        elif index_path is not None:
+            selected = "memory"
+        else:
+            selected = settings.retrieval.bm25.backend
+
         if selected == "disk":
             from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 

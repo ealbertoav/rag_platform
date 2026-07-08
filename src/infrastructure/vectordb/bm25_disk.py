@@ -192,6 +192,8 @@ class DiskBM25Index:
         # Pending mutations held until flush (bounded by ingest batch size).
         self._pending_chunks: dict[str, Chunk] = {}
         self._deleted_ids: set[str] = set()
+        # Lazily computed Okapi (df, size, total_dl) for deferred soft-view search.
+        self._soft_view_stats_cache: tuple[dict[str, int], int, int] | None = None
 
     # ── Indexing ───────────────────────────────────────────────────────────────
 
@@ -353,6 +355,7 @@ class DiskBM25Index:
             }
             self._pending_chunks.clear()
             self._deleted_ids.clear()
+            self._soft_view_stats_cache = None
             self._dirty = False
             self._needs_rebuild = False
         logger.info(
@@ -445,6 +448,7 @@ class DiskBM25Index:
     def _mark_dirty(self) -> None:
         self._dirty = True
         self._mutation_generation += 1
+        self._soft_view_stats_cache = None
 
     def _read_size_unlocked(self) -> int:
         return sum(1 for _ in self._iter_live_chunk_ids_unlocked())
@@ -505,6 +509,7 @@ class DiskBM25Index:
         self._segment_chunk_ids.clear()
         self._pending_chunks.clear()
         self._deleted_ids.clear()
+        self._soft_view_stats_cache = None
         if self._path.exists():
             with suppress(OSError):
                 shutil.rmtree(self._path)
@@ -524,6 +529,53 @@ class DiskBM25Index:
         self._apply_materialized_state(meta)
         self._pending_chunks.clear()
         self._deleted_ids.clear()
+        self._soft_view_stats_cache = None
+
+    def _soft_view_corpus_stats(self) -> tuple[dict[str, int], int, int]:
+        """Return live (df, corpus_size, total_dl) including deferred mutations.
+
+        On-disk tables stay frozen until flush. Soft-view search must undo
+        deleted/replaced documents' contributions and fold in pending chunks so
+        IDF/avgdl match the in-memory backend during: meth:`deferred_rebuild`.
+        """
+        if not self._pending_chunks and not self._deleted_ids:
+            return self._df, self._corpus_size, self._total_dl
+        cached = self._soft_view_stats_cache
+        if cached is not None:
+            return cached
+
+        df = dict(self._df)
+        size = self._corpus_size
+        total_dl = self._total_dl
+
+        # Undo every soft-deleted disk doc (pure deletes and replacements).
+        for chunk_id in self._deleted_ids:
+            loc = self._id_map.get(chunk_id)
+            if loc is None:
+                continue
+            old = self._load_chunk(*loc)
+            if old is None:
+                continue
+            toks = _tokenize(old.text)
+            size = max(0, size - 1)
+            total_dl = max(0, total_dl - len(toks))
+            for term in _term_freqs(toks):
+                remaining = df.get(term, 0) - 1
+                if remaining <= 0:
+                    df.pop(term, None)
+                else:
+                    df[term] = remaining
+
+        # Fold pending docs (net-new and replacements) into the soft view.
+        for chunk in self._pending_chunks.values():
+            toks = _tokenize(chunk.text)
+            size += 1
+            total_dl += len(toks)
+            for term in _term_freqs(toks):
+                df[term] = df.get(term, 0) + 1
+
+        self._soft_view_stats_cache = (df, size, total_dl)
+        return self._soft_view_stats_cache
 
     @staticmethod
     def _materialize_segments(
@@ -616,6 +668,7 @@ class DiskBM25Index:
         self._corpus_size = meta["corpus_size"]
         self._total_dl = meta["total_dl"]
         self._segment_size = meta["segment_size"]
+        self._soft_view_stats_cache = None
 
     def _segment_dir(self, segment_id: int) -> Path:
         return self._path / _SEGMENTS_DIR / f"{segment_id:06d}"
@@ -658,10 +711,19 @@ class DiskBM25Index:
     ) -> list[tuple[Chunk, float]]:
         scored: dict[str, float] = defaultdict(float)
 
+        live_df, live_size, live_total_dl = self._soft_view_corpus_stats()
+        if live_size <= 0:
+            return []
+        live_idf = (
+            self._idf
+            if not self._pending_chunks and not self._deleted_ids
+            else _bm25_idf(live_size, live_df)
+        )
+        avgdl = live_total_dl / live_size
+
         # Disk-backed segments (skip soft-deleted / pending replacements).
-        if self._segment_ids and self._corpus_size > 0:
-            avgdl = self._total_dl / self._corpus_size
-            query_terms = [t for t in tokens if t in self._idf]
+        if self._segment_ids:
+            query_terms = [t for t in tokens if t in live_idf]
             for segment_id in self._segment_ids:
                 lengths = self._mmap_lengths(segment_id)
                 postings = self._load_postings(segment_id)
@@ -669,7 +731,7 @@ class DiskBM25Index:
                     str(x) for x in _read_json(self._segment_dir(segment_id) / "ids.json")
                 ]
                 for term in query_terms:
-                    idf = self._idf.get(term, 0.0)
+                    idf = live_idf.get(term, 0.0)
                     for local_idx, tf in postings.get(term, []):
                         # pyrefly: ignore [unnecessary-type-conversion]
                         li = int(local_idx)
@@ -682,38 +744,21 @@ class DiskBM25Index:
                         scored[chunk_id] += _score_term(float(tf), dl, avgdl, idf)
                 del postings
 
-        # Soft view for pending (deferred) chunks.
-        if self._pending_chunks:
-            pending_df = dict(self._df)
-            pending_size = self._corpus_size
-            pending_total_dl = self._total_dl
-            # Subtract deleted live docs that will be replaced / removed.
-            for chunk_id in self._deleted_ids:
-                if chunk_id in self._id_map and chunk_id not in self._pending_chunks:
-                    pending_size = max(0, pending_size - 1)
-            for chunk_id, chunk in self._pending_chunks.items():
-                toks = _tokenize(chunk.text)
-                if chunk_id not in self._id_map or chunk_id in self._deleted_ids:
-                    pending_size += 1
-                    pending_total_dl += len(toks)
-                    for term in _term_freqs(toks):
-                        pending_df[term] = pending_df.get(term, 0) + 1
-            pending_idf = _bm25_idf(max(pending_size, 1), pending_df) if pending_df else {}
-            pending_avgdl = (pending_total_dl / pending_size) if pending_size else 1.0
-            for chunk_id, chunk in self._pending_chunks.items():
-                toks = _tokenize(chunk.text)
-                tf_map = _term_freqs(toks)
-                dl = float(len(toks)) or 1.0
-                score = 0.0
-                for term in tokens:
-                    score += _score_term(
-                        float(tf_map.get(term, 0)),
-                        dl,
-                        pending_avgdl,
-                        pending_idf.get(term, 0.0),
-                    )
-                if score > 0:
-                    scored[chunk_id] = score
+        # Soft view for pending (deferred) chunks — same IDF/avgdl as disk rows.
+        for chunk_id, chunk in self._pending_chunks.items():
+            toks = _tokenize(chunk.text)
+            tf_map = _term_freqs(toks)
+            dl = float(len(toks)) or 1.0
+            score = 0.0
+            for term in tokens:
+                score += _score_term(
+                    float(tf_map.get(term, 0)),
+                    dl,
+                    avgdl,
+                    live_idf.get(term, 0.0),
+                )
+            if score > 0:
+                scored[chunk_id] = score
 
         ranked = sorted(
             ((cid, score) for cid, score in scored.items() if score > 0),

@@ -30,8 +30,14 @@ class BM25Retriever:
 
     @classmethod
     def from_disk(cls, index_path: Path | None = None) -> BM25Retriever:
-        """Load an existing index from disk (or create empty if none exists)."""
-        return cls(BM25Index.load_or_create(index_path))
+        """Load an existing JSON memory index (or create empty if none exists).
+
+        Always uses the memory backend so eval caches and explicit ".json" /
+        ".pkl" paths stay valid even when "retrieval.bm25.backend" is
+        "disk". For the production disk store, construct via
+        "BM25Index.load_or_create(backend="disk")" (or omit "index_path").
+        """
+        return cls(BM25Index.load_or_create(index_path, backend="memory"))
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -57,7 +63,7 @@ class BM25Retriever:
         self._index.save()
 
     def get_by_id(self, chunk_id: str) -> object:
-        """Return the ``Chunk`` with *chunk_id* from the index, or ``None``."""
+        """Return the "Chunk" with *chunk_id* from the index, or "None"."""
         return self._index.get_by_id(chunk_id)
 
     @property

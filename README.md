@@ -1451,7 +1451,7 @@ RETRIEVAL__BM25__DISK_PATH=data/processed/bm25_disk
 RETRIEVAL__BM25__SEGMENT_SIZE=10000
 ```
 
-**Behavior:** `BM25Index.load_or_create()` selects the backend from settings. Disk mode stores chunk payloads + inverted postings per segment; doc lengths are memmapped; scoring matches in-memory Okapi (`k1=1.5`, `b=0.75`, epsilon floor). Incremental `add` / `remove_by_ids` / document-id deletion work the same as memory mode. Search memory stays bounded (IDF/DF + id map + one segment of postings), not the full corpus model.
+**Behavior:** `BM25Index.load_or_create()` (no path) selects the backend from settings. An explicit `index_path` without `backend=` always opens the JSON memory index so eval caches and `BM25Retriever.from_disk` stay compatible when the global setting is `disk`; pass `backend="disk"` to use a segmented directory at that path. Disk mode stores chunk payloads + inverted postings per segment; doc lengths are memmapped; scoring matches in-memory Okapi (`k1=1.5`, `b=0.75`, epsilon floor), including soft-view search during `deferred_rebuild`. Incremental `add` / `remove_by_ids` / document-id deletion work the same as memory mode. Search memory stays bounded (IDF/DF + id map + one segment of postings), not the full corpus model.
 
 **When to stay on `memory`:** local dev, Docker Compose single API, and corpora well under ~1M chunks — zero extra I/O and identical scores.
 

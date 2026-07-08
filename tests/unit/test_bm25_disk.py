@@ -462,6 +462,73 @@ class TestDiskBM25Errors:
             hits = disk_index.search("zzqqww", top_k=1)
             assert hits and hits[0][0].id == "chunk-00050"
 
+    def test_deferred_soft_view_matches_memory_scores(self, tmp_path: Path):
+        """Live ingest soft-view must match in-memory Okapi during deferred_rebuild."""
+        mem = BM25Index()
+        disk = DiskBM25Index(tmp_path / "disk", segment_size=2)
+        mem.index(_CORPUS)
+        disk.index(_CORPUS)
+        replacement = _chunk("kubernetes brand new replacement text", idx=1)
+        added = _chunk("brand new injectable zzqqww term", idx=99)
+        with mem.deferred_rebuild(), disk.deferred_rebuild():
+            mem.remove_by_ids(["chunk-00000"])
+            disk.remove_by_ids(["chunk-00000"])
+            mem.add([replacement, added])
+            disk.add([replacement, added])
+            for query in (
+                "kubernetes",
+                "zzqqww",
+                "replacement",
+                "vector",
+                "quick brown fox",
+                "python async",
+            ):
+                mem_hits = mem.search(query, top_k=5)
+                disk_hits = disk.search(query, top_k=5)
+                assert [c.id for c, _ in mem_hits] == [c.id for c, _ in disk_hits], query
+                for (_, ms), (_, ds) in zip(mem_hits, disk_hits, strict=True):
+                    assert ms == pytest.approx(ds, rel=1e-6, abs=1e-9), query
+
+    def test_deferred_soft_view_stats_cache_hit(self, disk_index: DiskBM25Index):
+        disk_index.index(_CORPUS)
+        with disk_index.deferred_rebuild():
+            disk_index.add([_chunk("cacheable pending term", idx=80)])
+            first = disk_index._soft_view_corpus_stats()
+            second = disk_index._soft_view_corpus_stats()
+            assert first is second
+            disk_index.search("cacheable", top_k=1)
+            third = disk_index._soft_view_corpus_stats()
+            assert third is first
+
+    def test_soft_view_skips_missing_deleted_chunk(self, disk_index: DiskBM25Index):
+        disk_index.index(_CORPUS[:2])
+        with disk_index.deferred_rebuild():
+            disk_index.remove_by_ids(["chunk-00000"])
+            with patch.object(disk_index, "_load_chunk", return_value=None):
+                hits = disk_index.search("kubernetes", top_k=5)
+            assert isinstance(hits, list)
+
+    def test_soft_view_ignores_deleted_id_absent_from_map(self, disk_index: DiskBM25Index):
+        disk_index.index(_CORPUS[:2])
+        with disk_index.deferred_rebuild():
+            disk_index._deleted_ids.add("never-indexed")
+            disk_index._soft_view_stats_cache = None
+            df, size, total_dl = disk_index._soft_view_corpus_stats()
+            assert size == disk_index._corpus_size
+            assert total_dl == disk_index._total_dl
+            assert df == disk_index._df
+
+    def test_search_unlocked_empty_after_deferred_full_delete(self, disk_index: DiskBM25Index):
+        disk_index.index(_CORPUS)
+        with disk_index.deferred_rebuild():
+            disk_index.remove_by_ids([c.id for c in _CORPUS])
+            assert disk_index.search("kubernetes", top_k=5) == []
+            assert disk_index._search_unlocked(["kubernetes"], 5, filters=None) == []
+            df, size, total_dl = disk_index._soft_view_corpus_stats()
+            assert size == 0
+            assert total_dl == 0
+            assert df == {}
+
     def test_search_skips_missing_chunk_and_filtered(self, disk_index: DiskBM25Index):
         disk_index.index(_CORPUS)
         ranked_ids: list[str] = []
@@ -520,6 +587,39 @@ class TestBM25Factory:
             assert isinstance(idx, DiskBM25Index)
             assert idx.path == tmp_path / "from_settings"
             assert idx._segment_size == 3
+
+    def test_explicit_json_path_stays_memory_when_settings_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        json_path = tmp_path / "bm25_index.json"
+        saved = BM25Index(index_path=json_path)
+        saved.index(_CORPUS)
+        saved.save()
+        assert json_path.is_file()
+
+        monkeypatch.setenv("RETRIEVAL__BM25__BACKEND", "disk")
+        monkeypatch.setenv("RETRIEVAL__BM25__DISK_PATH", str(tmp_path / "disk_root"))
+        from src.core.settings import Settings
+
+        s = Settings()
+        with patch("src.core.settings.settings", s):
+            idx = BM25Index.load_or_create(json_path)
+            assert isinstance(idx, BM25Index)
+            assert idx.size == len(_CORPUS)
+            assert json_path.is_file()
+            assert not json_path.is_dir()
+
+            from src.rag.retrieval.bm25_retriever import BM25Retriever
+
+            retriever = BM25Retriever.from_disk(json_path)
+            assert isinstance(retriever.bm25_index, BM25Index)
+            assert retriever.size == len(_CORPUS)
+
+    def test_explicit_path_with_backend_disk_still_uses_disk(self, tmp_path: Path):
+        path = tmp_path / "explicit_disk"
+        idx = BM25Index.load_or_create(path, backend="disk")
+        assert isinstance(idx, DiskBM25Index)
+        assert idx.path == path
 
 
 # ── scale / memory bounded ────────────────────────────────────────────────────
