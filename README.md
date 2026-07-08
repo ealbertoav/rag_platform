@@ -34,6 +34,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Neo4j async driver (T-164):** Graph RAG uses Neo4j's `AsyncGraphDatabase` so entity lookup does not block the FastAPI event loop. `HybridRetriever` awaits the graph leg in the same `asyncio.gather` as dense + BM25; sync callers (CLI ingestion, shutdown) use `upsert_sync` / `close_sync` via `src/core/async_bridge.py`. Pool size is `neo4j.max_connection_pool_size` (default 100). See [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag).
 
+> **Disk-backed BM25 (T-165):** Lexical search stays `memory` by default (in-RAM `rank-bm25`). For corpora approaching 100K–1M+ chunks, set `retrieval.bm25.backend: disk` to use a segmented/mmap index under `retrieval.bm25.disk_path` so search RAM stays bounded. See [Disk-Backed BM25 (T-165)](#disk-backed-bm25-t-165).
+
 ---
 
 ## Table of Contents
@@ -70,6 +72,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [API Rate Limiting (T-160)](#api-rate-limiting-t-160)
   - [Automated Dependency Scanning (T-161)](#automated-dependency-scanning-t-161)
   - [diskcache CVE Mitigation (T-162)](#diskcache-cve-mitigation-t-162)
+  - [Disk-Backed BM25 (T-165)](#disk-backed-bm25-t-165)
   - [EKS Setup](#eks-setup)
 - [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag)
   - [Async Neo4j driver (T-164)](#async-neo4j-driver-t-164)
@@ -172,7 +175,7 @@ flowchart LR
 | Embedding cache | Redis (transparent decorator, configurable TTL) |
 | Reranker | [BGE-Reranker-v2-M3](https://huggingface.co/BAAI/bge-reranker-v2-m3) |
 | Vector DB | [Qdrant](https://qdrant.tech) (self-hosted, with embedding model versioning) |
-| Sparse search | BM25 via `rank-bm25` |
+| Sparse search | BM25 via `rank-bm25` (`memory` default; optional `disk` backend — T-165) |
 | Knowledge graph | [Neo4j](https://neo4j.com) (optional, `uv sync --extra graph`) |
 | API framework | [FastAPI](https://fastapi.tiangolo.com) |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
@@ -278,6 +281,9 @@ REDIS__URL=redis://localhost:6379
 RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
 RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
+RETRIEVAL__BM25__BACKEND=memory           # memory (default) | disk (T-165 scale)
+# RETRIEVAL__BM25__DISK_PATH=data/processed/bm25_disk
+# RETRIEVAL__BM25__SEGMENT_SIZE=10000
 RETRIEVAL__HYPE__ENABLED=false            # HyPE question-question matching (T-122)
 RETRIEVAL__HYPE__N_QUESTIONS=3
 RETRIEVAL__HYDE__ENABLED=false            # HyDE hypothetical document embedding (T-130)
@@ -344,7 +350,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151) |
@@ -1418,6 +1424,39 @@ uv run pytest tests/unit/test_diskcache_cve_check.py tests/unit/test_llm.py -v -
 
 When upstream `diskcache` publishes a fixed release above 5.6.3, upgrade the override in `pyproject.toml`, renew or remove the allowlist entry, and re-run `make audit-deps`.
 
+### Disk-Backed BM25 (T-165)
+
+Lexical retrieval defaults to an **in-memory** Okapi BM25 index (`rank-bm25`) persisted as JSON at `data/processed/bm25_index.json`. That remains the right choice for typical enterprise corpora.
+
+Switch to the **disk** backend when BM25 RSS becomes a problem (approaching ~100K–1M+ chunks, or multi-replica pods that cannot afford a full Okapi model in RAM):
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `retrieval.bm25.backend` | `memory` | `memory` = current T-014 behavior; `disk` = segmented/mmap index |
+| `retrieval.bm25.disk_path` | `data/processed/bm25_disk` | Directory for manifest, IDF, id map, and segment files |
+| `retrieval.bm25.segment_size` | `10000` | Chunks per on-disk segment |
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  bm25:
+    backend: disk
+    disk_path: data/processed/bm25_disk
+    segment_size: 10000
+```
+
+```bash
+RETRIEVAL__BM25__BACKEND=disk
+RETRIEVAL__BM25__DISK_PATH=data/processed/bm25_disk
+RETRIEVAL__BM25__SEGMENT_SIZE=10000
+```
+
+**Behavior:** `BM25Index.load_or_create()` selects the backend from settings. Disk mode stores chunk payloads + inverted postings per segment; doc lengths are memmapped; scoring matches in-memory Okapi (`k1=1.5`, `b=0.75`, epsilon floor). Incremental `add` / `remove_by_ids` / document-id deletion work the same as memory mode. Search memory stays bounded (IDF/DF + id map + one segment of postings), not the full corpus model.
+
+**When to stay on `memory`:** local dev, Docker Compose single API, and corpora well under ~1M chunks — zero extra I/O and identical scores.
+
+**Migration:** backends are not interchangeable on disk. Changing `backend` requires a fresh ingest (or rebuilding the chosen store). Feedback scores still never rewrite BM25 (T-145/T-146).
+
 ### EKS Setup
 
 See **[infra/eks/README.md](infra/eks/README.md)** for the complete end-to-end guide covering:
@@ -1803,7 +1842,7 @@ rag_implementation/
 │   └── otel-collector.yaml     # OTel collector — OTLP gRPC/HTTP receiver, debug exporter
 ├── data/                       # Runtime data (gitignored)
 │   ├── raw/                    # Source documents to ingest
-│   ├── processed/              # BM25 index (.pkl)
+│   ├── processed/              # BM25 memory JSON / optional bm25_disk/ (T-165)
 │   └── exports/                # Benchmark results (.json)
 ├── datasets/
 │   ├── goldens/                # Golden QA + retrieval datasets + regression baseline (T-152)
@@ -1867,7 +1906,7 @@ rag_implementation/
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · benchmark_samples helpers
-│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search
+│   ├── infrastructure/         # BGE-M3, Qdrant, BM25 (+ disk backend T-165), feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search
 │   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   │   └── search/             # DuckDuckGo · Tavily · Null web search providers (T-142)

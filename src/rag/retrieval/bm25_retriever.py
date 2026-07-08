@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.infrastructure.vectordb.bm25 import BM25Index
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 
 class BM25Retriever:
@@ -15,11 +19,11 @@ class BM25Retriever:
     entities without needing to know how BM25 is built or persisted.
     """
 
-    def __init__(self, index: BM25Index) -> None:
+    def __init__(self, index: BM25Index | DiskBM25Index) -> None:
         self._index = index
 
     @property
-    def bm25_index(self) -> BM25Index:
+    def bm25_index(self) -> BM25Index | DiskBM25Index:
         return self._index
 
     # ── Factory ────────────────────────────────────────────────────────────────

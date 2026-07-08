@@ -9,7 +9,7 @@ import types
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from rank_bm25 import BM25Okapi
 
@@ -19,9 +19,14 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.rag.retrieval.filters import chunk_matches_filter
 
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
+
 logger = logging.getLogger(__name__)
 
 _INDEX_FORMAT_VERSION = 1
+
+BM25Backend = Literal["memory", "disk"]
 
 _fcntl: types.ModuleType | None = None
 try:
@@ -218,8 +223,33 @@ class BM25Index:
         logger.info("BM25 index loaded from %s (%d chunks)", self._path, len(self._chunks))
 
     @classmethod
-    def load_or_create(cls, index_path: Path | None = None) -> BM25Index:
-        """Return a loaded index if the file exists, otherwise an empty one."""
+    def load_or_create(
+        cls,
+        index_path: Path | None = None,
+        *,
+        backend: BM25Backend | None = None,
+    ) -> BM25Index | DiskBM25Index:
+        """Return a loaded index if the file exists, otherwise an empty one.
+
+        Backend selection (T-165): when *backend* is omitted, reads
+        "settings.retrieval.bm25.backend" (default "memory").  "disk"
+        returns a: class:`~src.infrastructure.vectordb.bm25_disk.DiskBM25Index`
+        rooted at *index_path* or "retrieval.bm25.disk_path".
+        """
+        from src.core.settings import settings
+
+        selected: BM25Backend = backend or settings.retrieval.bm25.backend
+        if selected == "disk":
+            from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
+
+            disk_path = (
+                index_path if index_path is not None else Path(settings.retrieval.bm25.disk_path)
+            )
+            return DiskBM25Index.load_or_create(
+                disk_path,
+                segment_size=settings.retrieval.bm25.segment_size,
+            )
+
         json_path = index_path or BM25_INDEX_PATH
         legacy_path = (
             BM25_LEGACY_PICKLE_PATH if index_path is None else json_path.with_suffix(".pkl")

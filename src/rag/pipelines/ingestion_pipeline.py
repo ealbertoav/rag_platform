@@ -5,6 +5,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
@@ -16,6 +17,9 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+
+if TYPE_CHECKING:
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +63,7 @@ class IngestionPipeline:
         self,
         service: IngestionService,
         vector_store: VectorStoreRepository,
-        bm25: BM25Index,
+        bm25: BM25Index | DiskBM25Index,
         metadata: MetadataRepository | None = None,
         graph_indexer: object | None = None,
         augmentor: object | None = None,
@@ -230,7 +234,7 @@ class IngestionPipeline:
     @classmethod
     def from_settings(
         cls,
-        bm25: BM25Index | None = None,
+        bm25: BM25Index | DiskBM25Index | None = None,
         vector_store: VectorStoreRepository | None = None,
     ) -> IngestionPipeline:
         """Build the pipeline from application settings (real dependencies)."""
