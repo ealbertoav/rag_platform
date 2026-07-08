@@ -4,7 +4,7 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 17 — Code Quality & Type Safety. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16 complete** — T-160–T-165 (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
+> **Current focus:** Phase 17 — Code Quality & Type Safety. **T-171 complete** (PR #39). **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16 complete** — T-160–T-165 (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
 >
 > **Next tasks (recommended order):**
 > 1. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
@@ -2138,20 +2138,30 @@
 ---
 
 ### T-171 · Mypy CI Gate Hardening
-- **Status:** `[x]`
+- **Status:** `[x]` — PR #39
 - **Goal:** Ensure CI blocks PRs on any mypy regression — extends T-152 eval gate hardening to static analysis. Closes the gap where Phase 12 feature work can reintroduce type errors.
 - **Inputs:** T-061 (CI pipeline), T-170 (clean baseline), T-152 (gate hardening pattern)
-- **Outputs:** CI fails if `mypy src` reports any error; pre-commit hook matches CI exactly.
+- **Outputs:** CI fails if `mypy src` reports any error; pre-commit hook matches CI exactly; config drift detectable before merge.
 - **Files:**
-  - `.github/workflows/ci.yml` — verify mypy job fails on error (not `continue-on-error`)
-  - `.pre-commit-config.yaml` — ensure mypy hook matches CI args
-  - `Makefile` — `make lint` runs mypy + ruff + basedpyright in same order as CI
-  - `tests/unit/test_contextual_headers.py`, `tests/unit/test_compression.py` — type-regression fixtures
+  - `.github/workflows/ci.yml` — lint job: ruff check → ruff format --check → mypy → basedpyright (no `continue-on-error`, no CLI `--ignore-missing-imports`)
+  - `.pre-commit-config.yaml` — mypy hook targets `^src/`, relies on `pyproject.toml` settings
+  - `Makefile` — `make lint` runs same four commands in same order as CI
+  - `pyproject.toml` — `[tool.basedpyright]` `reportMissingImports = false` for optional deps
+  - `src/core/lint_gate.py` — canonical command list + CI/Makefile/pre-commit drift checks
+  - `scripts/check_lint_gate.py` — CLI entrypoint for local/CI verification
+  - `src/type_regression/compression.py`, `src/type_regression/contextual_headers.py` — typed smoke modules analyzed by mypy
+  - `tests/unit/test_lint_gate.py`, `tests/unit/test_type_regression.py` — gate + regression coverage
+  - `tests/unit/test_compression.py`, `tests/unit/test_contextual_headers.py` — runtime checks for type_regression modules
+  - `docs/type-safety.md` — CI gate section (T-171)
+  - `README.md` — lint workflow for contributors + CI mermaid update
 - **Acceptance Criteria:**
-  - PR with intentional mypy error is blocked by CI
-  - `make lint` and CI use identical commands
-  - Pre-commit mypy hook catches errors before commit
-  - README documents lint workflow for contributors
+  - [x] PR with intentional mypy error is blocked by CI
+  - [x] `make lint` and CI use identical commands (ruff check → ruff format --check → mypy → basedpyright)
+  - [x] Pre-commit mypy hook catches errors before commit (targets `^src/`, no disallowed CLI args)
+  - [x] `scripts/check_lint_gate.py` detects config drift across CI, Makefile, and pre-commit
+  - [x] Typed smoke modules under `src/type_regression/` catch compression/contextual-header API regressions
+  - [x] README documents lint workflow for contributors
+- **Notes:** Removed CLI `--ignore-missing-imports` from CI (T-170 config lives in `pyproject.toml`). Added basedpyright as fourth lint step aligned with Makefile. `lint_gate.py` parses CI workflow step blocks in isolation so `continue-on-error` on unrelated jobs does not false-positive.
 
 ---
 
@@ -2174,7 +2184,7 @@
   4. Graph retrieval with Neo4j enabled — query latency
   5. Concurrent feedback on same `chunk_id` across simulated API pods — zero-lost increments (**T-146**; validates Qdrant CAS / Redis backend under load) — **implemented** in `test_feedback_concurrency.py`
 - **Acceptance Criteria:**
-  - [ ] Baseline captured and committed — **unblocked** now that T-163–T-165 are complete; next step after T-170/T-171 or in parallel
+  - [ ] Baseline captured and committed — **unblocked** (T-170/T-171 complete); **next: T-172**
   - [x] Scenario 5 runnable independently via `pytest tests/benchmarks/test_feedback_concurrency.py`
   - [ ] `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
   - [ ] `make benchmark-infra` documented in README
@@ -2256,4 +2266,4 @@ T-163 + T-164 + T-165 ──► T-172
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
-17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ → **T-172** _(~1 session; T-172 scenario 5 done; **next: T-172**)_
+17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → **T-172** _(~1 session; T-172 scenario 5 done; **next: T-172**)_
