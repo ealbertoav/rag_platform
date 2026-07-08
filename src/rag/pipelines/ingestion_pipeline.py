@@ -115,18 +115,12 @@ class IngestionPipeline:
                 )
             if existing is not None:
                 old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
-                if old_chunk_ids:
-                    self._vector_store.delete(old_chunk_ids)
 
         with self._bm25.deferred_rebuild():
-            try:
-                chunks = self._service.prepare(document)
-            except Exception:
-                self._purge_stale_bm25(old_chunk_ids)
-                raise
+            chunks = self._service.prepare(document)
 
             if not chunks:
-                self._purge_stale_bm25(old_chunk_ids)
+                self._purge_superseded_chunks(old_chunk_ids)
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 if self._metadata is not None:
                     self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
@@ -146,7 +140,7 @@ class IngestionPipeline:
 
             self._index_graph(chunks, document.id)
             self._vector_store.upsert(indexed_chunks)
-            self._purge_stale_bm25(old_chunk_ids)
+            self._purge_superseded_chunks(old_chunk_ids)
             self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -224,18 +218,16 @@ class IngestionPipeline:
         if indexable:
             self._bm25.add(indexable)
 
-    def _purge_stale_bm25(self, chunk_ids: list[str]) -> None:
-        """Drop superseded lexical rows after vector-store deletes on re-ingesting."""
+    def _purge_superseded_chunks(self, chunk_ids: list[str]) -> None:
+        """Remove superseded chunk IDs from dense and lexical indexes together."""
         if chunk_ids:
+            self._vector_store.delete(chunk_ids)
             self._bm25.remove_by_ids(chunk_ids)
 
     def _remove_document_chunks(self, metadata_doc_id: str) -> None:
         if self._metadata is None:
             return
-        old_ids = self._metadata.get_chunk_ids(metadata_doc_id)
-        if old_ids:
-            self._vector_store.delete(old_ids)
-            self._purge_stale_bm25(old_ids)
+        self._purge_superseded_chunks(self._metadata.get_chunk_ids(metadata_doc_id))
 
     def _index_graph(self, chunks: list[Chunk], document_id: str) -> None:
         if self._graph_indexer is None:

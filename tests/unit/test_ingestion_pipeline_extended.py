@@ -11,7 +11,12 @@ import pytest
 
 from src.domain.repositories.metadata_repository import DocumentRecord
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
-from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
+from tests.unit.ingestion_helpers import (
+    embedded_chunk,
+    mock_ingestion_pipeline,
+    mock_reingest_metadata,
+    write_reingest_doc,
+)
 
 
 class TestDiscoverViaIngestDirectory:
@@ -29,15 +34,8 @@ class TestDiscoverViaIngestDirectory:
 
 class TestIngestionMetadataAndReingest:
     def test_reingest_changed_hash_removes_old_chunks(self, tmp_path: Path):
-        path = tmp_path / "doc.md"
-        path.write_text("version one")
-        metadata = MagicMock()
-        metadata.get_by_source.return_value = MagicMock(
-            id="doc-meta-1",
-            content_hash="old-hash",
-            chunk_count=1,
-        )
-        metadata.get_chunk_ids.return_value = ["old-chunk-1"]
+        path = write_reingest_doc(tmp_path, content="version one")
+        metadata = mock_reingest_metadata()
         pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
         path.write_text("version two")
         result = pipeline.ingest_file(path)
@@ -48,41 +46,34 @@ class TestIngestionMetadataAndReingest:
         metadata.upsert_document.assert_called_once()
 
     def test_reingest_empty_chunks_purges_stale_bm25(self, tmp_path: Path):
-        path = tmp_path / "doc.md"
-        path.write_text("version two")
-        metadata = MagicMock()
-        metadata.get_by_source.return_value = MagicMock(
-            id="doc-meta-1",
-            content_hash="old-hash",
-            chunk_count=1,
-        )
-        metadata.get_chunk_ids.return_value = ["old-chunk-1"]
+        metadata = mock_reingest_metadata()
         pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(
             prepared_chunks=[], metadata=metadata
         )
-        result = pipeline.ingest_file(path)
+        result = pipeline.ingest_file(write_reingest_doc(tmp_path))
         assert result.chunk_count == 0
         vector_store.delete.assert_called_once_with(["old-chunk-1"])
         bm25.remove_by_ids.assert_called_once_with(["old-chunk-1"])
         bm25.add.assert_not_called()
         vector_store.upsert.assert_not_called()
 
-    def test_reingest_prepare_failure_purges_stale_bm25(self, tmp_path: Path):
-        path = tmp_path / "doc.md"
-        path.write_text("version two")
-        metadata = MagicMock()
-        metadata.get_by_source.return_value = MagicMock(
-            id="doc-meta-1",
-            content_hash="old-hash",
-            chunk_count=1,
-        )
-        metadata.get_chunk_ids.return_value = ["old-chunk-1"]
+    def test_reingest_prepare_failure_preserves_stale_chunks(self, tmp_path: Path):
+        metadata = mock_reingest_metadata()
         pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
         service.prepare.side_effect = RuntimeError("chunker failed")
         with pytest.raises(RuntimeError, match="chunker failed"):
-            pipeline.ingest_file(path)
-        vector_store.delete.assert_called_once_with(["old-chunk-1"])
-        bm25.remove_by_ids.assert_called_once_with(["old-chunk-1"])
+            pipeline.ingest_file(write_reingest_doc(tmp_path))
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
+
+    def test_reingest_upsert_failure_preserves_stale_chunks(self, tmp_path: Path):
+        metadata = mock_reingest_metadata()
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        vector_store.upsert.side_effect = RuntimeError("qdrant down")
+        with pytest.raises(RuntimeError, match="qdrant down"):
+            pipeline.ingest_file(write_reingest_doc(tmp_path))
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
 
     def test_empty_chunks_records_metadata(self, tmp_path: Path):
         path = tmp_path / "doc.md"
