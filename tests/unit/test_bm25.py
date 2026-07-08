@@ -343,6 +343,12 @@ class TestBM25IndexErrors:
         chunks.clear()
         assert idx.size == len(_CORPUS)
 
+    def test_iter_chunks_yields_without_copying_corpus(self):
+        idx = BM25Index()
+        idx.index(_CORPUS)
+        streamed = list(idx.iter_chunks())
+        assert [c.id for c in streamed] == [c.id for c in _CORPUS]
+
     def test_get_by_id_miss_returns_none(self):
         idx = BM25Index()
         idx.index(_CORPUS)

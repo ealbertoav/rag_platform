@@ -105,6 +105,15 @@ class TestGraphIndexing:
         vector_store.delete.assert_not_called()
         bm25.remove_by_ids.assert_not_called()
 
+    def test_remove_document_chunks_deletes_from_vector_store_and_bm25(self):
+        metadata = MagicMock()
+        metadata.get_chunk_ids.return_value = ["old-chunk-1", "old-chunk-2"]
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        pipeline._remove_document_chunks("doc-meta-1")  # noqa: SLF001
+        metadata.get_chunk_ids.assert_called_once_with("doc-meta-1")
+        vector_store.delete.assert_called_once_with(["old-chunk-1", "old-chunk-2"])
+        bm25.remove_by_ids.assert_called_once_with(["old-chunk-1", "old-chunk-2"])
+
     def test_index_graph_failure_does_not_abort_ingest(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")

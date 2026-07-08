@@ -12,6 +12,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult, content_hash
 from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
 
@@ -224,6 +225,36 @@ class TestIngestionPipelineDirectory:
         pipeline, _, _, bm25 = mock_ingestion_pipeline()
         pipeline.save_indexes()
         bm25.save.assert_called_once()
+
+    def test_ingest_file_rebuilds_bm25_once(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("# Doc\n\nContent.")
+        bm25 = BM25Index()
+        service = MagicMock()
+        service.prepare.return_value = [embedded_chunk()]
+        pipeline = IngestionPipeline(
+            service=service,
+            vector_store=MagicMock(),
+            bm25=bm25,
+        )
+        with patch.object(bm25, "_rebuild", wraps=bm25._rebuild) as mock_rebuild:
+            pipeline.ingest_file(path)
+        assert mock_rebuild.call_count == 1
+
+    def test_ingest_file_disk_flushes_bm25_once(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("# Doc\n\nContent.")
+        bm25 = DiskBM25Index(tmp_path / "bm25_disk", segment_size=2)
+        service = MagicMock()
+        service.prepare.return_value = [embedded_chunk()]
+        pipeline = IngestionPipeline(
+            service=service,
+            vector_store=MagicMock(),
+            bm25=bm25,
+        )
+        with patch.object(bm25, "_flush_to_disk", wraps=bm25._flush_to_disk) as mock_flush:
+            pipeline.ingest_file(path)
+        assert mock_flush.call_count == 1
 
     def test_ingest_directory_rebuilds_bm25_once(self, tmp_path: Path):
         for i in range(3):

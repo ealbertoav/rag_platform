@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from string import Template
 from typing import TypedDict
@@ -338,7 +338,7 @@ def resolve_retrieval_output_path(
     """Return the retrieval golden path paired with *qa_output*.
 
     Custom QA outputs sync retrieval alongside the QA file instead of
-    overwriting the committed ``datasets/goldens/retrieval_dataset.json``.
+    overwriting the committed "datasets/goldens/retrieval_dataset.json".
     """
     default_qa = qa_golden_path or _DEFAULT_QA_GOLDEN_PATH
     default_retrieval = retrieval_golden_path or _DEFAULT_RETRIEVAL_PATH
@@ -351,31 +351,48 @@ def resolve_retrieval_output_path(
 
 def generate_until_min_pairs(
     builder: SyntheticDatasetBuilder,
-    chunks: list[Chunk],
+    chunks: Sequence[Chunk] | None = None,
     *,
+    total_chunks: int | None = None,
+    iter_chunks: Callable[[], Iterator[Chunk]] | None = None,
     min_pairs: int,
     n_pairs_per_chunk: int,
     dedup_threshold: float = 0.95,
     max_chunks: int | None = None,
 ) -> tuple[list[QAPair], int]:
     """Generate QA pairs, expanding the chunk window until *min_pairs* or exhaustion."""
-    if not chunks:
+    if chunks is not None:
+        corpus_size = len(chunks)
+
+        def _window(window_size: int) -> list[Chunk]:
+            return list(chunks[:window_size])
+    elif iter_chunks is not None and total_chunks is not None:
+        corpus_size = total_chunks
+
+        def _window(window_size: int) -> list[Chunk]:
+            from itertools import islice
+
+            return list(islice(iter_chunks(), window_size))
+    else:
+        return [], 0
+
+    if corpus_size == 0:
         return [], 0
 
     if max_chunks is not None:
-        limit = min(len(chunks), max(1, max_chunks))
-        return builder.generate_from_chunks(chunks[:limit]), limit
+        limit = min(corpus_size, max(1, max_chunks))
+        return builder.generate_from_chunks(_window(limit)), limit
 
     limit = resolve_max_chunks(
-        len(chunks),
+        corpus_size,
         min_pairs=min_pairs,
         n_pairs_per_chunk=n_pairs_per_chunk,
         max_chunks=None,
         dedup_threshold=dedup_threshold,
     )
     while True:
-        pairs = builder.generate_from_chunks(chunks[:limit])
-        if len(pairs) >= min_pairs or limit >= len(chunks):
+        pairs = builder.generate_from_chunks(_window(limit))
+        if len(pairs) >= min_pairs or limit >= corpus_size:
             return pairs, limit
         shortfall = min_pairs - len(pairs)
         extra = chunks_needed_for_min_pairs(
@@ -383,9 +400,9 @@ def generate_until_min_pairs(
             n_pairs_per_chunk,
             dedup_threshold=dedup_threshold,
         )
-        next_limit = min(len(chunks), limit + extra)
+        next_limit = min(corpus_size, limit + extra)
         if next_limit <= limit:
-            next_limit = len(chunks)
+            next_limit = corpus_size
         limit = next_limit
 
 

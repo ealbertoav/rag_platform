@@ -287,6 +287,11 @@ class BM25Index:
         with self._lock:
             return list(self._chunks)
 
+    def iter_chunks(self) -> Generator[Chunk, None, None]:
+        """Yield indexed chunks one at a time without copying the full corpus."""
+        with self._lock:
+            yield from self._chunks
+
     @property
     def size(self) -> int:
         return self._read_size()

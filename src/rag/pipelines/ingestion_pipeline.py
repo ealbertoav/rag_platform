@@ -92,6 +92,7 @@ class IngestionPipeline:
             raise IngestionError(f"Cannot load {path.name}", cause=exc) from exc
 
         doc_hash = content_hash(source, document.content)
+        old_chunk_ids: list[str] = []
 
         if self._metadata is not None:
             existing = self._metadata.get_by_source(source)
@@ -113,7 +114,9 @@ class IngestionPipeline:
                     skipped=True,
                 )
             if existing is not None:
-                self._remove_document_chunks(existing.id)
+                old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
+                if old_chunk_ids:
+                    self._vector_store.delete(old_chunk_ids)
 
         chunks = self._service.prepare(document)
         if not chunks:
@@ -136,7 +139,10 @@ class IngestionPipeline:
 
         self._index_graph(chunks, document.id)
         self._vector_store.upsert(indexed_chunks)
-        self._bm25_add(indexed_chunks)
+        with self._bm25.deferred_rebuild():
+            if old_chunk_ids:
+                self._bm25.remove_by_ids(old_chunk_ids)
+            self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:

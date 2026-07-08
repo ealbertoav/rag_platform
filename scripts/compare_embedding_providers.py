@@ -10,7 +10,7 @@ Usage:
 
     # Compare local vs. API providers
     uv run python scripts/compare_embedding_providers.py \\
-        --providers bge_m3 openai voyage \\
+        --providers bge_m3 OpenAI voyage \\
         --max-samples 50
 
     # Save results to a JSON file
@@ -28,6 +28,7 @@ import dataclasses
 import json
 import sys
 import time
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -96,10 +97,11 @@ def _compute_ndcg_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int
 
 def _index_chunks_for_provider(
     provider: str,
-    chunks: list[Chunk],
+    iter_chunks: Callable[[], Iterator[Chunk]],
+    total_chunks: int,
     settings: Settings,
 ) -> tuple[DenseRetriever, QdrantVectorStore]:
-    """Embed *chunks* with *provider* and upsert into a temporary Qdrant collection."""
+    """Embed chunks from *iter_chunks* with *provider* into a temporary Qdrant collection."""
     from src.core.constants import API_EMBEDDING_PROVIDERS
     from src.infrastructure.embeddings import (
         create_embedding_provider,
@@ -131,15 +133,23 @@ def _index_chunks_for_provider(
         is_api = provider in API_EMBEDDING_PROVIDERS
         batch_size = API_BATCH_SIZE if is_api else _INDEX_BATCH_SIZE
 
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
+        batch: list[Chunk] = []
+        batch_start = 0
+        for chunk in iter_chunks():
+            batch.append(chunk)
+            if len(batch) < batch_size:
+                continue
             embed_and_upsert_batch(embedder, vector_store, batch)
             maybe_sleep_between_api_batches(
                 provider,
-                batch_start=i,
+                batch_start=batch_start,
                 batch_size=batch_size,
-                total_chunks=len(chunks),
+                total_chunks=total_chunks,
             )
+            batch_start += len(batch)
+            batch = []
+        if batch:
+            embed_and_upsert_batch(embedder, vector_store, batch)
 
         retriever = DenseRetriever(embedder=embedder, vector_store=vector_store)
         return retriever, vector_store
@@ -152,12 +162,18 @@ def _index_chunks_for_provider(
 async def _run_provider(
     provider: str,
     qa_pairs: list[dict[str, object]],
-    chunks: list[Chunk],
+    iter_chunks: Callable[[], Iterator[Chunk]],
+    total_chunks: int,
     settings: Settings,
     k: int = 5,
 ) -> ProviderResult:
     try:
-        retriever, vector_store = _index_chunks_for_provider(provider, chunks, settings)
+        retriever, vector_store = _index_chunks_for_provider(
+            provider,
+            iter_chunks,
+            total_chunks,
+            settings,
+        )
     except Exception as exc:
         return ProviderResult(
             name=provider,
@@ -280,20 +296,27 @@ async def run(args: argparse.Namespace) -> int:
         return 1
 
     bm25 = BM25Index.load_or_create()
-    chunks = bm25.chunks
-    if not chunks:
+    total_chunks = bm25.size
+    if total_chunks == 0:
         print("BM25 index is empty — ingest documents first.", file=sys.stderr)
         return 1
 
     print(
         f"Comparing {len(args.providers)} provider(s) on {len(qa_pairs)} QA pairs "
-        f"({len(chunks)} indexed chunks per provider)…\n"
+        f"({total_chunks} indexed chunks per provider)…\n"
     )
 
     results: list[ProviderResult] = []
     for provider in args.providers:
         print(f"  Running: {provider}")
-        result = await _run_provider(provider, qa_pairs, chunks, settings, k=args.top_k)
+        result = await _run_provider(
+            provider,
+            qa_pairs,
+            bm25.iter_chunks,
+            total_chunks,
+            settings,
+            k=args.top_k,
+        )
         results.append(result)
         if result.error:
             print(f"    → skipped: {result.error}", file=sys.stderr)

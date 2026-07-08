@@ -185,6 +185,18 @@ class TestDiskBM25Index:
         snapshot.clear()
         assert disk_index.size == len(_CORPUS)
 
+    def test_iter_chunks_streams_from_disk_segments(self, disk_index: DiskBM25Index):
+        disk_index.index(_CORPUS)
+        streamed = list(disk_index.iter_chunks())
+        assert [c.id for c in streamed] == [c.id for c in _CORPUS]
+
+    def test_iter_chunks_yields_pending_without_flush(self, disk_index: DiskBM25Index):
+        with disk_index.deferred_rebuild():
+            disk_index.add([_chunk("pending only chunk", idx=99)])
+            streamed = list(disk_index.iter_chunks())
+        assert len(streamed) == 1
+        assert streamed[0].id == "chunk-00099"
+
     def test_update_chunk_metadata(self, disk_index: DiskBM25Index):
         disk_index.index(_CORPUS)
         assert disk_index.update_chunk_metadata("chunk-00001", {}) is False

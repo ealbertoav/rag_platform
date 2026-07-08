@@ -331,6 +331,35 @@ class TestGenerateUntilMinPairs:
         assert limit == 0
         builder.generate_from_chunks.assert_not_called()
 
+    def test_empty_when_no_chunk_source(self):
+        builder = MagicMock()
+        pairs, limit = generate_until_min_pairs(
+            builder,
+            min_pairs=MIN_QA_PAIRS,
+            n_pairs_per_chunk=3,
+        )
+        assert pairs == []
+        assert limit == 0
+        builder.generate_from_chunks.assert_not_called()
+
+    def test_streams_chunks_via_iter_callback(self):
+        chunks = [_chunk(i) for i in range(10)]
+        builder = MagicMock()
+        builder.generate_from_chunks.return_value = [
+            QAPair(question="q?", answer="a.", relevant_chunks=["c0"])
+        ]
+        pairs, limit = generate_until_min_pairs(
+            builder,
+            total_chunks=len(chunks),
+            iter_chunks=lambda: iter(chunks),
+            min_pairs=20,
+            n_pairs_per_chunk=3,
+            max_chunks=4,
+        )
+        assert limit == 4
+        assert len(pairs) == 1
+        assert len(builder.generate_from_chunks.call_args[0][0]) == 4
+
     def test_respects_explicit_max_chunks(self):
         chunks = [_chunk(i) for i in range(10)]
         builder = MagicMock()

@@ -398,10 +398,29 @@ class DiskBM25Index:
         with self._lock:
             return self._read_size_unlocked()
 
+    def iter_chunks(self) -> Generator[Chunk, None, None]:
+        """Yield live chunks one at a time without materializing the full corpus."""
+        with self._lock:
+            plan: list[Chunk | tuple[int, int]] = []
+            for chunk_id in self._iter_live_chunk_ids_unlocked():
+                pending = self._pending_chunks.get(chunk_id)
+                if pending is not None:
+                    plan.append(pending)
+                else:
+                    loc = self._id_map.get(chunk_id)
+                    if loc is not None:
+                        plan.append(loc)
+        for payload in plan:
+            if isinstance(payload, Chunk):
+                yield payload
+            else:
+                chunk = self._load_chunk(*payload)
+                if chunk is not None:
+                    yield chunk
+
     @property
     def chunks(self) -> list[Chunk]:
-        with self._lock:
-            return [chunk for _, chunk in self._iter_live_chunks_unlocked()]
+        return list(self.iter_chunks())
 
     def get_by_id(self, chunk_id: str) -> Chunk | None:
         with self._lock:
