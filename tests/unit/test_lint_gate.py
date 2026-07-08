@@ -146,6 +146,32 @@ class TestCheckCiWorkflow:
         result = check_ci_workflow(workflow_path=path)
         assert result.status is GateStatus.PASSED
 
+    def test_passes_when_later_step_has_continue_on_error(self, tmp_path: Path):
+        path = tmp_path / "ci.yml"
+        path.write_text(
+            _valid_ci_workflow().replace(
+                "- name: basedpyright",
+                "- name: basedpyright\n        continue-on-error: true",
+            ),
+            encoding="utf-8",
+        )
+        result = check_ci_workflow(workflow_path=path)
+        assert result.status is GateStatus.PASSED
+
+    def test_passes_when_later_step_mentions_ignore_missing_imports(self, tmp_path: Path):
+        path = tmp_path / "ci.yml"
+        path.write_text(
+            _valid_ci_workflow().replace(
+                "- name: basedpyright",
+                "- name: debug\n"
+                "        run: echo mypy src --ignore-missing-imports\n"
+                "      - name: basedpyright",
+            ),
+            encoding="utf-8",
+        )
+        result = check_ci_workflow(workflow_path=path)
+        assert result.status is GateStatus.PASSED
+
     def test_fails_when_commands_only_in_unrelated_job(self, tmp_path: Path):
         path = tmp_path / "ci.yml"
         path.write_text(

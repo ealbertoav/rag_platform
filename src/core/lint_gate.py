@@ -91,15 +91,29 @@ def _ci_lint_job_section(workflow_text: str) -> str:
     return "\n".join(lines)
 
 
-def _mypy_step_uses_continue_on_error(lint_job_text: str) -> bool:
-    """Detect continue-on-error on the CI mypy step."""
-    return bool(
-        re.search(
-            r"- name:\s*mypy\b[\s\S]*?continue-on-error:\s*true",
-            lint_job_text,
-            flags=re.IGNORECASE,
-        )
+def _lint_job_step_block(lint_job_text: str, step_name: str) -> str:
+    """Return the YAML fragment for one named step within a lint job."""
+    header = re.search(
+        rf"^(\s*)- name:\s*{re.escape(step_name)}\b.*$",
+        lint_job_text,
+        flags=re.IGNORECASE | re.MULTILINE,
     )
+    if header is None:
+        return ""
+    indent = header.group(1)
+    step_prefix = re.compile(rf"^{re.escape(indent)}- ", flags=re.MULTILINE)
+    next_step = step_prefix.search(lint_job_text, header.end())
+    start = header.start()
+    end = next_step.start() if next_step else len(lint_job_text)
+    return lint_job_text[start:end]
+
+
+def _mypy_step_uses_continue_on_error(lint_job_text: str) -> bool:
+    """Detect continue-on-error on the CI mypy step only."""
+    mypy_step = _lint_job_step_block(lint_job_text, "mypy")
+    if not mypy_step:
+        return False
+    return bool(re.search(r"continue-on-error:\s*true", mypy_step, flags=re.IGNORECASE))
 
 
 def check_ci_workflow(*, workflow_path: Path | None = None) -> LintGateResult:
@@ -120,8 +134,9 @@ def check_ci_workflow(*, workflow_path: Path | None = None) -> LintGateResult:
             message="CI mypy step must not use continue-on-error.",
         )
 
+    mypy_step = _lint_job_step_block(lint_job, "mypy")
     for arg in MYPY_DISALLOWED_ARGS:
-        if re.search(rf"mypy\s+src\s+{re.escape(arg)}", lint_job):
+        if mypy_step and re.search(rf"mypy\s+src\s+{re.escape(arg)}", mypy_step):
             return LintGateResult(
                 status=GateStatus.FAILED,
                 message=f"CI mypy must not pass {arg} (use pyproject.toml).",
