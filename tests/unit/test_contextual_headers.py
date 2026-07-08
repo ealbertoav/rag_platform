@@ -16,6 +16,10 @@ from src.rag.chunking.contextual_headers import (
     prepend_headers,
 )
 from src.rag.chunking.recursive_chunker import RecursiveChunker
+from src.type_regression.contextual_headers import (
+    check_contextual_headers_api_types,
+    check_contextual_headers_chunker_returns_chunks,
+)
 
 
 def _doc(
@@ -303,24 +307,15 @@ class TestGroupChunksByPassage:
 
 
 class TestTypeRegressionFixtures:
-    """Typed smoke tests — mypy checks these annotations at lint time (T-171)."""
+    """Runtime checks for src/type_regression — mypy validates those modules at lint time."""
 
     def test_contextual_headers_api_types(self) -> None:
-        doc = _doc()
-        chunk = _chunk()
-        header: str = build_header_line(doc, chunk)
-        prefixed: str = prepend_headers(doc, chunk)
-        context: str = chunk_context_text(chunk)
-        key: str = passage_context_key(chunk)
-        groups: list[tuple[Chunk, list[Chunk]]] = group_chunks_by_passage([chunk])
-        joined: str = join_chunk_context([chunk])
+        header, prefixed, context, key, groups, joined = check_contextual_headers_api_types(
+            _doc(), _chunk()
+        )
         assert header and prefixed and context and key and groups and joined
 
     def test_contextual_headers_chunker_returns_chunks(self) -> None:
-        doc = _doc("Body text here.")
-        chunker: ContextualHeadersChunker = ContextualHeadersChunker(
-            RecursiveChunker(chunk_size=500)
-        )
-        chunks: list[Chunk] = chunker.chunk(doc)
+        chunks = check_contextual_headers_chunker_returns_chunks(_doc("Body text here."))
         assert len(chunks) >= 1
         assert isinstance(chunks[0].text, str)

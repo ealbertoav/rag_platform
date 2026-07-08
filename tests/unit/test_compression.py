@@ -13,6 +13,10 @@ from src.rag.compression.token_reducer import (
     total_tokens,
     truncate_to_tokens,
 )
+from src.type_regression.compression import (
+    check_compressor_returns_chunks,
+    check_token_reducer_types,
+)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -279,17 +283,13 @@ class TestFromSettings:
 
 
 class TestTypeRegressionFixtures:
-    """Typed smoke tests — mypy checks these annotations at lint time (T-171)."""
+    """Runtime checks for src/type_regression — mypy validates those modules at lint time."""
 
     def test_token_reducer_api_types(self) -> None:
-        chunks: list[Chunk] = _chunks(2)
-        total: int = total_tokens(chunks)
-        truncated: str = truncate_to_tokens("hello world", 5)
-        count: int = count_tokens("hello")
+        total, truncated, count = check_token_reducer_types(_chunks(2))
         assert total > 0 and truncated and count > 0
 
     def test_compressor_returns_typed_chunks(self) -> None:
-        comp: ContextualCompressor = _compressor()
-        result: list[Chunk] = comp.compress("query", _chunks(1))
+        result = check_compressor_returns_chunks(_compressor(), "query", _chunks(1))
         assert len(result) == 1
         assert isinstance(result[0].text, str)

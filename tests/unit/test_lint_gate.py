@@ -17,6 +17,7 @@ from src.core.lint_gate import (
     PRE_COMMIT_PATH,
     RUFF_CHECK,
     RUFF_FORMAT_CHECK,
+    TYPE_REGRESSION_MODULES,
     GateStatus,
     LintGateResult,
     check_ci_workflow,
@@ -31,16 +32,18 @@ from src.core.lint_gate import (
 
 def _valid_ci_workflow() -> str:
     return f"""
-lint:
-  steps:
-    - name: ruff check
-      run: {RUFF_CHECK}
-    - name: ruff format (check only)
-      run: {RUFF_FORMAT_CHECK}
-    - name: mypy
-      run: {MYPY_SRC}
-    - name: basedpyright
-      run: {BASEDPYRIGHT_SRC}
+jobs:
+  lint:
+    name: Lint
+    steps:
+      - name: ruff check
+        run: {RUFF_CHECK}
+      - name: ruff format (check only)
+        run: {RUFF_FORMAT_CHECK}
+      - name: mypy
+        run: {MYPY_SRC}
+      - name: basedpyright
+        run: {BASEDPYRIGHT_SRC}
 """
 
 
@@ -92,7 +95,17 @@ class TestCheckCiWorkflow:
         path.write_text("run: uv run ruff check src tests\n", encoding="utf-8")
         result = check_ci_workflow(workflow_path=path)
         assert result.status is GateStatus.FAILED
-        assert "missing lint command" in result.message
+        assert "missing lint job" in result.message
+
+    def test_fails_when_lint_job_missing_commands(self, tmp_path: Path):
+        path = tmp_path / "ci.yml"
+        path.write_text(
+            _valid_ci_workflow().replace(f"run: {MYPY_SRC}\n", ""),
+            encoding="utf-8",
+        )
+        result = check_ci_workflow(workflow_path=path)
+        assert result.status is GateStatus.FAILED
+        assert "CI lint job missing command" in result.message
 
     def test_fails_on_continue_on_error(self, tmp_path: Path):
         path = tmp_path / "ci.yml"
@@ -132,6 +145,25 @@ class TestCheckCiWorkflow:
         )
         result = check_ci_workflow(workflow_path=path)
         assert result.status is GateStatus.PASSED
+
+    def test_fails_when_commands_only_in_unrelated_job(self, tmp_path: Path):
+        path = tmp_path / "ci.yml"
+        path.write_text(
+            """
+jobs:
+  lint:
+    steps:
+      - name: noop
+        run: echo lint
+  helper:
+    steps:
+"""
+            + "".join(f"      - run: {command}\n" for command in LINT_COMMANDS),
+            encoding="utf-8",
+        )
+        result = check_ci_workflow(workflow_path=path)
+        assert result.status is GateStatus.FAILED
+        assert "CI lint job missing command" in result.message
 
 
 class TestCheckMakefile:
@@ -285,4 +317,10 @@ class TestLintCommandsConstant:
             RUFF_FORMAT_CHECK,
             MYPY_SRC,
             BASEDPYRIGHT_SRC,
+        )
+
+    def test_type_regression_modules_under_src(self):
+        assert TYPE_REGRESSION_MODULES == (
+            "src/type_regression/compression.py",
+            "src/type_regression/contextual_headers.py",
         )

@@ -33,6 +33,11 @@ LINT_COMMANDS: tuple[str, ...] = (
 
 MYPY_DISALLOWED_ARGS = ("--ignore-missing-imports",)
 
+TYPE_REGRESSION_MODULES: tuple[str, ...] = (
+    "src/type_regression/compression.py",
+    "src/type_regression/contextual_headers.py",
+)
+
 
 class GateStatus(StrEnum):
     PASSED = "passed"
@@ -66,12 +71,32 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _mypy_step_uses_continue_on_error(workflow_text: str) -> bool:
+def _ci_lint_job_section(workflow_text: str) -> str:
+    """Return the "lint" job block from a GitHub Actions workflow file."""
+    marker = "  lint:"
+    if marker not in workflow_text:
+        return ""
+    rest = workflow_text.split(marker, maxsplit=1)[1]
+    lines: list[str] = []
+    for line in rest.splitlines():
+        stripped = line.strip()
+        if (
+            line.startswith("  ")
+            and not line.startswith("    ")
+            and stripped.endswith(":")
+            and not stripped.startswith("-")
+        ):
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _mypy_step_uses_continue_on_error(lint_job_text: str) -> bool:
     """Detect continue-on-error on the CI mypy step."""
     return bool(
         re.search(
             r"- name:\s*mypy\b[\s\S]*?continue-on-error:\s*true",
-            workflow_text,
+            lint_job_text,
             flags=re.IGNORECASE,
         )
     )
@@ -81,25 +106,32 @@ def check_ci_workflow(*, workflow_path: Path | None = None) -> LintGateResult:
     """Verify CI lint job uses canonical commands and blocks on mypy failure."""
     path = workflow_path or CI_WORKFLOW_PATH
     text = _read_text(path)
+    lint_job = _ci_lint_job_section(text)
 
-    if _mypy_step_uses_continue_on_error(text):
+    if not lint_job:
+        return LintGateResult(
+            status=GateStatus.FAILED,
+            message="CI workflow missing lint job.",
+        )
+
+    if _mypy_step_uses_continue_on_error(lint_job):
         return LintGateResult(
             status=GateStatus.FAILED,
             message="CI mypy step must not use continue-on-error.",
         )
 
     for arg in MYPY_DISALLOWED_ARGS:
-        if re.search(rf"mypy\s+src\s+{re.escape(arg)}", text):
+        if re.search(rf"mypy\s+src\s+{re.escape(arg)}", lint_job):
             return LintGateResult(
                 status=GateStatus.FAILED,
                 message=f"CI mypy must not pass {arg} (use pyproject.toml).",
             )
 
     for command in (RUFF_CHECK, RUFF_FORMAT_CHECK, MYPY_SRC, BASEDPYRIGHT_SRC):
-        if not command_in_text(text, command):
+        if not command_in_text(lint_job, command):
             return LintGateResult(
                 status=GateStatus.FAILED,
-                message=f"CI workflow missing lint command: {command}",
+                message=f"CI lint job missing command: {command}",
             )
 
     return LintGateResult(status=GateStatus.PASSED, message="CI lint commands aligned.")
