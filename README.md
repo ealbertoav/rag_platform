@@ -32,6 +32,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **diskcache CVE mitigation (T-162):** Compensating controls for CVE-2025-69872 (`diskcache` transitive via `llama-cpp-python`): `diskcache-weave` fork override, RAM-only prompt cache by default, emergency kill switch (`LLM__DISABLE_DISK_CACHE=true`), upstream PyPI monitor (`./scripts/check_diskcache_cve.sh`), and weekly Dependabot PRs for `llama-cpp-python`. Formal risk acceptance in [docs/security-advisories.md](docs/security-advisories.md). See [diskcache CVE Mitigation (T-162)](#diskcache-cve-mitigation-t-162).
 
+> **Neo4j async driver (T-164):** Graph RAG uses Neo4j's `AsyncGraphDatabase` so entity lookup does not block the FastAPI event loop. `HybridRetriever` awaits the graph leg in the same `asyncio.gather` as dense + BM25; sync callers (CLI ingestion, shutdown) use `upsert_sync` / `close_sync` via `src/core/async_bridge.py`. Pool size is `neo4j.max_connection_pool_size` (default 100). See [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag).
+
 ---
 
 ## Table of Contents
@@ -70,6 +72,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [diskcache CVE Mitigation (T-162)](#diskcache-cve-mitigation-t-162)
   - [EKS Setup](#eks-setup)
 - [Knowledge Graph (Graph RAG)](#knowledge-graph-graph-rag)
+  - [Async Neo4j driver (T-164)](#async-neo4j-driver-t-164)
 - [Agentic RAG](#agentic-rag)
   - [Self-RAG decision loop (T-141)](#self-rag-decision-loop-t-141)
 - [Embedding Providers](#embedding-providers)
@@ -312,11 +315,12 @@ CHUNKING__AUGMENTATION__N_QUESTIONS=3
 CHUNKING__HIERARCHICAL__ENABLED=false      # document summary + detail two-tier index (T-125)
 CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
-# Neo4j Graph RAG (disabled by default)
+# Neo4j Graph RAG (disabled by default; async driver — T-164)
 NEO4J__ENABLED=false
 NEO4J__URI=bolt://localhost:7687
 NEO4J__USER=neo4j
 NEO4J__PASSWORD=
+NEO4J__MAX_CONNECTION_POOL_SIZE=100      # AsyncGraphDatabase pool (T-164)
 NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 
 # SQLite metadata store (ingestion history + content-hash dedup)
@@ -342,7 +346,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
-| `configs/neo4j.yaml` | Neo4j connection, graph enable flag, entity extraction on ingest |
+| `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151) |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
 | `configs/cve-allowlist.yaml` | Accepted CVE allowlist with review dates for `make audit-deps` (T-161/T-162) |
@@ -1466,6 +1470,7 @@ NEO4J__ENABLED=true
 NEO4J__URI=bolt://localhost:7687
 NEO4J__USER=neo4j
 NEO4J__PASSWORD=yourpassword
+NEO4J__MAX_CONNECTION_POOL_SIZE=100      # optional; AsyncGraphDatabase pool (T-164)
 NEO4J__EXTRACT_ENTITIES_ON_INGEST=true   # populate graph during ingestion
 ```
 
@@ -1473,11 +1478,32 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true   # populate graph during ingestion
 
 Graph RAG is wired automatically when `neo4j.enabled=true`:
 
-- **Retrieval:** `RetrievalPipeline.from_settings()` attaches `GraphRetriever` to `HybridRetriever`; graph-matched chunks participate in RRF fusion alongside dense + BM25 results.
-- **Ingestion:** when `extract_entities_on_ingest=true`, the ingestion pipeline extracts entity triples per document and upserts them to Neo4j via `GraphIndexer`.
+- **Retrieval:** `RetrievalPipeline.from_settings()` attaches `GraphRetriever` to `HybridRetriever`; graph-matched chunks participate in RRF fusion alongside dense + BM25 results. The graph leg is awaited natively in `asyncio.gather` with dense + BM25 (T-164).
+- **Ingestion:** when `extract_entities_on_ingest=true`, the ingestion pipeline extracts entity triples per document and upserts them to Neo4j via `GraphIndexer` (sync CLI path bridged with `async_bridge.run_async`).
 - **Degradation:** if Neo4j is disabled or unreachable, the pipeline logs a warning and continues with dense + BM25 only.
 
 No manual wiring is required for the default API server (`make serve`) or CLI ingestion (`scripts/ingest.py`).
+
+### Async Neo4j driver (T-164)
+
+Graph operations use Neo4j's **`AsyncGraphDatabase`** so entity lookup and upsert do not block the FastAPI event loop when Graph RAG is enabled.
+
+| Surface | Behavior |
+|---|---|
+| `Neo4jGraphRepository` | Async `upsert` / `search_by_entities` / `close`; sync wrappers `upsert_sync` / `close_sync` for non-async callers |
+| `GraphRetriever.search` | `async` — awaited by `HybridRetriever` and `AgentPipeline.GRAPH_LOOKUP` |
+| `HybridRetriever` | Dense + BM25 via `asyncio.to_thread`; graph via native await in the same `asyncio.gather` |
+| CLI / ingestion | `GraphIndexer.index_chunks` and shutdown hooks call `run_async()` from `src/core/async_bridge.py` (dedicated daemon loop safe under an already-running event loop) |
+| Pool | `neo4j.max_connection_pool_size` in `configs/neo4j.yaml` (env: `NEO4J__MAX_CONNECTION_POOL_SIZE`, default `100`) |
+
+```python
+# Async retrieval path (API / hybrid)
+chunks = await graph_retriever.search(query, top_k=5)
+
+# Sync ingestion / shutdown
+repo.upsert_sync(relations, chunk_id=chunk.id, document_id=doc_id)
+repo.close_sync()
+```
 
 <details>
 <summary>Advanced: manual GraphRetriever wiring</summary>
@@ -1660,7 +1686,7 @@ print("Self-RAG steps:", result.self_rag_decisions)
 
 ### Relationship to Graph RAG
 
-`GRAPH_LOOKUP` is active when `NEO4J__ENABLED=true` — `RetrievalPipeline.from_settings()` wires `GraphRetriever` automatically. Without Neo4j, the agent still works; it skips graph lookups and relies on dense + BM25 (+ multi-query RRF fusion).
+`GRAPH_LOOKUP` is active when `NEO4J__ENABLED=true` — `RetrievalPipeline.from_settings()` wires `GraphRetriever` automatically, and the agent awaits the async Neo4j lookup (T-164). Without Neo4j, the agent still works; it skips graph lookups and relies on dense + BM25 (+ multi-query RRF fusion).
 
 ---
 
@@ -1769,7 +1795,7 @@ rag_implementation/
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
-│   ├── neo4j.yaml              # Graph RAG + SQLite metadata store settings
+│   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
 │   ├── logging.yaml
 │   ├── cve-allowlist.yaml      # Accepted CVE allowlist for dependency audit (T-161/T-162)
@@ -1833,7 +1859,7 @@ rag_implementation/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
 ├── src/
 │   ├── api/                    # FastAPI routers + DI + rate_limit middleware (T-160)
-│   ├── core/                   # Settings, logging, exceptions, diskcache_cve_check (T-162)
+│   ├── core/                   # Settings, logging, exceptions, async_bridge (T-164), diskcache_cve_check (T-162)
 │   ├── domain/                 # Entities, repository ABCs, services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
@@ -1841,7 +1867,7 @@ rag_implementation/
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · benchmark_samples helpers
-│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, feedback_store (T-146), Redis client, Neo4j, SQLite metadata, llama.cpp, web search
+│   ├── infrastructure/         # BGE-M3, Qdrant, BM25, feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search
 │   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
 │   │   └── search/             # DuckDuckGo · Tavily · Null web search providers (T-142)
