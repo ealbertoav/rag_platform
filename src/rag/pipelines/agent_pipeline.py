@@ -510,7 +510,7 @@ class AgentPipeline:
                 chunks = [c for c, _ in merged]
 
             elif decision.action == AgentAction.GRAPH_LOOKUP and decision.entities:
-                graph_chunks = self._graph_lookup(decision.entities, chunks)
+                graph_chunks = await self._graph_lookup(decision.entities, chunks)
                 if graph_chunks:
                     from src.domain.repositories.vector_store_repository import SearchResult
 
@@ -552,14 +552,14 @@ class AgentPipeline:
             logger.warning("Agent decision parsing failed: %s — defaulting to ANSWER", exc)
             return AgentDecision(action=AgentAction.ANSWER, reasoning="fallback")
 
-    def _graph_lookup(self, entities: list[str], existing: list[Chunk]) -> list[Chunk]:
+    async def _graph_lookup(self, entities: list[str], existing: list[Chunk]) -> list[Chunk]:
         """Try graph retrieval if a GraphRetriever is wired into the hybrid retriever."""
         try:
             graph_retriever = self._pipeline.retrieval.service.hybrid.graph
             if graph_retriever is None:
                 return []
             existing_ids = {c.id for c in existing}
-            results = graph_retriever.search(" ".join(entities), top_k=5)
+            results = await graph_retriever.search(" ".join(entities), top_k=5)
             return [c for c, _ in results if c.id not in existing_ids]
         except Exception as exc:
             logger.debug("Graph lookup skipped: %s", exc)

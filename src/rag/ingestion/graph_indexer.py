@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from src.core.async_bridge import run_async
+
 if TYPE_CHECKING:
     from src.domain.entities.chunk import Chunk
     from src.infrastructure.vectordb.neo4j_graph import Neo4jGraphRepository
@@ -23,11 +25,14 @@ class GraphIndexer:
         self._graph = graph
 
     def index_chunks(self, chunks: list[Chunk], document_id: str) -> None:
+        run_async(self._index_chunks_async(chunks, document_id))
+
+    async def _index_chunks_async(self, chunks: list[Chunk], document_id: str) -> None:
         for chunk in chunks:
             relations = self._extractor.extract_relations(chunk.text)
             if not relations:
                 continue
             try:
-                self._graph.upsert(relations, chunk_id=chunk.id, document_id=document_id)
+                await self._graph.upsert(relations, chunk_id=chunk.id, document_id=document_id)
             except Exception as exc:
                 logger.warning("Failed to index graph relations for chunk %s: %s", chunk.id, exc)

@@ -4,6 +4,7 @@ import dataclasses
 import logging
 from typing import Any, cast
 
+from src.core.async_bridge import run_async
 from src.core.exceptions import RetrievalError
 from src.domain.entities.retrieval_filter import RetrievalFilter
 
@@ -30,6 +31,7 @@ class Neo4jGraphRepository:
     Edges: (:Entity)-[:RELATES_TO {relation}]->(:Entity)
             (:Entity)-[:MENTIONED_IN {document_id}]->(:Chunk {id})
 
+    Uses the async Neo4j driver, so graph retrieval does not block the event loop.
     Requires "pip install neo4j" (or "uv sync --extra graph").
     """
 
@@ -38,10 +40,13 @@ class Neo4jGraphRepository:
         uri: str = "bolt://localhost:7687",
         user: str = "neo4j",
         password: str = "neo4j",
+        *,
+        max_connection_pool_size: int = 100,
     ) -> None:
         self.uri = uri
         self.user = user
         self.password = password
+        self.max_connection_pool_size = max_connection_pool_size
         self._driver: object | None = None
 
     # ── Factory ────────────────────────────────────────────────────────────────
@@ -60,23 +65,29 @@ class Neo4jGraphRepository:
             uri=cfg.uri,
             user=cfg.user,
             password=password,
+            max_connection_pool_size=cfg.max_connection_pool_size,
         )
 
-    # ── Public ─────────────────────────────────────────────────────────────────
+    # ── Public (async) ─────────────────────────────────────────────────────────
 
-    def upsert(self, relations: list[GraphRelation], chunk_id: str, document_id: str = "") -> None:
+    async def upsert(
+        self,
+        relations: list[GraphRelation],
+        chunk_id: str,
+        document_id: str = "",
+    ) -> None:
         """Persist *relations* and link them to the originating *chunk_id*."""
         if not relations:
             return
         driver = self._get_driver()
         try:
-            with driver.session() as session:  # type: ignore[attr-defined]
+            async with driver.session() as session:  # type: ignore[attr-defined]
                 for rel in relations:
-                    session.execute_write(_upsert_relation, rel, chunk_id, document_id)
+                    await session.execute_write(_upsert_relation, rel, chunk_id, document_id)
         except Exception as exc:
             raise RetrievalError("Neo4j upsert failed", cause=exc) from exc
 
-    def search_by_entities(
+    async def search_by_entities(
         self,
         entity_names: list[str],
         top_k: int,
@@ -94,17 +105,34 @@ class Neo4jGraphRepository:
         document_ids = list(filters.document_ids) if filters and filters.document_ids else None
         driver = self._get_driver()
         try:
-            with driver.session() as session:  # type: ignore[attr-defined]
-                result = session.execute_read(_search_chunks, entity_names, top_k, document_ids)
+            async with driver.session() as session:  # type: ignore[attr-defined]
+                result = await session.execute_read(
+                    _search_chunks, entity_names, top_k, document_ids
+                )
             return cast(list[tuple[str, float]], result)
         except Exception as exc:
             raise RetrievalError("Neo4j search failed", cause=exc) from exc
 
-    def close(self) -> None:
+    async def close(self) -> None:
         driver = self._driver
         if driver is not None:
-            driver.close()  # type: ignore[attr-defined]
+            await driver.close()  # type: ignore[attr-defined]
             self._driver = None
+
+    # ── Sync wrappers (ingestion / CLI callers) ────────────────────────────────
+
+    def upsert_sync(
+        self,
+        relations: list[GraphRelation],
+        chunk_id: str,
+        document_id: str = "",
+    ) -> None:
+        """Synchronous wrapper for ingestion paths that are not async."""
+        run_async(self.upsert(relations, chunk_id, document_id))
+
+    def close_sync(self) -> None:
+        """Synchronous wrapper for shutdown hooks."""
+        run_async(self.close())
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
@@ -112,11 +140,15 @@ class Neo4jGraphRepository:
         if self._driver is not None:
             return self._driver
         try:
-            from neo4j import GraphDatabase  # type: ignore[import-untyped]
+            from neo4j import AsyncGraphDatabase  # type: ignore[import-untyped]
 
-            driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+            driver = AsyncGraphDatabase.driver(
+                self.uri,
+                auth=(self.user, self.password),
+                max_connection_pool_size=self.max_connection_pool_size,
+            )
             self._driver = driver
-            logger.info("Neo4j driver connected to %s", self.uri)
+            logger.info("Neo4j async driver connected to %s", self.uri)
             return driver
         except (ImportError, Exception) as exc:
             raise RetrievalError(f"Cannot connect to Neo4j at {self.uri!r}", cause=exc) from exc
@@ -125,8 +157,8 @@ class Neo4jGraphRepository:
 # ── Cypher helpers ─────────────────────────────────────────────────────────────
 
 
-def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: str) -> None:
-    tx.run(
+async def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: str) -> None:
+    await tx.run(
         """
         MERGE (s:Entity {name: $subject})
           ON CREATE SET s.type = $subject_type
@@ -148,14 +180,14 @@ def _upsert_relation(tx: Any, rel: GraphRelation, chunk_id: str, document_id: st
     )
 
 
-def _search_chunks(
+async def _search_chunks(
     tx: Any,
     entity_names: list[str],
     top_k: int,
     document_ids: list[str] | None = None,
 ) -> list[tuple[str, float]]:
     if document_ids:
-        result = tx.run(
+        result = await tx.run(
             """
             MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
             WHERE e.name IN $names AND c.document_id IN $document_ids
@@ -170,7 +202,7 @@ def _search_chunks(
             document_ids=document_ids,
         )
     else:
-        result = tx.run(
+        result = await tx.run(
             """
             MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
             WHERE e.name IN $names
@@ -183,4 +215,7 @@ def _search_chunks(
             n_entities=len(entity_names),
             top_k=top_k,
         )
-    return [(row["chunk_id"], float(row["score"])) for row in result]
+    rows: list[tuple[str, float]] = []
+    async for row in result:
+        rows.append((row["chunk_id"], float(row["score"])))
+    return rows

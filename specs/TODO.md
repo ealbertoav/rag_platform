@@ -4,11 +4,13 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **T-162 complete** (PR #34 — diskcache CVE mitigation, upstream monitor, `LLM__DISABLE_DISK_CACHE`).
+> **Current focus:** Phase 16 — Production Hardening & Scalability. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **T-162 complete** (PR #34). **T-163 complete**. **T-164 complete** (PR #36 — Neo4j `AsyncGraphDatabase`, sync wrappers via `async_bridge`, connection pool setting).
 >
 > **Next tasks (recommended order):**
-> 1. **T-171** — Mypy CI gate hardening
-> 2. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+> 1. **T-165** — Disk-backed BM25 index (scale)
+> 2. **T-170** — Type ignore audit & reduction
+> 3. **T-171** — Mypy CI gate hardening
+> 4. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
 ---
 
@@ -1940,7 +1942,7 @@
 >
 > **Depends on:** Phase 3 (T-032 API), Phase 6 (T-061 CI), Phase 8 (T-082 Docker), Phase 9 (T-095 Ingress)
 >
-> **Progress:** T-160 complete · T-161 complete · T-162 complete (PR #34)
+> **Progress:** T-160 complete · T-161 complete · T-162 complete (PR #34) · T-163 complete · T-164 complete (PR #36)
 
 ---
 
@@ -2055,20 +2057,25 @@
 ---
 
 ### T-164 · Neo4j Async Driver Integration
-- **Status:** `[ ]`
+- **Status:** `[x]` — done in PR #36 (`feat/t-164-neo4j-async-driver`)
 - **Goal:** Migrate graph repository calls from synchronous Neo4j driver to `AsyncGraphDatabase` so graph retrieval does not block the event loop when `neo4j.enabled=true`.
 - **Inputs:** T-070 (`neo4j_graph.py`), T-111 (graph wiring), T-112 (Neo4j settings)
-- **Outputs:** Async graph queries compatible with the async hybrid retriever path.
+- **Outputs:** Async graph queries compatible with the async hybrid retriever path; sync wrappers for CLI/ingestion via `async_bridge`.
 - **Files:**
-  - `src/infrastructure/vectordb/neo4j_graph.py` — migrate to `neo4j.AsyncGraphDatabase`
-  - `src/rag/retrieval/graph_retriever.py` — async `retrieve()` method
-  - `src/rag/retrieval/hybrid_retriever.py` — await graph branch in parallel gather
-  - `tests/unit/test_graph_rag.py` — update mocks for async interface
+  - `src/infrastructure/vectordb/neo4j_graph.py` — `AsyncGraphDatabase` driver; async `upsert` / `search_by_entities` / `close`; `upsert_sync` / `close_sync` wrappers _(done)_
+  - `src/core/async_bridge.py` — background-loop `run_async()` for sync callers that already have a running event loop _(done)_
+  - `src/core/settings.py` + `configs/neo4j.yaml` — `neo4j.max_connection_pool_size` (default 100) _(done)_
+  - `src/rag/retrieval/graph_retriever.py` — async `search()` _(done)_
+  - `src/rag/retrieval/hybrid_retriever.py` — await native async graph branch in `asyncio.gather` (dense/BM25 still `to_thread`) _(done)_
+  - `src/rag/ingestion/graph_indexer.py` — sync `index_chunks` → `run_async` → async upsert _(done)_
+  - `src/rag/pipelines/agent_pipeline.py` — async `_graph_lookup` / `GRAPH_LOOKUP` _(done)_
+  - `tests/unit/test_graph_rag.py`, `test_async_bridge.py`, related unit tests _(done)_
 - **Acceptance Criteria:**
-  - Graph retrieval runs concurrently with dense + BM25 via `asyncio.gather`
-  - Sync driver removed or isolated behind feature flag during migration
-  - Neo4j unreachable → same graceful degradation as T-111 (warning + continue)
-  - Connection pooling configured via `neo4j.max_connection_pool_size` in settings
+  - [x] Graph retrieval runs concurrently with dense + BM25 via `asyncio.gather`
+  - [x] Sync driver removed; sync wrappers isolate CLI/ingestion via `async_bridge.run_async`
+  - [x] Neo4j unreachable → same graceful degradation as T-111 (warning + continue)
+  - [x] Connection pooling configured via `neo4j.max_connection_pool_size` in settings
+- **Notes:** Public graph API is async-first. Sync entry points (`upsert_sync`, `close_sync`, `GraphIndexer.index_chunks`) bridge through a dedicated daemon event loop so FastAPI request handlers and CLI scripts both work.
 
 ---
 
@@ -2240,5 +2247,5 @@ T-163 + T-164 + T-165 ──► T-172
 13. **Phase 13 — Priority 3 (Query Intelligence):** T-131 → T-132 → T-130 → T-133 → T-134 → T-135 _(~2 sessions)_
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
-16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → **T-164** → T-165 _(~2 sessions; T-146 closed in PR #28; **next: T-164**)_
+16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → **T-165** _(~2 sessions; T-146 closed in PR #28; **next: T-165**)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 → T-171 → T-172 _(~1 session; T-172 scenario 5 done)_

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
@@ -281,14 +281,14 @@ class TestHybridRetrieverMinScore:
     @pytest.mark.asyncio
     async def test_passes_filters_to_bm25_and_graph(self):
         graph = MagicMock()
-        graph.search.return_value = []
+        graph.search = AsyncMock(return_value=[])
         hybrid, _, bm25, _ = _hybrid_retriever(graph=graph)
         filt = RetrievalFilter(document_ids=["doc-a"])
 
         await _retrieve_hybrid(hybrid, filters=filt)
 
         bm25.search.assert_called_once_with("q", 15, filters=filt)
-        graph.search.assert_called_once_with("q", 15, filters=filt)
+        graph.search.assert_awaited_once_with("q", 15, filters=filt)
 
     @pytest.mark.asyncio
     async def test_document_scope_excludes_out_of_scope_bm25_hits(self):

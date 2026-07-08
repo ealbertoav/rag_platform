@@ -34,8 +34,8 @@ class HybridRetriever:
     Set *fusion_mode* to "weighted_linear" to blend dense/sparse scores using
     *alpha* (1.0 = dense only, 0.0 = BM25 only).
 
-    Both searches run concurrently via "asyncio.gather" + "asyncio.to_thread"
-    so that the Qdrant network call and the in-memory BM25 lookup overlap.
+    Both searches run concurrently via "asyncio.gather".  Dense and BM25 use
+    "asyncio.to_thread"; the graph leg uses the native async Neo4j driver.
     """
 
     def __init__(
@@ -92,8 +92,7 @@ class HybridRetriever:
         ]
         if self.graph is not None:
             tasks.append(
-                asyncio.to_thread(
-                    self.graph.search,
+                self.graph.search(
                     query.text,
                     expansion,
                     filters=query.filters,
