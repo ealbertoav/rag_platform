@@ -300,3 +300,27 @@ class TestGroupChunksByPassage:
         groups = group_chunks_by_passage([chunk_a, chunk_b])
         assert len(groups) == 1
         assert {chunk.id for chunk in groups[0][1]} == {"c0", "c1"}
+
+
+class TestTypeRegressionFixtures:
+    """Typed smoke tests — mypy checks these annotations at lint time (T-171)."""
+
+    def test_contextual_headers_api_types(self) -> None:
+        doc = _doc()
+        chunk = _chunk()
+        header: str = build_header_line(doc, chunk)
+        prefixed: str = prepend_headers(doc, chunk)
+        context: str = chunk_context_text(chunk)
+        key: str = passage_context_key(chunk)
+        groups: list[tuple[Chunk, list[Chunk]]] = group_chunks_by_passage([chunk])
+        joined: str = join_chunk_context([chunk])
+        assert header and prefixed and context and key and groups and joined
+
+    def test_contextual_headers_chunker_returns_chunks(self) -> None:
+        doc = _doc("Body text here.")
+        chunker: ContextualHeadersChunker = ContextualHeadersChunker(
+            RecursiveChunker(chunk_size=500)
+        )
+        chunks: list[Chunk] = chunker.chunk(doc)
+        assert len(chunks) >= 1
+        assert isinstance(chunks[0].text, str)

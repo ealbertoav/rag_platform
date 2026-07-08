@@ -7,8 +7,7 @@
 > **Current focus:** Phase 17 — Code Quality & Type Safety. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16 complete** — T-160–T-165 (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
 >
 > **Next tasks (recommended order):**
-> 1. **T-171** — Mypy CI gate hardening
-> 2. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+> 1. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
 ---
 
@@ -2139,7 +2138,7 @@
 ---
 
 ### T-171 · Mypy CI Gate Hardening
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Ensure CI blocks PRs on any mypy regression — extends T-152 eval gate hardening to static analysis. Closes the gap where Phase 12 feature work can reintroduce type errors.
 - **Inputs:** T-061 (CI pipeline), T-170 (clean baseline), T-152 (gate hardening pattern)
 - **Outputs:** CI fails if `mypy src` reports any error; pre-commit hook matches CI exactly.
@@ -2173,7 +2172,7 @@
   2. 10 concurrent chats — event-loop health (no timeout failures)
   3. BM25 search on 100K chunk fixture — memory + latency
   4. Graph retrieval with Neo4j enabled — query latency
-  5. Concurrent feedback on same `chunk_id` across simulated API pods — zero lost increments (**T-146**; validates Qdrant CAS / Redis backend under load) — **implemented** in `test_feedback_concurrency.py`
+  5. Concurrent feedback on same `chunk_id` across simulated API pods — zero-lost increments (**T-146**; validates Qdrant CAS / Redis backend under load) — **implemented** in `test_feedback_concurrency.py`
 - **Acceptance Criteria:**
   - [ ] Baseline captured and committed — **unblocked** now that T-163–T-165 are complete; next step after T-170/T-171 or in parallel
   - [x] Scenario 5 runnable independently via `pytest tests/benchmarks/test_feedback_concurrency.py`
@@ -2257,4 +2256,4 @@ T-163 + T-164 + T-165 ──► T-172
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
-17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → **T-171** → T-172 _(~1 session; T-172 scenario 5 done; **next: T-171**)_
+17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ → **T-172** _(~1 session; T-172 scenario 5 done; **next: T-172**)_

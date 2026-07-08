@@ -276,3 +276,20 @@ class TestFromSettings:
         llm = MagicMock()
         comp = ContextualCompressor.from_settings(llm)
         assert comp._max_tokens == settings.compression.max_tokens
+
+
+class TestTypeRegressionFixtures:
+    """Typed smoke tests — mypy checks these annotations at lint time (T-171)."""
+
+    def test_token_reducer_api_types(self) -> None:
+        chunks: list[Chunk] = _chunks(2)
+        total: int = total_tokens(chunks)
+        truncated: str = truncate_to_tokens("hello world", 5)
+        count: int = count_tokens("hello")
+        assert total > 0 and truncated and count > 0
+
+    def test_compressor_returns_typed_chunks(self) -> None:
+        comp: ContextualCompressor = _compressor()
+        result: list[Chunk] = comp.compress("query", _chunks(1))
+        assert len(result) == 1
+        assert isinstance(result[0].text, str)

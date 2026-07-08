@@ -1955,8 +1955,11 @@ rag_implementation/
 # Install dev dependencies
 uv sync --group dev
 
-# Lint (ruff check + mypy)
+# Lint (same commands as CI — ruff, mypy, basedpyright)
 make lint
+
+# Verify lint config alignment + mypy clean (T-171 gate)
+uv run python scripts/check_lint_gate.py
 
 # Auto-format
 make format
@@ -1964,6 +1967,20 @@ make format
 # Install pre-commit hooks (requires git repo)
 pre-commit install
 ```
+
+### Lint workflow for contributors
+
+CI blocks merges when static analysis regresses. Run the same checks locally before opening a PR:
+
+| Step | Command | Notes |
+|------|---------|-------|
+| Full lint suite | `make lint` | Matches `.github/workflows/ci.yml` lint job (ruff → mypy → basedpyright `--level error`) |
+| Config drift check | `uv run python scripts/check_lint_gate.py` | Ensures CI, Makefile, and pre-commit stay aligned |
+| Pre-commit (optional) | `pre-commit run --all-files` | Catches ruff/mypy issues before commit |
+
+Mypy reads `[tool.mypy]` from `pyproject.toml` (`strict = true`, `ignore_missing_imports` at project level). Do not pass `--ignore-missing-imports` on the CLI — that bypasses the audited T-170 configuration.
+
+See [docs/type-safety.md](docs/type-safety.md) for the type-ignore audit and module overrides.
 
 **Environment variables** use `__` as the nested delimiter:
 ```bash
@@ -2003,7 +2020,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |
 | `make audit-deps` | Audit dependencies for high/critical CVEs (T-161) |
-| `make lint` | `ruff check` + `mypy` |
+| `make lint` | `ruff check` + `ruff format --check` + `mypy` + `basedpyright` |
 | `make format` | `ruff format` + `ruff check --fix` |
 | `make test` | Unit + integration tests with coverage |
 | `make test-unit` | Unit tests only |

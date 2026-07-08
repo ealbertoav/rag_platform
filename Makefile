@@ -36,7 +36,9 @@ audit-deps:
 
 lint:
 	uv run ruff check src tests
+	uv run ruff format --check src tests
 	uv run mypy src
+	uv run basedpyright --level error src
 
 format:
 	uv run ruff format src tests
