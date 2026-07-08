@@ -8,7 +8,7 @@ import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.core.exceptions import GenerationError
 from src.domain.repositories.llm_repository import LLMRepository
@@ -66,14 +66,17 @@ class LlamaCppProvider(LLMRepository):
         with self._lock:
             model = self._get_model()
             try:
-                output = model.create_chat_completion(
-                    messages=[{"role": "user", "content": _join(prompt, context)}],  # type: ignore[arg-type]
-                    max_tokens=kwargs.get("max_tokens", self.max_tokens),
-                    temperature=kwargs.get("temperature", self.temperature),
-                    stop=self.stop_tokens,
-                    stream=False,
+                output = cast(
+                    dict[str, Any],
+                    model.create_chat_completion(
+                        messages=[{"role": "user", "content": _join(prompt, context)}],
+                        max_tokens=kwargs.get("max_tokens", self.max_tokens),
+                        temperature=kwargs.get("temperature", self.temperature),
+                        stop=self.stop_tokens,
+                        stream=False,
+                    ),
                 )
-                return str(output["choices"][0]["message"]["content"])  # type: ignore[index]
+                return str(output["choices"][0]["message"]["content"])
             except Exception as exc:
                 raise GenerationError("llama.cpp generate() failed", cause=exc) from exc
 
@@ -158,7 +161,7 @@ class LlamaCppProvider(LLMRepository):
                 with self._lock:
                     model = self._get_model()
                     for chunk in model.create_chat_completion(
-                        messages=[{"role": "user", "content": full_prompt}],  # type: ignore[arg-type]
+                        messages=[{"role": "user", "content": full_prompt}],
                         max_tokens=kwargs.get("max_tokens", self.max_tokens),
                         temperature=kwargs.get("temperature", self.temperature),
                         stop=self.stop_tokens,
@@ -166,7 +169,8 @@ class LlamaCppProvider(LLMRepository):
                     ):
                         if cancelled.is_set():
                             break
-                        choices = chunk["choices"]  # type: ignore[union-attr,index]
+                        chunk_data = cast(dict[str, Any], chunk)
+                        choices = cast(list[dict[str, Any]], chunk_data["choices"])
                         delta = str(choices[0]["delta"].get("content", ""))
                         if delta:
                             thread_queue.put(delta)

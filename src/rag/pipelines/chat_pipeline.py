@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.domain.repositories.web_search_repository import WebSearchRepository
     from src.domain.services.retrieval_service import RetrievalResult
+    from src.infrastructure.vectordb.bm25 import BM25Index
+    from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.chat")
@@ -201,7 +203,7 @@ class ChatPipeline:
     @classmethod
     def from_settings(
         cls,
-        bm25_index: object | None = None,
+        bm25_index: BM25Index | DiskBM25Index | None = None,
         vector_store: VectorStoreRepository | None = None,
     ) -> ChatPipeline:
         """Build the full pipeline from settings (lazy model loading)."""
@@ -212,7 +214,7 @@ class ChatPipeline:
         llm = LlamaCppProvider.from_settings()
         retrieval = RetrievalPipeline.from_settings(
             llm=llm,
-            bm25_index=bm25_index,  # type: ignore[arg-type]
+            bm25_index=bm25_index,
             vector_store=vector_store,
         )
         generation = GenerationService.from_settings(llm=llm)

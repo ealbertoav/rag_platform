@@ -6,6 +6,7 @@ import time
 import uuid
 from types import TracebackType
 from typing import Any, Protocol, TypeAlias, cast
+from uuid import UUID
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -303,7 +304,7 @@ class QdrantVectorStore(VectorStoreRepository):
         try:
             response = self._client.query_points(
                 collection_name=self.collection,
-                query=query_vector,  # type: ignore[arg-type]
+                query=cast(Any, query_vector),
                 using=_DENSE,
                 limit=top_k,
                 with_payload=True,
@@ -318,9 +319,12 @@ class QdrantVectorStore(VectorStoreRepository):
         try:
             response = self._client.query_points(
                 collection_name=self.collection,
-                query=QSparseVector(  # type: ignore[arg-type]
-                    indices=list(query_sparse.keys()),
-                    values=list(query_sparse.values()),
+                query=cast(
+                    Any,
+                    QSparseVector(
+                        indices=list(query_sparse.keys()),
+                        values=list(query_sparse.values()),
+                    ),
                 ),
                 using=_SPARSE,
                 limit=top_k,
@@ -346,7 +350,7 @@ class QdrantVectorStore(VectorStoreRepository):
         try:
             self._client.delete(
                 collection_name=self.collection,
-                points_selector=PointIdsList(points=chunk_ids),  # type: ignore[arg-type]
+                points_selector=PointIdsList(points=cast("list[int | str | UUID]", chunk_ids)),
             )
         except Exception as exc:
             raise VectorStoreError("Qdrant delete failed", cause=exc) from exc
@@ -408,7 +412,7 @@ class QdrantVectorStore(VectorStoreRepository):
             if ids:
                 self._client.delete(
                     collection_name=self.collection,
-                    points_selector=PointIdsList(points=ids),  # type: ignore[arg-type]
+                    points_selector=PointIdsList(points=cast("list[int | str | UUID]", ids)),
                 )
             if offset is None:
                 break
@@ -952,8 +956,8 @@ class QdrantVectorStore(VectorStoreRepository):
             {
                 _DENSE: embedding,
                 _SPARSE: QSparseVector(
-                    indices=list(sparse_vector.keys()),  # type: ignore[union-attr]
-                    values=list(sparse_vector.values()),  # type: ignore[union-attr]
+                    indices=list(sparse_vector.keys()),
+                    values=list(sparse_vector.values()),
                 ),
             },
         )

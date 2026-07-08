@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from src.core.async_bridge import run_async
 from src.core.exceptions import RetrievalError
 from src.domain.entities.retrieval_filter import RetrievalFilter
+
+if TYPE_CHECKING:
+    from neo4j import AsyncDriver
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ class Neo4jGraphRepository:
         self.user = user
         self.password = password
         self.max_connection_pool_size = max_connection_pool_size
-        self._driver: object | None = None
+        self._driver: AsyncDriver | None = None
 
     # ── Factory ────────────────────────────────────────────────────────────────
 
@@ -81,7 +84,7 @@ class Neo4jGraphRepository:
             return
         driver = self._get_driver()
         try:
-            async with driver.session() as session:  # type: ignore[attr-defined]
+            async with driver.session() as session:
                 for rel in relations:
                     await session.execute_write(_upsert_relation, rel, chunk_id, document_id)
         except Exception as exc:
@@ -105,7 +108,7 @@ class Neo4jGraphRepository:
         document_ids = list(filters.document_ids) if filters and filters.document_ids else None
         driver = self._get_driver()
         try:
-            async with driver.session() as session:  # type: ignore[attr-defined]
+            async with driver.session() as session:
                 result = await session.execute_read(
                     _search_chunks, entity_names, top_k, document_ids
                 )
@@ -116,7 +119,7 @@ class Neo4jGraphRepository:
     async def close(self) -> None:
         driver = self._driver
         if driver is not None:
-            await driver.close()  # type: ignore[attr-defined]
+            await driver.close()
             self._driver = None
 
     # ── Sync wrappers (ingestion / CLI callers) ────────────────────────────────
@@ -136,20 +139,20 @@ class Neo4jGraphRepository:
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
-    def _get_driver(self) -> object:
+    def _get_driver(self) -> AsyncDriver:
         if self._driver is not None:
             return self._driver
         try:
-            from neo4j import AsyncGraphDatabase  # type: ignore[import-untyped]
+            from neo4j import AsyncGraphDatabase
 
             driver = AsyncGraphDatabase.driver(
                 self.uri,
                 auth=(self.user, self.password),
                 max_connection_pool_size=self.max_connection_pool_size,
             )
-            self._driver = driver
+            self._driver = cast("AsyncDriver", driver)
             logger.info("Neo4j async driver connected to %s", self.uri)
-            return driver
+            return self._driver
         except (ImportError, Exception) as exc:
             raise RetrievalError(f"Cannot connect to Neo4j at {self.uri!r}", cause=exc) from exc
 

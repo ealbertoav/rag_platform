@@ -64,7 +64,7 @@ class GenerationMetric(Protocol):
 
 def _make_ragas_dataset(sample: EvalSample) -> object:
     """Build a single-row Ragas-compatible HuggingFace Dataset from *sample*."""
-    from datasets import Dataset  # type: ignore[import-untyped, attr-defined]
+    from datasets import Dataset
 
     return Dataset.from_dict(
         {
@@ -106,7 +106,7 @@ class RagasMetric(ABC):
         return EvalResult.make(self._metric_name, 0.0, self.threshold, details=details)
 
     def _ragas_score(self, sample: EvalSample) -> float:
-        from ragas import evaluate  # type: ignore[import-untyped]
+        from ragas import evaluate
 
         dataset = _make_ragas_dataset(sample)
         result = evaluate(dataset, metrics=[self._get_ragas_metric()])

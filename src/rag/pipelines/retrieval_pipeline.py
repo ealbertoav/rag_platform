@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from opentelemetry import trace
 
 from src.domain.entities.query import Query
+from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.llm_repository import LLMRepository
 from src.domain.services.retrieval_service import RetrievalResult, RetrievalService
 from src.observability.metrics import record_retrieval
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from src.domain.repositories.vector_store_repository import VectorStoreRepository
     from src.infrastructure.vectordb.bm25 import BM25Index
     from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
+    from src.rag.retrieval.bm25_retriever import BM25Retriever
+    from src.rag.retrieval.graph_retriever import GraphRetriever
+    from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
+    from src.rag.retrieval.hyde_retriever import HyDERetriever
+    from src.rag.retrieval.hype_retriever import HyPERetriever
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
@@ -29,25 +35,25 @@ def _settings() -> Settings:
 
 def _build_graph_retriever(
     llm: LLMRepository,
-    bm25: object,
-) -> object | None:
+    bm25: BM25Retriever,
+) -> GraphRetriever | None:
     """Return a GraphRetriever when Neo4j is enabled, else None."""
     if not _settings().neo4j.enabled:
         return None
     try:
         from src.rag.retrieval.graph_retriever import GraphRetriever
 
-        return GraphRetriever.from_settings(llm=llm, bm25=bm25)  # type: ignore[arg-type]
+        return GraphRetriever.from_settings(llm=llm, bm25=bm25)
     except Exception as exc:
         logger.warning("Graph retriever unavailable (continuing without it): %s", exc)
         return None
 
 
 def _build_hype_retriever(
-    embedder: object,
+    embedder: EmbeddingRepository,
     vector_store: VectorStoreRepository,
-    bm25: object,
-) -> object | None:
+    bm25: BM25Retriever,
+) -> HyPERetriever | None:
     """Return a HyPERetriever when HyPE is enabled, else None."""
     if not _settings().retrieval.hype.enabled:
         return None
@@ -55,7 +61,7 @@ def _build_hype_retriever(
         from src.rag.retrieval.hype_retriever import HyPERetriever
 
         return HyPERetriever(
-            embedder=embedder,  # type: ignore[arg-type]
+            embedder=embedder,
             vector_store=vector_store,
             chunk_lookup=bm25,
         )
@@ -66,11 +72,11 @@ def _build_hype_retriever(
 
 def _build_hyde_retriever(
     llm: LLMRepository,
-    embedder: object,
+    embedder: EmbeddingRepository,
     vector_store: VectorStoreRepository,
     *,
     enabled: bool | None = None,
-) -> object | None:
+) -> HyDERetriever | None:
     """Return a HyDERetriever when HyDE is enabled, else None."""
     if enabled is None:
         enabled = _settings().retrieval.hyde.enabled
@@ -81,7 +87,7 @@ def _build_hyde_retriever(
 
         return HyDERetriever(
             llm=llm,
-            embedder=embedder,  # type: ignore[arg-type]
+            embedder=embedder,
             vector_store=vector_store,
         )
     except Exception as exc:
@@ -90,9 +96,9 @@ def _build_hyde_retriever(
 
 
 def _build_hierarchical_retriever(
-    embedder: object,
+    embedder: EmbeddingRepository,
     vector_store: VectorStoreRepository,
-) -> object | None:
+) -> HierarchicalRetriever | None:
     """Return a HierarchicalRetriever when hierarchical indexing is enabled, else None."""
     if not _settings().chunking.hierarchical.enabled:
         return None
@@ -100,7 +106,7 @@ def _build_hierarchical_retriever(
         from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
 
         return HierarchicalRetriever(
-            embedder=embedder,  # type: ignore[arg-type]
+            embedder=embedder,
             vector_store=vector_store,
             summary_top_k=_settings().chunking.hierarchical.summary_top_k,
         )
@@ -190,10 +196,10 @@ class RetrievalPipeline:
             dense=dense,
             bm25=bm25,
             alpha=cfg.hybrid_alpha,
-            graph_retriever=graph,  # type: ignore[arg-type]
-            hype_retriever=hype,  # type: ignore[arg-type]
-            hyde_retriever=hyde,  # type: ignore[arg-type]
-            hierarchical_retriever=hierarchical,  # type: ignore[arg-type]
+            graph_retriever=graph,
+            hype_retriever=hype,
+            hyde_retriever=hyde,
+            hierarchical_retriever=hierarchical,
             fusion_mode=cfg.hybrid_fusion,
             feedback_boost_multiplier=(
                 _settings().quality.feedback_loop.boost_multiplier

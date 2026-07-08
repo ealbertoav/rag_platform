@@ -185,14 +185,20 @@ ignore-missing-imports = [
     "google.*",
     "neo4j",
     "neo4j.*",
+    "datasets",
+    "datasets.*",
+    "ragas",
+    "ragas.*",
+    "deepeval",
+    "deepeval.*",
 ]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
-# type: ignore comments often serve pyright/basedpyright too — don't warn when mypy 3.12 resolves them.
-warn_unused_ignores = false
+# Remaining inline suppressions are audited in docs/type-safety.md (T-170).
+warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = ["datasets.*", "ragas.*", "deepeval.*", "FlagEmbedding.*", "llama_cpp.*", "rank_bm25.*", "redis", "redis.*", "openai.*", "voyageai.*", "cohere.*", "google.*"]

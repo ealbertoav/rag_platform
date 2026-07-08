@@ -7,9 +7,8 @@
 > **Current focus:** Phase 17 — Code Quality & Type Safety. **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16 complete** — T-160–T-165 (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
 >
 > **Next tasks (recommended order):**
-> 1. **T-170** — Type ignore audit & reduction
-> 2. **T-171** — Mypy CI gate hardening
-> 3. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+> 1. **T-171** — Mypy CI gate hardening
+> 2. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
 
 ---
 
@@ -2120,7 +2119,7 @@
 ---
 
 ### T-170 · Type Ignore Audit & Reduction
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Audit all 56 `type: ignore` comments, remove unnecessary ones, and replace fixable suppressions with proper types or targeted `mypy` overrides — brings type safety from grade B to A.
 - **Inputs:** T-060 (mypy strict config), current `src/` codebase
 - **Outputs:** Reduced `type: ignore` count (target: < 20), documented justification for each remaining suppression.
@@ -2258,4 +2257,4 @@ T-163 + T-164 + T-165 ──► T-172
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
-17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** **T-170** → T-171 → T-172 _(~1 session; T-172 scenario 5 done; **next: T-170**)_
+17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → **T-171** → T-172 _(~1 session; T-172 scenario 5 done; **next: T-171**)_

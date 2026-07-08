@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.core.constants import DATASETS_DIR, EXPORTS_DIR
+from src.evals.e2e.benchmark_samples import BenchmarkPipeline
 from src.evals.e2e.rag_benchmark import BenchmarkReport, RAGBenchmark
 from src.evals.golden_dataset import filter_real_qa_pairs
 
@@ -23,7 +24,7 @@ class EvaluationService:
 
     def __init__(
         self,
-        chat_pipeline: object,  # ChatPipeline — avoid circular import
+        chat_pipeline: BenchmarkPipeline,
         recall_threshold: float = 0.5,
         faithfulness_threshold: float = 0.8,
         relevance_threshold: float = 0.75,
@@ -77,7 +78,7 @@ class EvaluationService:
         return report
 
     @classmethod
-    def from_settings(cls, chat_pipeline: object) -> EvaluationService:
+    def from_settings(cls, chat_pipeline: BenchmarkPipeline) -> EvaluationService:
         return cls(
             chat_pipeline=chat_pipeline,
             recall_threshold=0.5,

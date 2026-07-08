@@ -9,7 +9,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import yaml
 from rich.console import Console
@@ -20,6 +20,7 @@ from src.core.exceptions import VectorStoreError
 from src.domain.entities.evaluation import BenchmarkRun
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.evals.e2e.benchmark_samples import (
+    BenchmarkPipeline,
     GenerationMetricAccumulator,
     pair_str,
     pair_str_list,
@@ -30,6 +31,9 @@ from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.relevance import RelevanceMetric
 from src.evals.golden_dataset import filter_real_qa_pairs, is_placeholder_qa_pair  # noqa: F401
 from src.rag.quality.feedback_loop import record_feedback, score_from_relevant
+
+if TYPE_CHECKING:
+    from src.rag.pipelines.agent_pipeline import AgentPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +68,6 @@ _TECHNIQUE_DELTA_OVERRIDES: dict[str, dict[str, str]] = {
 }
 
 
-class BenchmarkPipeline(Protocol):
-    async def benchmark(self, question: str) -> BenchmarkRun: ...
-
-
 class PipelineFactory(Protocol):
     def __call__(
         self,
@@ -95,7 +95,7 @@ class TechniqueResult:
     error: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        return dataclasses.asdict(self)  # type: ignore[return-value]
+        return cast(dict[str, object], dataclasses.asdict(self))
 
 
 @dataclasses.dataclass
@@ -107,7 +107,7 @@ class FeedbackComparison:
     samples: int
 
     def to_dict(self) -> dict[str, object]:
-        return dataclasses.asdict(self)  # type: ignore[return-value]
+        return cast(dict[str, object], dataclasses.asdict(self))
 
 
 @dataclasses.dataclass
@@ -321,7 +321,7 @@ def _relevant_chunk_ids(qa_pairs: list[dict[str, object]]) -> set[str]:
 
 def _resolve_benchmark_vector_store(vector_store: object | None = None) -> VectorStoreRepository:
     if vector_store is not None:
-        return vector_store  # type: ignore[return-value]
+        return cast(VectorStoreRepository, vector_store)
     from src.infrastructure.vectordb.feedback_store import build_vector_store_from_settings
 
     return build_vector_store_from_settings()
@@ -398,11 +398,11 @@ def temporary_feedback_seed(
 class _AgentBenchmarkAdapter:
     """Adapter so RAGBenchmark-style eval can run against AgentPipeline (Self-RAG)."""
 
-    def __init__(self, agent: object) -> None:
+    def __init__(self, agent: AgentPipeline) -> None:
         self._agent = agent
 
     async def benchmark(self, question: str) -> BenchmarkRun:
-        result = await self._agent.chat_full(question)  # type: ignore[attr-defined]
+        result = await self._agent.chat_full(question)
         return BenchmarkRun(
             answer=result.answer,
             context_texts=list(result.context_texts),
@@ -423,7 +423,7 @@ def build_benchmark_pipeline(
         return _AgentBenchmarkAdapter(AgentPipeline.from_settings(vector_store=store))
     from src.rag.pipelines.chat_pipeline import ChatPipeline
 
-    return ChatPipeline.from_settings(vector_store=store)  # type: ignore[return-value]
+    return cast(BenchmarkPipeline, ChatPipeline.from_settings(vector_store=store))
 
 
 class TechniqueBenchmark:

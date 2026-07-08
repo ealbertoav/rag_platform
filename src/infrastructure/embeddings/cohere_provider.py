@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from tenacity import (
     before_sleep_log,
@@ -107,7 +107,7 @@ class CohereEmbeddingProvider(EmbeddingRepository):
             input_type=input_type,
             embedding_types=["float"],
         )
-        return [list(v) for v in response.embeddings.float_]  # type: ignore[union-attr]
+        return [list(v) for v in cast(Any, response.embeddings).float_]
 
     def _get_client(self) -> Any:
         if self._client is None:

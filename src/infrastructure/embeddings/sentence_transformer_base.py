@@ -86,7 +86,7 @@ class SentenceTransformerEmbeddingProvider(EmbeddingRepository):
                 "%s loaded from %s on %s", type(self).__name__, self.model_path, self.device
             )
             self._model = model
-            return model  # type: ignore[no-any-return]
+            return self._model
         except (ImportError, OSError, ValueError) as exc:
             raise EmbeddingError(
                 f"Cannot load {type(self).__name__} from {self.model_path!r}", cause=exc

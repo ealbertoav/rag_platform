@@ -8,7 +8,7 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from string import Template
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import numpy as np
 
@@ -41,7 +41,7 @@ class QAPair:
     source: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        return dataclasses.asdict(self)  # type: ignore[return-value]
+        return cast(dict[str, object], dataclasses.asdict(self))
 
 
 class SyntheticDatasetBuilder:
