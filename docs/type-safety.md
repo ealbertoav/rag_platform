@@ -61,5 +61,6 @@ make test                  # 100% line coverage on src/
 
 - `.github/workflows/ci.yml` lint job fails on any `mypy src` error (no `continue-on-error`, no CLI `--ignore-missing-imports`)
 - `make lint` and CI run identical commands in order: ruff check → ruff format --check → mypy → basedpyright
+- basedpyright uses `typeCheckingMode = "basic"` and `failOnWarnings = false` — CI fails only on errors, not recommended-mode warnings mypy already covers
 - Pre-commit mypy hook targets `^src/` and relies on `pyproject.toml` mypy settings
 - `scripts/check_lint_gate.py` validates configuration drift before merge

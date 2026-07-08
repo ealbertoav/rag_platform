@@ -8,6 +8,7 @@
 >
 > **Next tasks (recommended order):**
 > 1. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
+> 2. **T-173** — Basedpyright warning burn-down & mode progression (follow-up to T-171 CI config)
 
 ---
 
@@ -2161,7 +2162,59 @@
   - [x] `scripts/check_lint_gate.py` detects config drift across CI, Makefile, and pre-commit
   - [x] Typed smoke modules under `src/type_regression/` catch compression/contextual-header API regressions
   - [x] README documents lint workflow for contributors
-- **Notes:** Removed CLI `--ignore-missing-imports` from CI (T-170 config lives in `pyproject.toml`). Added basedpyright as fourth lint step aligned with Makefile. `lint_gate.py` parses CI workflow step blocks in isolation so `continue-on-error` on unrelated jobs does not false-positive.
+- **Notes:** Removed CLI `--ignore-missing-imports` from CI (T-170 config lives in `pyproject.toml`). Added basedpyright as fourth lint step aligned with Makefile. `lint_gate.py` parses CI workflow step blocks in isolation so `continue-on-error` on unrelated jobs does not false-positive. CI uses `typeCheckingMode = "basic"` and `failOnWarnings = false` so merges block on **errors** only — incremental warning cleanup tracked in **T-173**.
+
+---
+
+### T-173 · Basedpyright Warning Burn-Down & Mode Progression
+- **Status:** `[ ]`
+- **Goal:** Incrementally fix actionable basedpyright warnings and tighten `[tool.basedpyright]` from `basic` toward `standard`/`recommended` — without blocking PRs on third-party stub noise or duplicating mypy strict enforcement. Closes the gap left when T-171 suppressed ~427 Linux CI warnings to unblock the lint gate.
+- **Inputs:** T-171 (basedpyright in CI at `--level error`), T-170 (mypy strict baseline), current `pyproject.toml` `[tool.basedpyright]` config
+- **Outputs:** Committed basedpyright baseline (optional interim), reduced warning count per phase, documented rule enablement plan, CI remains green on `make lint`.
+- **Files:**
+  - `pyproject.toml` — progressive `[tool.basedpyright]` rule enablement; `typeCheckingMode` ladder (`basic` → `standard` → `recommended`)
+  - `.basedpyright/baseline.json` — optional committed baseline while burning down (basedpyright `baselineFile` setting)
+  - `docs/type-safety.md` — basedpyright section: current mode, enabled rules, burn-down progress table
+  - `src/` — targeted fixes per phase (see **Phases** below)
+  - `tests/unit/test_lint_gate.py` — extend if canonical basedpyright command or config checks change
+- **Phases:** _(execute in order; each phase ends with `make lint` exit 0)_
+  1. **Inventory & baseline** — capture current warning counts by rule:
+     ```bash
+     uv run basedpyright --level warning src 2>&1 | rg -o '\(report[A-Za-z]+\)' | sort | uniq -c | sort -rn
+     ```
+     Record counts in `docs/type-safety.md`. Optionally commit `.basedpyright/baseline.json` so new warnings fail CI while existing debt burns down incrementally.
+  2. **Quick wins (~≤15 fixes)** — zero-risk, low-churn:
+     - `reportUnusedImport` — remove dead imports
+     - `reportUnreachable` — delete or refactor dead branches
+     - `reportUnnecessaryCast` / `reportUnnecessaryComparison` / `reportUnnecessaryIsInstance` — simplify
+     - `reportUnusedParameter` — prefix with `_` or remove
+  3. **Override annotations (~83 fixes)** — add `typing.override` to methods that override base classes:
+     - `reportImplicitOverride` — FastAPI middleware (`dispatch`), Pydantic settings sources, Ragas metric subclasses, logging `Formatter.format`, exception `__str__`, etc.
+  4. **Intentional discard (~47 fixes)** — `reportUnusedCallResult`:
+     - Assign to `_` when return value is intentionally ignored (e.g. side-effect-only calls)
+     - Do **not** blanket-suppress the rule — fix call sites
+  5. **Class attribute annotations (~250 fixes)** — `reportUnannotatedClassAttribute`:
+     - Annotate instance/class attributes set in `__init__` or at class body (e.g. `self._llm: LLMRepository`, `model_config: ClassVar[...]` on Pydantic models where applicable)
+     - Prefer `@final` on leaf classes only when inheritance is not intended
+     - Batch by package: `core/` → `api/` → `domain/` → `infrastructure/` → `rag/` → `evals/`
+  6. **Mode progression** — after phases 2–5 drive warning count near zero (excluding excluded rules):
+     - Set `typeCheckingMode = "standard"`; fix newly surfaced errors
+     - Optionally advance to `"recommended"` with `failOnWarnings = false` until debt cleared, then flip `failOnWarnings = true`
+- **Out of scope (do not fix in src/):**
+  - `reportMissingTypeStubs` (~551) — third-party libraries without stubs; keep suppressed or use `allowedUntypedLibraries` per module
+  - `reportAny` / `reportExplicitAny` / `reportUnknown*Type` — already aligned with mypy overrides in T-170; re-enable only when upstream stubs improve
+  - Chasing neo4j / ragas / llama_cpp stub completeness — tracked in `docs/type-safety.md` removal plan
+- **Acceptance Criteria:**
+  - [ ] Warning inventory committed in `docs/type-safety.md` with per-rule counts and target mode
+  - [ ] Phase 2 complete: quick-win rules at zero warnings (or baselined with ticket refs)
+  - [ ] Phase 3 complete: `reportImplicitOverride` at zero warnings in `src/`
+  - [ ] Phase 4 complete: `reportUnusedCallResult` at zero warnings in `src/`
+  - [ ] Phase 5 complete: `reportUnannotatedClassAttribute` at zero warnings in `src/`
+  - [ ] `typeCheckingMode` advanced to at least `"standard"` with `make lint` exit 0 on macOS **and** Linux CI
+  - [ ] `failOnWarnings` remains `false` until Phase 5 done; document flip criteria in `docs/type-safety.md`
+  - [ ] No new `# type: ignore` in `src/`; mypy strict remains exit 0
+  - [ ] README lint workflow mentions basedpyright mode progression (link to `docs/type-safety.md`)
+- **Notes:** T-171 intentionally kept basedpyright as an **error-level complement** to mypy — not a second strict gate. Linux CI failed with `0 errors, 427 warnings, exit 1` because basedpyright defaults to `recommended` + `failOnWarnings = true`; most CI warnings were `reportUnannotatedClassAttribute`, not runtime bugs. This task is ~2–3 sessions if done in full; phases 2–3 can ship as a small PR (~1 session). Can run **in parallel** with T-172 (no dependency). Reuse T-152 baseline pattern: commit `.basedpyright/baseline.json`, burn down, shrink baseline each PR.
 
 ---
 
@@ -2242,7 +2295,7 @@ T-061 ──► T-161 ──► T-162
 T-030 + T-031 ──► T-163
 T-111 + T-112 ──► T-164
 T-014 + T-015 ──► T-165
-T-060 + T-061 ──► T-170 ──► T-171
+T-060 + T-061 ──► T-170 ──► T-171 ──► T-173
 T-043 + T-051 ──► T-172
 T-146 ──► T-172
 T-163 + T-164 + T-165 ──► T-172
@@ -2266,4 +2319,4 @@ T-163 + T-164 + T-165 ──► T-172
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
-17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → **T-172** _(~1 session; T-172 scenario 5 done; **next: T-172**)_
+17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → **T-172** · **T-173** _(T-172 scenario 5 done; T-173 basedpyright burn-down unblocked after T-171; can run in parallel)_
