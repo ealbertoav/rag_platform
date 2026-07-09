@@ -1,0 +1,7 @@
+parsing:
+  layout_parser:
+    enabled: false              # layout-aware parsing (T-200+); off by default
+    provider: docling           # docling | future providers
+  ocr:
+    enabled: false              # OCR pipeline (T-220+); off by default
+    provider: tesseract         # tesseract | easyocr | docling | azure_di

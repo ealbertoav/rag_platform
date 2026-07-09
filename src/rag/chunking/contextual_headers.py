@@ -5,8 +5,10 @@ from string import Template
 from typing import Protocol
 
 from src.core.constants import (
+    CHUNK_PAGE_KEY,
     CHUNK_PARENT_ID_KEY,
     CHUNK_RAW_TEXT_KEY,
+    CHUNK_SECTION_KEY,
     MERGED_CHUNK_IDS_KEY,
     PARENT_CONTEXT_TEXT_KEY,
 )
@@ -32,7 +34,7 @@ def _document_title(document: Document, chunk: Chunk) -> str:
 
 
 def _section_label(chunk: Chunk) -> str:
-    section = chunk.metadata.get("section")
+    section = chunk.metadata.get(CHUNK_SECTION_KEY)
     if section:
         return str(section)
     sections = chunk.metadata.get("sections")
@@ -45,7 +47,7 @@ def _section_label(chunk: Chunk) -> str:
 
 
 def _page_label(chunk: Chunk) -> str:
-    page = chunk.metadata.get("page")
+    page = chunk.metadata.get(CHUNK_PAGE_KEY)
     if page is None:
         return _MISSING
     return str(page)
