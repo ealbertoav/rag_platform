@@ -201,6 +201,44 @@ class TestBaselineHelpers:
         loaded = json.loads(path.read_text(encoding="utf-8"))
         assert loaded["scenarios"]["bm25_100k"]["p95_ms"] == 6.0
 
+    def test_save_infra_baseline_merges_existing_scenarios(self, tmp_path: Path):
+        baseline_path = tmp_path / "baseline.json"
+        baseline_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "description": "existing",
+                    "scenarios": {
+                        "streaming_chat": {
+                            "p50_ms": 1.0,
+                            "p95_ms": 2.0,
+                            "samples": 10,
+                            "failures": 0,
+                        },
+                        "bm25_100k": {
+                            "p50_ms": 3.0,
+                            "p95_ms": 4.0,
+                            "samples": 20,
+                            "failures": 0,
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        report = InfraBenchmarkReport(
+            timestamp="20260101T000000",
+            scenarios=[_scenario("bm25_100k", p50=5, p95=8, memory_bytes=100)],
+        )
+        save_infra_baseline(report, baseline_path)
+        loaded = json.loads(baseline_path.read_text(encoding="utf-8"))
+        assert loaded["description"] == (
+            "T-172 infrastructure latency baseline — "
+            "compare with scripts/benchmark_infra.py --compare"
+        )
+        assert loaded["scenarios"]["streaming_chat"]["p95_ms"] == 2.0
+        assert loaded["scenarios"]["bm25_100k"]["p95_ms"] == 8.0
+
 
 class TestCompareToBaseline:
     def test_no_regression(self):
@@ -222,6 +260,14 @@ class TestCompareToBaseline:
     def test_skips_invalid_baseline(self):
         current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
         assert compare_to_baseline(current, {}, regression_p95_pct=10.0) == []
+
+    def test_skips_non_dict_scenarios_section(self):
+        current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
+        assert compare_to_baseline(current, {"scenarios": []}, regression_p95_pct=0.0) == []
+
+    def test_skips_non_dict_baseline_object(self):
+        current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
+        assert compare_to_baseline(current, "not-a-dict", regression_p95_pct=0.0) == []
 
     def test_skips_invalid_baseline_p95(self):
         current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
@@ -307,9 +353,14 @@ class TestInfraBenchmarkReport:
 
 class TestMeasureStreamLatencies:
     @pytest.mark.asyncio
-    async def test_collects_latencies(self):
-        latencies = await measure_stream_inter_token_latencies_ms(_token_stream("a", "b"))
+    async def test_collects_inter_token_latencies(self):
+        latencies = await measure_stream_inter_token_latencies_ms(_token_stream("a", "b", "c"))
         assert len(latencies) == 2
+
+    @pytest.mark.asyncio
+    async def test_excludes_time_to_first_token(self):
+        latencies = await measure_stream_inter_token_latencies_ms(_token_stream("only"))
+        assert latencies == []
 
 
 class TestInfraBenchmarkScenarios:
@@ -332,7 +383,7 @@ class TestInfraBenchmarkScenarios:
         )
         result = await benchmark.run_streaming_chat()
         assert result.name == "streaming_chat"
-        assert result.samples == 3
+        assert result.samples == 2
         assert result.p95_ms >= 0.0
 
     @pytest.mark.asyncio
@@ -364,8 +415,10 @@ class TestInfraBenchmarkScenarios:
     @pytest.mark.asyncio
     async def test_concurrent_chats_success(self):
         pipeline = _pipeline_mock()
+        calls = {"n": 0}
 
         async def factory():
+            calls["n"] += 1
             return pipeline
 
         benchmark = InfraBenchmark(
@@ -373,18 +426,24 @@ class TestInfraBenchmarkScenarios:
             pipeline_factory=factory,
         )
         result = await benchmark.run_concurrent_chats()
+        assert calls["n"] == 1
         assert result.samples == 3
         assert result.failures == 0
 
     @pytest.mark.asyncio
     async def test_concurrent_chats_partial_failures(self):
         calls = {"n": 0}
-        pipeline_ok = _pipeline_mock()
-        pipeline_fail = _pipeline_mock(chat_full_error=TimeoutError("slow"))
+        pipeline = _pipeline_mock()
+
+        async def chat_full_side_effect(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] % 2 == 0:
+                raise TimeoutError("slow")
+
+        pipeline.chat_full = AsyncMock(side_effect=chat_full_side_effect)
 
         async def factory():
-            calls["n"] += 1
-            return pipeline_fail if calls["n"] % 2 == 0 else pipeline_ok
+            return pipeline
 
         benchmark = InfraBenchmark(
             thresholds=InfraBenchmarkThresholds(concurrent_chat_count=4),
@@ -407,6 +466,17 @@ class TestInfraBenchmarkScenarios:
         )
         result = await benchmark.run_concurrent_chats()
         assert result.error == "all concurrent chats failed"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_pipeline_init_failure(self):
+        async def factory():
+            raise RuntimeError("pipeline load failed")
+
+        result = await InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(concurrent_chat_count=2),
+            pipeline_factory=factory,
+        ).run_concurrent_chats()
+        assert result.error == "pipeline load failed"
 
     @pytest.mark.asyncio
     async def test_concurrent_chats_no_factory(self):
@@ -555,6 +625,23 @@ class TestNeo4jReachable:
 
         reload_settings_module()
         assert mod._neo4j_reachable() is False
+
+    def test_returns_false_when_settings_flag_disabled(self):
+        import sys
+
+        from src.evals.e2e import infra_benchmark as mod
+
+        fake_settings = MagicMock()
+        fake_settings.neo4j.enabled = False
+        fake_neo4j = self._fake_neo4j_module()
+        with (
+            patch.dict(
+                sys.modules,
+                {"neo4j": fake_neo4j, "neo4j.exceptions": fake_neo4j.exceptions},
+            ),
+            patch("src.core.settings.settings", fake_settings),
+        ):
+            assert mod._neo4j_reachable() is False
 
     def test_returns_false_on_connection_error(self, monkeypatch):
         import sys

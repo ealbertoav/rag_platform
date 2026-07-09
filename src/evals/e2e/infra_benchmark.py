@@ -295,7 +295,30 @@ def report_to_baseline_payload(report: InfraBenchmarkReport) -> dict[str, object
 def save_infra_baseline(report: InfraBenchmarkReport, path: Path | None = None) -> Path:
     target = path or _DEFAULT_BASELINE_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = report_to_baseline_payload(report)
+    new_payload = report_to_baseline_payload(report)
+    existing = load_infra_baseline(target)
+    merged_scenarios: dict[str, object] = {}
+    existing_raw = existing.get("scenarios")
+    if isinstance(existing_raw, dict):
+        merged_scenarios.update(existing_raw)
+    new_raw = new_payload.get("scenarios")
+    if isinstance(new_raw, dict):
+        merged_scenarios.update(new_raw)
+    payload: dict[str, object] = {
+        "version": new_payload.get("version", existing.get("version", 1)),
+        "description": new_payload.get(
+            "description",
+            existing.get(
+                "description",
+                (
+                    "T-172 infrastructure latency baseline — "
+                    + "compare with scripts/benchmark_infra.py --compare"
+                ),
+            ),
+        ),
+        "captured_at": new_payload["captured_at"],
+        "scenarios": merged_scenarios,
+    }
     with target.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
     logger.info("Infra baseline saved to %s", target)
@@ -363,12 +386,16 @@ def build_bm25_fixture_chunks(count: int, *, needle_index: int | None = None) ->
 async def measure_stream_inter_token_latencies_ms(
     stream: Any,
 ) -> list[float]:
-    """Measure milliseconds between consecutive streamed tokens."""
+    """Measure milliseconds between consecutive streamed tokens.
+
+    Time-to-first-token is excluded; at least two tokens are required for one sample.
+    """
     latencies: list[float] = []
-    previous = time.monotonic()
+    previous: float | None = None
     async for _token in stream:
         now = time.monotonic()
-        latencies.append((now - previous) * 1000.0)
+        if previous is not None:
+            latencies.append((now - previous) * 1000.0)
         previous = now
     return latencies
 
@@ -468,13 +495,22 @@ class InfraBenchmark:
                 skip_reason="no pipeline factory configured",
             )
 
-        pipeline_factory = self._pipeline_factory
         count = self._thresholds.concurrent_chat_count
         timeout_s = self._thresholds.concurrent_chat_timeout_s
         question = self._thresholds.streaming_sample_question
 
+        try:
+            pipeline = await self._pipeline_factory()
+        except Exception as exc:
+            logger.exception("Concurrent chat benchmark failed to initialize pipeline")
+            return ScenarioMetrics(
+                name="concurrent_chats",
+                p50_ms=0.0,
+                p95_ms=0.0,
+                error=str(exc),
+            )
+
         async def _one_chat() -> float:
-            pipeline = await pipeline_factory()
             started = time.monotonic()
             await asyncio.wait_for(pipeline.chat_full(question), timeout=timeout_s)
             return (time.monotonic() - started) * 1000.0
