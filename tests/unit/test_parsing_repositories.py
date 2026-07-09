@@ -19,13 +19,13 @@ from pydantic import ValidationError
 
 from src.core.constants import (
     BBOX_KEY,
+    CHUNK_PAGE_KEY,
+    CHUNK_SECTION_KEY,
     CHUNK_TYPE_CAPTION,
     CHUNK_TYPE_FIGURE,
     CHUNK_TYPE_PAGE,
     CHUNK_TYPE_TABLE,
     FIGURE_ID_KEY,
-    PAGE_NUMBER_KEY,
-    SECTION_TITLE_KEY,
     TABLE_ID_KEY,
 )
 from src.domain.entities.parsed_document import ParsedDocument
@@ -61,8 +61,13 @@ class TestParsedDocument:
         assert doc.metadata == {}
 
     def test_custom_metadata(self) -> None:
-        doc = ParsedDocument(source="a.pdf", content="x", metadata={"page": 3})
-        assert doc.metadata["page"] == 3
+        doc = ParsedDocument(
+            source="a.pdf",
+            content="x",
+            metadata={CHUNK_PAGE_KEY: 3, CHUNK_SECTION_KEY: "Intro"},
+        )
+        assert doc.metadata[CHUNK_PAGE_KEY] == 3
+        assert doc.metadata[CHUNK_SECTION_KEY] == "Intro"
 
     def test_frozen(self) -> None:
         doc = ParsedDocument(source="a.pdf", content="x")
@@ -134,8 +139,8 @@ class TestMultimodalConstants:
             ("TABLE_ID_KEY", TABLE_ID_KEY),
             ("FIGURE_ID_KEY", FIGURE_ID_KEY),
             ("BBOX_KEY", BBOX_KEY),
-            ("PAGE_NUMBER_KEY", PAGE_NUMBER_KEY),
-            ("SECTION_TITLE_KEY", SECTION_TITLE_KEY),
+            ("CHUNK_PAGE_KEY", CHUNK_PAGE_KEY),
+            ("CHUNK_SECTION_KEY", CHUNK_SECTION_KEY),
         ],
     )
     def test_constant_is_non_empty_str(self, name: str, value: str) -> None:
@@ -147,8 +152,22 @@ class TestMultimodalConstants:
         assert len(values) == len(set(values))
 
     def test_metadata_keys_are_unique(self) -> None:
-        keys = [TABLE_ID_KEY, FIGURE_ID_KEY, BBOX_KEY, PAGE_NUMBER_KEY, SECTION_TITLE_KEY]
+        keys = [
+            TABLE_ID_KEY,
+            FIGURE_ID_KEY,
+            BBOX_KEY,
+            CHUNK_PAGE_KEY,
+            CHUNK_SECTION_KEY,
+        ]
         assert len(keys) == len(set(keys))
+
+    def test_multimodal_page_key_matches_chunk_metadata(self) -> None:
+        """Layout parsers must populate metadata.page — not page_number."""
+        assert CHUNK_PAGE_KEY == "page"
+
+    def test_multimodal_section_key_matches_chunk_metadata(self) -> None:
+        """Layout parsers must populate metadata.section — not section_title."""
+        assert CHUNK_SECTION_KEY == "section"
 
 
 # ── No infrastructure imports ──────────────────────────────────────────────────
@@ -196,3 +215,25 @@ class TestNoDomainInfraLeak:
                 "import src.infrastructure"
             ):
                 pytest.fail(f"infrastructure import in domain layer: {stripped}")
+
+
+# ── CI migration script (T-180) ──────────────────────────────────────────────
+
+
+class TestMigrateCiChecksScript:
+    def test_script_exists_and_is_executable(self) -> None:
+        script = Path("scripts/migrate_ci_checks.sh")
+        assert script.is_file()
+        assert script.stat().st_mode & 0o111
+
+    def test_script_documents_migration_targets(self) -> None:
+        text = Path("scripts/migrate_ci_checks.sh").read_text(encoding="utf-8")
+        for label in ("Quality", "Unit Tests", "Extended Tests"):
+            assert label in text
+        for deprecated in (
+            "Dependency Scan",
+            "Lint",
+            "Integration Tests",
+            "Retrieval Eval Regression",
+        ):
+            assert deprecated in text
