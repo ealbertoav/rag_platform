@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from src.core.constants import CHUNK_INDEX_KEY, CHUNK_PARENT_ID_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
@@ -26,8 +28,8 @@ class ParentChildChunker:
     ) -> None:
         if child_chunk_size >= parent_chunk_size:
             raise ValueError("child_chunk_size must be smaller than parent_chunk_size")
-        self._parent_splitter = RecursiveChunker(chunk_size=parent_chunk_size, overlap=overlap)
-        self._child_splitter = RecursiveChunker(chunk_size=child_chunk_size, overlap=overlap)
+        self._parent_splitter: Any = RecursiveChunker(chunk_size=parent_chunk_size, overlap=overlap)
+        self._child_splitter: Any = RecursiveChunker(chunk_size=child_chunk_size, overlap=overlap)
 
     def chunk(self, document: Document) -> list[Chunk]:
         parents = self._parent_splitter.chunk(document)

@@ -34,10 +34,10 @@ class SemanticChunker:
         max_tokens: int = 500,
         encode: Callable[[list[str]], Any] | None = None,
     ) -> None:
-        self.model_name = model_name
-        self.similarity_threshold = similarity_threshold
-        self.max_tokens = max_tokens
-        self._encode = encode  # injected encoder — lazy-loads real model when None
+        self.model_name: str = model_name
+        self.similarity_threshold: float = similarity_threshold
+        self.max_tokens: int = max_tokens
+        self._encode: Callable[[list[str]], Any] | None = encode
 
     # ── Public ─────────────────────────────────────────────────────────────────
 

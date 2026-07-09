@@ -21,8 +21,8 @@ class GraphIndexer:
         extractor: EntityExtractor,
         graph: Neo4jGraphRepository,
     ) -> None:
-        self._extractor = extractor
-        self._graph = graph
+        self._extractor: EntityExtractor = extractor
+        self._graph: Neo4jGraphRepository = graph
 
     def index_chunks(self, chunks: list[Chunk], document_id: str) -> None:
         run_async(self._index_chunks_async(chunks, document_id))

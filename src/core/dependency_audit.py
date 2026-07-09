@@ -1,7 +1,7 @@
 """Automated dependency vulnerability scanning (T-161).
 
-Runs pip-audit against the active environment, filters allowlisted CVEs, and fails on
-unallowlisted high/critical findings (CVSS base score >= 7.0).
+Runs pip-audit against the active environment, filters allowlisted CVEs, and fail to
+allowlisted high/critical findings (CVSS base score >= 7.0).
 """
 
 from __future__ import annotations
@@ -349,7 +349,7 @@ def audit_dependencies(
 
     summary = (
         f"Dependency audit PASSED: {len(vulnerabilities)} finding(s); "
-        f"{len(allowlisted)} allowlisted, {len(low_severity)} below severity threshold."
+        + f"{len(allowlisted)} allowlisted, {len(low_severity)} below severity threshold."
     )
     return DependencyAuditResult(
         status=AuditStatus.PASSED,

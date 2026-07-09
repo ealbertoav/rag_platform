@@ -29,13 +29,33 @@ from src.evals.e2e.benchmark_samples import (
 )
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.relevance import RelevanceMetric
-from src.evals.golden_dataset import filter_real_qa_pairs, is_placeholder_qa_pair  # noqa: F401
+from src.evals.golden_dataset import filter_real_qa_pairs, is_placeholder_qa_pair
 from src.rag.quality.feedback_loop import record_feedback, score_from_relevant
 
 if TYPE_CHECKING:
     from src.rag.pipelines.agent_pipeline import AgentPipeline
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "FeedbackComparison",
+    "PipelineFactory",
+    "TechniqueBenchmark",
+    "TechniqueBenchmarkReport",
+    "TechniqueConfig",
+    "TechniqueResult",
+    "build_benchmark_pipeline",
+    "build_feedback_boost_overrides",
+    "filter_qa_pairs",
+    "has_real_qa_data",
+    "is_placeholder_qa_pair",
+    "load_qa_pairs",
+    "load_technique_configs",
+    "merge_technique_overrides",
+    "prepare_qa_pairs",
+    "run_technique_matrix",
+    "temporary_config",
+]
 
 _DEFAULT_QA_PATH = DATASETS_DIR / "goldens" / "qa_dataset.json"
 _EVALS_CONFIG_PATH = ROOT / "configs" / "evals.yaml"
@@ -145,7 +165,7 @@ class TechniqueBenchmarkReport:
             fc = self.feedback_comparison
             lines.append(
                 f"  Feedback loop Recall@5: off={fc.recall_boost_off:.3f} "
-                f"on={fc.recall_boost_on:.3f}"
+                + f"on={fc.recall_boost_on:.3f}"
             )
         return "\n".join(lines)
 
@@ -285,7 +305,7 @@ def reload_settings_module() -> None:
     """Reload the settings singleton after env var changes."""
     import src.core.settings as settings_mod
 
-    importlib.reload(settings_mod)
+    _ = importlib.reload(settings_mod)
 
 
 @contextmanager
@@ -300,7 +320,7 @@ def temporary_config(overrides: dict[str, str]) -> Generator[None]:
     finally:
         for key, previous in saved.items():
             if previous is None:
-                os.environ.pop(key, None)
+                _ = os.environ.pop(key, None)
             else:
                 os.environ[key] = previous
         reload_settings_module()
@@ -399,7 +419,7 @@ class _AgentBenchmarkAdapter:
     """Adapter so RAGBenchmark-style eval can run against AgentPipeline (Self-RAG)."""
 
     def __init__(self, agent: AgentPipeline) -> None:
-        self._agent = agent
+        self._agent: AgentPipeline = agent
 
     async def benchmark(self, question: str) -> BenchmarkRun:
         result = await self._agent.chat_full(question)
@@ -438,9 +458,9 @@ class TechniqueBenchmark:
         faithfulness_threshold: float = 0.8,
         relevance_threshold: float = 0.75,
     ) -> None:
-        self._faith = faithfulness or FaithfulnessMetric(threshold=faithfulness_threshold)
-        self._relev = relevance or RelevanceMetric(threshold=relevance_threshold)
-        self._k = recall_k
+        self._faith: Any = faithfulness or FaithfulnessMetric(threshold=faithfulness_threshold)
+        self._relev: Any = relevance or RelevanceMetric(threshold=relevance_threshold)
+        self._k: Any = recall_k
 
     async def run(
         self,

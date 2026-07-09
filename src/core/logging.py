@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar, override
 
 from opentelemetry import trace
 
@@ -58,6 +58,7 @@ def _otel_context() -> tuple[str, str]:
 class JsonFormatter(logging.Formatter):
     """Emits one JSON object per log line, always including OTel trace context."""
 
+    @override
     def format(self, record: logging.LogRecord) -> str:
         record.message = record.getMessage()
         trace_id, span_id = _otel_context()
@@ -90,12 +91,13 @@ class JsonFormatter(logging.Formatter):
 class TextFormatter(logging.Formatter):
     """Human-readable formatter for local development, appends trace context when present."""
 
-    _FMT = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
-    _DATEFMT = "%Y-%m-%dT%H:%M:%S"
+    _FMT: ClassVar[str] = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
+    _DATEFMT: ClassVar[str] = "%Y-%m-%dT%H:%M:%S"
 
     def __init__(self) -> None:
         super().__init__(fmt=self._FMT, datefmt=self._DATEFMT)
 
+    @override
     def format(self, record: logging.LogRecord) -> str:
         base = super().format(record)
         trace_id, span_id = _otel_context()

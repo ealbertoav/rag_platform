@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import Any, cast, override
 
 from tenacity import (
     before_sleep_log,
@@ -67,14 +67,15 @@ class OpenAIEmbeddingProvider(EmbeddingRepository):
         model: str = "text-embedding-3-large",
         dimensions: int | None = None,
     ) -> None:
-        self.api_key = api_key
-        self.model = model
+        self.api_key: str = api_key
+        self.model: str = model
         # Dimension truncation only works on text-embedding-3-* models
-        self.dimensions = dimensions if model in _SUPPORTS_DIM_TRUNCATION else None
+        self.dimensions: Any = dimensions if model in _SUPPORTS_DIM_TRUNCATION else None
         self._client: Any | None = None
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
+    @override
     def embed(self, texts: list[str]) -> list[DenseVector]:
         if not texts:
             return []
@@ -83,6 +84,7 @@ class OpenAIEmbeddingProvider(EmbeddingRepository):
             results.extend(self._embed_batch(texts[i : i + _MAX_BATCH]))
         return results
 
+    @override
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         return [{} for _ in texts]
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 from src.core.exceptions import DocumentLoadError
 from src.domain.entities.document import Document
@@ -41,8 +41,7 @@ class HtmlLoader:
             soup = BeautifulSoup(raw, "html.parser")
 
             for tag in soup.find_all(_STRIP_TAGS):
-                if isinstance(tag, Tag):
-                    tag.decompose()
+                tag.decompose()
 
             title_tag = soup.find("title")
             title = title_tag.get_text(strip=True) if title_tag else ""

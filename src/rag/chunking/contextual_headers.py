@@ -163,8 +163,8 @@ class ContextualHeadersChunker:
     """Decorator that prepends document context headers before embedding."""
 
     def __init__(self, inner: _Chunker, template: Template | None = None) -> None:
-        self._inner = inner
-        self._template = template
+        self._inner: _Chunker = inner
+        self._template: Template | None = template
 
     def chunk(self, document: Document) -> list[Chunk]:
         return [self._apply_headers(document, chunk) for chunk in self._inner.chunk(document)]

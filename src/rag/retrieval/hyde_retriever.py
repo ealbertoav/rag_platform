@@ -37,9 +37,9 @@ class HyDERetriever:
         embedder: EmbeddingRepository,
         vector_store: VectorStoreRepository,
     ) -> None:
-        self._llm = llm
-        self._embedder = embedder
-        self._vector_store = vector_store
+        self._llm: LLMRepository = llm
+        self._embedder: EmbeddingRepository = embedder
+        self._vector_store: VectorStoreRepository = vector_store
         self._prompt_template: Template | None = None
 
     def generate_hypothetical_doc(self, query_text: str) -> str:

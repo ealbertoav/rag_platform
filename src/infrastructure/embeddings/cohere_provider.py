@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, cast
+from typing import Any, Literal, override
 
 from tenacity import (
     before_sleep_log,
@@ -46,19 +46,22 @@ class CohereEmbeddingProvider(EmbeddingRepository):
     """
 
     def __init__(self, api_key: str, model: str = "embed-english-v3.0") -> None:
-        self.api_key = api_key
-        self.model = model
+        self.api_key: str = api_key
+        self.model: str = model
         self._client: Any | None = None
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
+    @override
     def embed(self, texts: list[str]) -> list[DenseVector]:
         """Embed texts for document storage (input_type=search_document)."""
         return self._embed_with_type(texts, "search_document")
 
+    @override
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         return [{} for _ in texts]
 
+    @override
     def embed_query(self, texts: list[str]) -> list[DenseVector]:
         """Embed query texts (input_type=search_query). Use during retrieval."""
         return self._embed_with_type(texts, "search_query")
@@ -107,7 +110,7 @@ class CohereEmbeddingProvider(EmbeddingRepository):
             input_type=input_type,
             embedding_types=["float"],
         )
-        return [list(v) for v in cast(Any, response.embeddings).float_]
+        return [list(v) for v in response.embeddings.float_]
 
     def _get_client(self) -> Any:
         if self._client is None:

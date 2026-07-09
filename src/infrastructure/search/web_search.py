@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import cast, override
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -19,6 +20,7 @@ _DEFAULT_TIMEOUT = 15.0
 class NullWebSearchProvider(WebSearchRepository):
     """No-op provider — returns empty results (CRAG disabled or provider=none)."""
 
+    @override
     async def search(self, query: str, *, max_results: int = 5) -> list[WebSearchResult]:
         return []
 
@@ -27,8 +29,9 @@ class DuckDuckGoWebSearchProvider(WebSearchRepository):
     """DuckDuckGo Lite HTML search — no API key required."""
 
     def __init__(self, timeout: float = _DEFAULT_TIMEOUT) -> None:
-        self._timeout = timeout
+        self._timeout: float = timeout
 
+    @override
     async def search(self, query: str, *, max_results: int = 5) -> list[WebSearchResult]:
         normalized = query.strip()
         if not normalized:
@@ -40,7 +43,7 @@ class DuckDuckGoWebSearchProvider(WebSearchRepository):
                 data={"q": normalized},
                 headers={"User-Agent": "rag-platform/0.1"},
             )
-            response.raise_for_status()
+            _ = response.raise_for_status()
 
         return parse_duckduckgo_lite(response.text, max_results=max_results)
 
@@ -49,9 +52,10 @@ class TavilyWebSearchProvider(WebSearchRepository):
     """Tavily REST search — requires an API key."""
 
     def __init__(self, api_key: str, timeout: float = _DEFAULT_TIMEOUT) -> None:
-        self._api_key = api_key
-        self._timeout = timeout
+        self._api_key: str = api_key
+        self._timeout: float = timeout
 
+    @override
     async def search(self, query: str, *, max_results: int = 5) -> list[WebSearchResult]:
         normalized = query.strip()
         if not normalized:
@@ -65,7 +69,7 @@ class TavilyWebSearchProvider(WebSearchRepository):
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(_TAVILY_URL, json=payload)
-            response.raise_for_status()
+            _ = response.raise_for_status()
             data = response.json()
 
         results: list[WebSearchResult] = []
@@ -128,7 +132,8 @@ def get_web_search_provider(app_settings: Settings | None = None) -> WebSearchRe
     if app_settings is None:
         app_settings = default_settings
     cfg = app_settings.web_search
-    match cfg.provider:
+    provider = cast(str, cfg.provider)
+    match provider:
         case "none":
             return NullWebSearchProvider()
         case "duckduckgo":
@@ -140,11 +145,11 @@ def get_web_search_provider(app_settings: Settings | None = None) -> WebSearchRe
 
                 raise ConfigurationError(
                     "Provider 'tavily' requires an API key. "
-                    "Set WEB_SEARCH__TAVILY__API_KEY in your environment or .env file."
+                    + "Set WEB_SEARCH__TAVILY__API_KEY in your environment or .env file."
                 )
             return TavilyWebSearchProvider(api_key=api_key)
         case _:
-            raise ValueError(f"Unknown web search provider: {cfg.provider!r}")
+            raise ValueError(f"Unknown web search provider: {provider!r}")
 
 
 def format_web_results(results: list[WebSearchResult]) -> str:

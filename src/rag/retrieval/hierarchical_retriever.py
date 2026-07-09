@@ -26,9 +26,9 @@ class HierarchicalRetriever:
         vector_store: VectorStoreRepository,
         summary_top_k: int = 3,
     ) -> None:
-        self._embedder = embedder
-        self._vector_store = vector_store
-        self._summary_top_k = summary_top_k
+        self._embedder: EmbeddingRepository = embedder
+        self._vector_store: VectorStoreRepository = vector_store
+        self._summary_top_k: int = summary_top_k
 
     def retrieve(self, query: Query, top_k: int) -> list[SearchResult]:
         """Return up to *top_k* detail chunks ranked by hierarchical search."""

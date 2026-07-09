@@ -32,9 +32,9 @@ class ContextualCompressor:
         max_tokens: int = 1500,
         enabled: bool = True,
     ) -> None:
-        self._llm = llm
-        self._max_tokens = max_tokens
-        self._enabled = enabled
+        self._llm: LLMRepository = llm
+        self._max_tokens: int = max_tokens
+        self._enabled: bool = enabled
         self._prompt_template: Template | None = None
 
     # ── Public ─────────────────────────────────────────────────────────────────

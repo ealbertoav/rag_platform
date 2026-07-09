@@ -54,8 +54,8 @@ class QueryClassifier:
         llm: LLMRepository,
         enabled: bool = True,
     ) -> None:
-        self._llm = llm
-        self._enabled = enabled
+        self._llm: LLMRepository = llm
+        self._enabled: bool = enabled
         self._prompt_template: Template | None = None
         self._cache: dict[str, QueryCategory] = {}
 

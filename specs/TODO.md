@@ -2167,7 +2167,7 @@
 ---
 
 ### T-173 · Basedpyright Warning Burn-Down & Mode Progression
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Incrementally fix actionable basedpyright warnings and tighten `[tool.basedpyright]` from `basic` toward `standard`/`recommended` — without blocking PRs on third-party stub noise or duplicating mypy strict enforcement. Closes the gap left when T-171 suppressed ~427 Linux CI warnings to unblock the lint gate.
 - **Inputs:** T-171 (basedpyright in CI at `--level error`), T-170 (mypy strict baseline), current `pyproject.toml` `[tool.basedpyright]` config
 - **Outputs:** Committed basedpyright baseline (optional interim), reduced warning count per phase, documented rule enablement plan, CI remains green on `make lint`.
@@ -2205,15 +2205,15 @@
   - `reportAny` / `reportExplicitAny` / `reportUnknown*Type` — already aligned with mypy overrides in T-170; re-enable only when upstream stubs improve
   - Chasing neo4j / ragas / llama_cpp stub completeness — tracked in `docs/type-safety.md` removal plan
 - **Acceptance Criteria:**
-  - [ ] Warning inventory committed in `docs/type-safety.md` with per-rule counts and target mode
-  - [ ] Phase 2 complete: quick-win rules at zero warnings (or baselined with ticket refs)
-  - [ ] Phase 3 complete: `reportImplicitOverride` at zero warnings in `src/`
-  - [ ] Phase 4 complete: `reportUnusedCallResult` at zero warnings in `src/`
-  - [ ] Phase 5 complete: `reportUnannotatedClassAttribute` at zero warnings in `src/`
-  - [ ] `typeCheckingMode` advanced to at least `"standard"` with `make lint` exit 0 on macOS **and** Linux CI
-  - [ ] `failOnWarnings` remains `false` until Phase 5 done; document flip criteria in `docs/type-safety.md`
-  - [ ] No new `# type: ignore` in `src/`; mypy strict remains exit 0
-  - [ ] README lint workflow mentions basedpyright mode progression (link to `docs/type-safety.md`)
+  - [x] Warning inventory committed in `docs/type-safety.md` with per-rule counts and target mode
+  - [x] Phase 2 complete: quick-win rules at zero warnings (or baselined with ticket refs)
+  - [x] Phase 3 complete: `reportImplicitOverride` at zero warnings in `src/`
+  - [x] Phase 4 complete: `reportUnusedCallResult` at zero warnings in `src/`
+  - [x] Phase 5 complete: `reportUnannotatedClassAttribute` at zero warnings in `src/`
+  - [x] `typeCheckingMode` advanced to at least `"standard"` with `make lint` exit 0 on macOS **and** Linux CI
+  - [x] `failOnWarnings` remains `false` until Phase 5 done; document flip criteria in `docs/type-safety.md`
+  - [x] No new `# type: ignore` in `src/`; mypy strict remains exit 0
+  - [x] README lint workflow mentions basedpyright mode progression (link to `docs/type-safety.md`)
 - **Notes:** T-171 intentionally kept basedpyright as an **error-level complement** to mypy — not a second strict gate. Linux CI failed with `0 errors, 427 warnings, exit 1` because basedpyright defaults to `recommended` + `failOnWarnings = true`; most CI warnings were `reportUnannotatedClassAttribute`, not runtime bugs. This task is ~2–3 sessions if done in full; phases 2–3 can ship as a small PR (~1 session). Can run **in parallel** with T-172 (no dependency). Reuse T-152 baseline pattern: commit `.basedpyright/baseline.json`, burn down, shrink baseline each PR.
 
 ---

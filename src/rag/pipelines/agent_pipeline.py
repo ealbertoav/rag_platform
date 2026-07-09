@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from pathlib import Path
 from string import Template
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
@@ -95,11 +95,13 @@ class _GenerationLLMAdapter(LLMRepository):
     """Adapts GenerationService.call_llm to LLMRepository."""
 
     def __init__(self, generation: GenerationService) -> None:
-        self._generation = generation
+        self._generation: GenerationService = generation
 
+    @override
     def generate(self, prompt: str, context: str, **kwargs: Any) -> str:
         return self._generation.call_llm(prompt)
 
+    @override
     def generate_stream(
         self, prompt: str, context: str, **kwargs: Any
     ) -> AsyncIterator[str]:  # pragma: no cover
@@ -130,9 +132,9 @@ class AgentPipeline:
         *,
         self_rag_enabled: bool = False,
     ) -> None:
-        self._pipeline = pipeline
-        self._max_iterations = max_iterations
-        self._self_rag_enabled = self_rag_enabled
+        self._pipeline: ChatPipeline = pipeline
+        self._max_iterations: int = max_iterations
+        self._self_rag_enabled: Any = self_rag_enabled
         self._decision_template: Template | None = None
 
     # ── Public ─────────────────────────────────────────────────────────────────

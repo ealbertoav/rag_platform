@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
@@ -64,18 +64,18 @@ class ChatPipeline:
         web_search_available: bool = True,
         source_highlighting_enabled: bool = False,
     ) -> None:
-        self.retrieval = retrieval
-        self.generation = generation
-        self._crag_enabled = crag_enabled
-        self._crag_lower_threshold = crag_lower_threshold
-        self._crag_upper_threshold = crag_upper_threshold
-        self._web_search = web_search
-        self._llm = llm
-        self._web_search_max_results = web_search_max_results
-        self._web_search_available = (
+        self.retrieval: RetrievalPipeline = retrieval
+        self.generation: GenerationService = generation
+        self._crag_enabled: Any = crag_enabled
+        self._crag_lower_threshold: Any = crag_lower_threshold
+        self._crag_upper_threshold: Any = crag_upper_threshold
+        self._web_search: Any = web_search
+        self._llm: Any = llm
+        self._web_search_max_results: Any = web_search_max_results
+        self._web_search_available: Any = (
             web_search_available and web_search is not None and llm is not None
         )
-        self._source_highlighting_enabled = source_highlighting_enabled
+        self._source_highlighting_enabled: Any = source_highlighting_enabled
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -226,8 +226,8 @@ class ChatPipeline:
             if settings.web_search.provider == "none":
                 logger.warning(
                     "CRAG enabled but web_search.provider=none — "
-                    "corrective web fallback disabled; enable Reliable RAG (T-140) "
-                    "for graded retrieval or set web_search.provider"
+                    + "corrective web fallback disabled; enable Reliable RAG (T-140) "
+                    + "for graded retrieval or set web_search.provider"
                 )
             else:
                 try:

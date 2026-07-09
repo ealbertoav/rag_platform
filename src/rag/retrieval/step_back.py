@@ -30,8 +30,8 @@ class StepBackGenerator:
     """
 
     def __init__(self, llm: LLMRepository, enabled: bool = False) -> None:
-        self._llm = llm
-        self._enabled = enabled
+        self._llm: LLMRepository = llm
+        self._enabled: bool = enabled
         self._cache: dict[str, str] = {}
         self._prompt_template: Template | None = None
 

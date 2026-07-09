@@ -21,7 +21,7 @@ import hashlib
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, override
 from urllib.parse import urlsplit
 
 from src.domain.repositories.embedding_repository import (
@@ -72,16 +72,17 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         ttl_seconds: int = 604800,
         model_identifier: str = "",
     ) -> None:
-        self._inner = inner
-        self._redis_url = redis_url
-        self._redis_password = redis_password
-        self._ttl = ttl_seconds
-        self._model_id = model_identifier
+        self._inner: EmbeddingRepository = inner
+        self._redis_url: str = redis_url
+        self._redis_password: str = redis_password
+        self._ttl: int = ttl_seconds
+        self._model_id: str = model_identifier
         self._redis: Redis | None = None
         self._next_retry_at: float = 0.0  # monotonic timestamp; 0 = connect immediately
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
+    @override
     def embed(self, texts: list[str]) -> list[DenseVector]:
         if not texts:
             return []
@@ -105,7 +106,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
             pipeline: Pipeline = client.pipeline()
             for (idx, text), vec in zip(misses, miss_vecs, strict=True):
                 hits[idx] = vec
-                pipeline.set(self._make_key(text), json.dumps(vec), ex=self._ttl)
+                _ = pipeline.set(self._make_key(text), json.dumps(vec), ex=self._ttl)
             self._execute_pipeline(pipeline)
 
         n_hits = len(texts) - len(misses)
@@ -115,6 +116,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         _record_cache_metrics(hits=n_hits, misses=len(misses))
         return [hits[i] for i in range(len(texts))]
 
+    @override
     def embed_query(self, texts: list[str]) -> list[DenseVector]:
         # Query vectors are not cached: some providers (Cohere, Voyage, Gemini)
         # use a different task type for queries vs. documents, so the same text
@@ -123,14 +125,17 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         # single-shot during retrieval, so the cache hit-rate would be low anyway.
         return self._inner.embed_query(texts)
 
+    @override
     def embed_passage(self, texts: list[str]) -> list[DenseVector]:
         # Passage vectors share the document cache path (same as embed()).
         return self.embed(texts)
 
+    @override
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         # Sparse vectors are not cached — delegate directly to inner provider.
         return self._inner.embed_sparse(texts)
 
+    @override
     def embed_both(self, texts: list[str]) -> tuple[list[DenseVector], list[SparseVector]]:
         """Cache-aware combined embed.
 
@@ -176,7 +181,9 @@ class CachedEmbeddingProvider(EmbeddingRepository):
                 vec = miss_dense[list_pos]
                 dense_out[orig_idx] = vec
                 sparse_out[orig_idx] = miss_sparse[list_pos]
-                pipeline.set(self._make_key(miss_texts[list_pos]), json.dumps(vec), ex=self._ttl)
+                _ = pipeline.set(
+                    self._make_key(miss_texts[list_pos]), json.dumps(vec), ex=self._ttl
+                )
             self._execute_pipeline(pipeline)
 
         # Hits: dense served from cache; sparse still requires an inner call.
@@ -218,7 +225,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
         except ImportError:
             logger.error(
                 "redis package not installed; embedding cache disabled. "
-                "Run: uv sync --extra api-embeddings"
+                + "Run: uv sync --extra api-embeddings"
             )
             self._next_retry_at = float("inf")  # don't retry — package won't appear
             return None
@@ -228,7 +235,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
                 password=self._redis_password or None,
                 decode_responses=True,
             )
-            client.ping()
+            _ = client.ping()
             self._redis = client
             self._next_retry_at = 0.0
             logger.info(
@@ -244,7 +251,7 @@ class CachedEmbeddingProvider(EmbeddingRepository):
     def _execute_pipeline(self, pipeline: Pipeline) -> None:
         """Execute a Redis pipeline, resetting the client on RedisError."""
         try:
-            pipeline.execute()
+            _ = pipeline.execute()
         except Exception as exc:  # noqa: BLE001
             from redis.exceptions import RedisError as _RedisError
 

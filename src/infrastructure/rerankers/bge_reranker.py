@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from src.core.exceptions import RetrievalError
 from src.domain.entities.chunk import Chunk
@@ -27,14 +27,15 @@ class BGERerankerProvider(RerankerRepository):
         batch_size: int = 16,
         normalize: bool = True,
     ) -> None:
-        self.model_path = model_path
-        self.device = device
-        self.batch_size = batch_size
-        self.normalize = normalize
+        self.model_path: str = model_path
+        self.device: str = device
+        self.batch_size: int = batch_size
+        self.normalize: bool = normalize
         self._model: _FlagReranker | None = None
 
     # ── RerankerRepository interface ───────────────────────────────────────────
 
+    @override
     def score(self, query: str, chunks: list[Chunk]) -> list[tuple[Chunk, float]]:
         """Return cross-encoder relevance scores for each chunk (input order)."""
         if not chunks:
@@ -43,6 +44,7 @@ class BGERerankerProvider(RerankerRepository):
         scores = self._score_pairs(pairs)
         return list(zip(chunks, scores, strict=True))
 
+    @override
     def rerank(self, query: str, chunks: list[Chunk], top_k: int) -> list[Chunk]:
         """Return up to *top_k* chunks sorted by cross-encoder relevance score."""
         ranked = sorted(self.score(query, chunks), key=lambda x: x[1], reverse=True)

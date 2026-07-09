@@ -160,23 +160,23 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["B008"]
 
 [tool.basedpyright]
-# Complement mypy strict — block CI on errors only, not recommended-mode warnings.
-typeCheckingMode = "basic"
+# T-173: advanced from basic → standard; complements mypy strict (errors-only CI gate).
+typeCheckingMode = "standard"
 failOnWarnings = false
 pythonVersion = "3.12"
 # Optional runtime deps (ragas, cohere, neo4j, …) — align with mypy ignore_missing_imports.
 reportMissingImports = false
-# neo4j is an optional dependency — suppress all unresolved-import errors for it.
 reportMissingModuleSource = false
-# These rules fire on Any/Unknown that propagates from stdlib stubs
-# (json.loads, numpy, MagicMock, dataclasses.asdict) — not fixable in user code.
+reportMissingTypeStubs = false
+# FastAPI Depends() in defaults — same intentional pattern as ruff B008.
+reportCallInDefaultInitializer = false
+# These rules fire on Any/Unknown from stdlib/third-party stubs — not fixable in user code.
 reportAny = false
 reportExplicitAny = false
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownParameterType = false
 reportUnknownMemberType = false
-reportUnannotatedClassAttribute = false
 
 [tool.pyrefly]
 search-path = ["src", "scripts"]

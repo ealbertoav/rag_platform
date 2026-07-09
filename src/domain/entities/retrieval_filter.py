@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class RetrievalFilter(BaseModel):
     """Optional constraints applied at retrieval time."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     document_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, str] = Field(default_factory=dict)

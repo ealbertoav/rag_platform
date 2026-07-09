@@ -196,7 +196,7 @@ def is_placeholder_retrieval_row(entry: dict[str, object]) -> bool:
 
 def filter_real_qa_pairs(pairs: list[dict[str, object]]) -> list[dict[str, object]]:
     """Drop rows without a question, empty relevant_chunks, and placeholder-only IDs."""
-    return [pair for pair in pairs if isinstance(pair, dict) and is_evaluable_qa_pair(pair)]
+    return [pair for pair in pairs if is_evaluable_qa_pair(pair)]
 
 
 def qa_pairs_to_retrieval_rows(pairs: list[QAPair]) -> list[dict[str, object]]:

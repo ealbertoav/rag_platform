@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import override
+
 from src.domain.entities.evaluation import EvalSample
 from src.evals.generation import EvalResult, RagasMetric, parametric_eval_result
 
@@ -11,11 +13,13 @@ class ContextPrecisionMetric(RagasMetric):
     Score is in [0, 1]; higher = more precise context (less noise).
     """
 
-    _metric_name = "context_precision"
+    _metric_name: str = "context_precision"
 
+    @override
     def __init__(self, threshold: float = 0.7) -> None:
         super().__init__(threshold)
 
+    @override
     def _pre_checks(self, sample: EvalSample) -> list[EvalResult]:
         if sample.parametric_answer:
             return [parametric_eval_result(self._metric_name, self.threshold)]
@@ -25,6 +29,7 @@ class ContextPrecisionMetric(RagasMetric):
             return [self._guard("Empty question")]
         return []
 
+    @override
     def _get_ragas_metric(self) -> object:
         from ragas.metrics import context_precision
 

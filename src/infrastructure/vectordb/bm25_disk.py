@@ -63,7 +63,7 @@ def _atomic_write_json(path: Path, payload: object) -> None:
             json.dump(payload, fh)
             fh.flush()
             os.fsync(fh.fileno())
-        tmp.replace(path)
+        _ = tmp.replace(path)
     except OSError as exc:
         tmp.unlink(missing_ok=True)
         raise VectorStoreError(f"Cannot write BM25 disk file {path}", cause=exc) from exc
@@ -110,8 +110,8 @@ class _SegmentWriter:
     """Accumulate chunks for one on-disk segment, then flush atomically."""
 
     def __init__(self, segment_id: int, directory: Path) -> None:
-        self.segment_id = segment_id
-        self.directory = directory
+        self.segment_id: int = segment_id
+        self.directory: Path = directory
         self.chunks: list[Chunk] = []
         self.lengths: list[int] = []
         self.postings: dict[str, list[list[int]]] = defaultdict(list)
@@ -137,11 +137,11 @@ class _SegmentWriter:
         try:
             with tmp_chunks.open("w", encoding="utf-8") as fh:
                 for chunk in self.chunks:
-                    fh.write(chunk.model_dump_json())
-                    fh.write("\n")
+                    _ = fh.write(chunk.model_dump_json())
+                    _ = fh.write("\n")
                 fh.flush()
                 os.fsync(fh.fileno())
-            tmp_chunks.replace(chunks_path)
+            _ = tmp_chunks.replace(chunks_path)
             np.save(lengths_path, np.asarray(self.lengths, dtype=np.int32))
             _atomic_write_json(postings_path, dict(self.postings))
             _atomic_write_json(ids_path, [c.id for c in self.chunks])
@@ -175,17 +175,17 @@ class DiskBM25Index:
         if segment_size < 1:
             raise ValueError("segment_size must be >= 1")
         self._path: Path = Path(index_path) if index_path is not None else BM25_DISK_PATH
-        self._segment_size = segment_size
-        self._lock = threading.RLock()
-        self._dirty = False
-        self._mutation_generation = 0
-        self._defer_rebuild_depth = 0
-        self._needs_rebuild = False
+        self._segment_size: Any = segment_size
+        self._lock: Any = threading.RLock()
+        self._dirty: bool = False
+        self._mutation_generation: int = 0
+        self._defer_rebuild_depth: int = 0
+        self._needs_rebuild: bool = False
 
         self._df: dict[str, int] = {}
         self._idf: dict[str, float] = {}
-        self._corpus_size = 0
-        self._total_dl = 0
+        self._corpus_size: int = 0
+        self._total_dl: int = 0
         self._id_map: dict[str, tuple[int, int]] = {}
         self._segment_ids: list[int] = []
         self._segment_chunk_ids: dict[int, list[str]] = {}
@@ -229,7 +229,7 @@ class DiskBM25Index:
             return
         with self._lock:
             for chunk_id in chunk_ids:
-                self._pending_chunks.pop(chunk_id, None)
+                _ = self._pending_chunks.pop(chunk_id, None)
                 if chunk_id in self._id_map:
                     self._deleted_ids.add(chunk_id)
             self._schedule_rebuild()
@@ -321,7 +321,7 @@ class DiskBM25Index:
             if path.exists():
                 with suppress(OSError):
                     shutil.rmtree(path)
-            staging.rename(path)
+            _ = staging.rename(path)
             self._apply_materialized_state(meta)
             self._pending_chunks.clear()
             self._deleted_ids.clear()
@@ -557,7 +557,7 @@ class DiskBM25Index:
         if self._path.exists():
             with suppress(OSError):
                 shutil.rmtree(self._path)
-        staging.rename(self._path)
+        _ = staging.rename(self._path)
         self._apply_materialized_state(meta)
         self._pending_chunks.clear()
         self._deleted_ids.clear()
@@ -594,7 +594,7 @@ class DiskBM25Index:
             for term in _term_freqs(toks):
                 remaining = df.get(term, 0) - 1
                 if remaining <= 0:
-                    df.pop(term, None)
+                    _ = df.pop(term, None)
                 else:
                     df[term] = remaining
 

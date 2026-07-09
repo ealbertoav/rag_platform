@@ -2006,9 +2006,7 @@ flowchart LR
 
 **Type regression modules (`src/type_regression/`):** mypy analyzes typed smoke functions for compression and contextual-header APIs at lint time; unit tests call the same functions to assert runtime behavior matches the typed contracts.
 
-Mypy reads `[tool.mypy]` from `pyproject.toml` (`strict = true`, `ignore_missing_imports` at project level). Do not pass `--ignore-missing-imports` on the CLI — that bypasses the audited T-170 configuration. basedpyright uses `[tool.basedpyright]` with `reportMissingImports = false` for optional runtime deps.
-
-See [docs/type-safety.md](docs/type-safety.md) for the type-ignore audit and module overrides.
+Mypy reads `[tool.mypy]` from `pyproject.toml` (`strict = true`, `ignore_missing_imports` at project level). Do not pass `--ignore-missing-imports` on the CLI — that bypasses the audited T-170 configuration. basedpyright uses `[tool.basedpyright]` with `typeCheckingMode = "standard"` (T-173 progression from `basic`), `failOnWarnings = false`, and `reportMissingImports = false` for optional runtime deps. See [docs/type-safety.md](docs/type-safety.md) for the burn-down inventory, enabled rules, and mode progression plan.
 
 **Environment variables** use `__` as the nested delimiter:
 ```bash

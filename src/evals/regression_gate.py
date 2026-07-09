@@ -96,7 +96,7 @@ def check_regression_gate(
             status=GateStatus.FAILED,
             message=(
                 f"Regression gate FAILED: need >= {min_samples} real samples "
-                f"(qa={qa_count}, retrieval={len(real)})."
+                + f"(qa={qa_count}, retrieval={len(real)})."
             ),
         )
 
@@ -116,7 +116,7 @@ def check_regression_gate(
             status=GateStatus.FAILED,
             message=(
                 "Regression gate FAILED: retrieval_dataset.json is out of sync with "
-                "qa_dataset.json — run `make sync-retrieval-goldens` or `make evals`."
+                + "qa_dataset.json — run `make sync-retrieval-goldens` or `make evals`."
             ),
         )
 
@@ -137,7 +137,7 @@ def check_regression_gate(
         status=GateStatus.PASSED,
         message=(
             f"Regression gate PASSED: {len(real)} retrieval samples, "
-            f"{qa_count} QA pairs, Recall@5 >= {min_recall}."
+            + f"{qa_count} QA pairs, Recall@5 >= {min_recall}."
         ),
     )
 

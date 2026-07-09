@@ -4,7 +4,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
@@ -90,28 +90,28 @@ class RetrievalService:
         feedback_boost_multiplier: float = 0.0,
         vector_store: VectorStoreRepository | None = None,
     ) -> None:
-        self._dense = dense_retriever
+        self._dense: DenseRetriever = dense_retriever
         self.hybrid = hybrid_retriever
-        self._expander = query_expander
-        self._classifier = query_classifier
-        self._strategy_registry = strategy_registry
-        self._reranker = reranker
-        self._compressor = compressor
-        self._top_k_retrieval = top_k_retrieval
-        self._top_k_rerank = top_k_rerank
-        self._top_k_final = top_k_final
-        self._rse_enabled = rse_enabled
-        self._rse_max_segment_tokens = rse_max_segment_tokens
-        self._parent_context_enabled = parent_context_enabled and parent_child_strategy
-        self._chunk_lookup = chunk_lookup
-        self._diversity_enabled = diversity_enabled
-        self._diversity_lambda = diversity_lambda
-        self._embedder = embedder
-        self._reliable_rag_enabled = reliable_rag_enabled
-        self._reliable_rag_min_score = reliable_rag_min_score
-        self._llm = llm
-        self._feedback_boost_multiplier = feedback_boost_multiplier
-        self._vector_store = vector_store
+        self._expander: QueryExpander | None = query_expander
+        self._classifier: QueryClassifier | None = query_classifier
+        self._strategy_registry: AdaptiveStrategyRegistry | None = strategy_registry
+        self._reranker: CrossEncoder | None = reranker
+        self._compressor: ContextualCompressor | None = compressor
+        self._top_k_retrieval: int = top_k_retrieval
+        self._top_k_rerank: int = top_k_rerank
+        self._top_k_final: int = top_k_final
+        self._rse_enabled: bool = rse_enabled
+        self._rse_max_segment_tokens: int = rse_max_segment_tokens
+        self._parent_context_enabled: Any = parent_context_enabled and parent_child_strategy
+        self._chunk_lookup: ChunkLookup | None = chunk_lookup
+        self._diversity_enabled: bool = diversity_enabled
+        self._diversity_lambda: float = diversity_lambda
+        self._embedder: EmbeddingRepository | None = embedder
+        self._reliable_rag_enabled: bool = reliable_rag_enabled
+        self._reliable_rag_min_score: float = reliable_rag_min_score
+        self._llm: LLMRepository | None = llm
+        self._feedback_boost_multiplier: float = feedback_boost_multiplier
+        self._vector_store: VectorStoreRepository | None = vector_store
 
     # ── Public ─────────────────────────────────────────────────────────────────
 

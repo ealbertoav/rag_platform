@@ -368,6 +368,17 @@ class TestProviderDenseDimExtended:
         settings = _mock_settings(**{"embeddings.provider": "nomic"})
         assert provider_dense_dim("nomic", settings) == 768
 
+    def test_unhandled_api_provider_raises(self, monkeypatch):
+        from src.infrastructure.embeddings import provider_dense_dim
+
+        monkeypatch.setattr(
+            "src.infrastructure.embeddings.API_EMBEDDING_PROVIDERS",
+            frozenset({"future_api"}),
+        )
+        settings = _api_settings()
+        with pytest.raises(AssertionError, match="Unhandled API embedding provider"):
+            provider_dense_dim("future_api", settings)
+
 
 class TestEmbeddingModelIdentifierExtended:
     def test_voyage_cohere_gemini(self):

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, override
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 from src.infrastructure.embeddings.sentence_transformer_base import (
     SentenceTransformerEmbeddingProvider,
@@ -31,13 +34,14 @@ class QwenEmbeddingProvider(SentenceTransformerEmbeddingProvider):
         normalize: bool = True,
         max_length: int = 8192,
     ) -> None:
-        self.model_path = model_path
-        self.device = device
-        self.batch_size = batch_size
-        self.normalize = normalize
-        self.max_length = max_length
-        self._model = None
+        self.model_path: str = model_path
+        self.device: str = device
+        self.batch_size: int = batch_size
+        self.normalize: bool = normalize
+        self.max_length: int = max_length
+        self._model: SentenceTransformer | None = None
 
+    @override
     def _encode_kwargs(self) -> dict[str, Any]:
         return {"max_length": self.max_length}
 

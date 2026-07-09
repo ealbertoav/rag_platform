@@ -70,13 +70,13 @@ class BM25Index:
 
     def __init__(self, index_path: Path | None = None) -> None:
         self._path: Path = index_path or BM25_INDEX_PATH
-        self._lock = threading.RLock()
+        self._lock: Any = threading.RLock()
         self._chunks: list[Chunk] = []
         self._bm25: BM25Okapi | None = None
-        self._defer_rebuild_depth = 0
-        self._needs_rebuild = False
-        self._dirty = False
-        self._mutation_generation = 0
+        self._defer_rebuild_depth: int = 0
+        self._needs_rebuild: bool = False
+        self._dirty: bool = False
+        self._mutation_generation: int = 0
 
     # ── Indexing ───────────────────────────────────────────────────────────────
 
@@ -192,7 +192,7 @@ class BM25Index:
                 json.dump(payload, fh)
                 fh.flush()
                 os.fsync(fh.fileno())
-            tmp_path.replace(self._path)
+            _ = tmp_path.replace(self._path)
             with self._lock:
                 if self._mutation_generation == generation_at_snapshot:
                     self._dirty = False

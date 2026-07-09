@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 from src.core.exceptions import EmbeddingError
 from src.domain.repositories.embedding_repository import (
@@ -32,20 +32,22 @@ class BGEM3EmbeddingProvider(EmbeddingRepository):
         normalize: bool = True,
         max_length: int = 8192,
     ) -> None:
-        self.model_path = model_path
-        self.device = device
-        self.batch_size = batch_size
-        self.normalize = normalize
-        self.max_length = max_length
+        self.model_path: str = model_path
+        self.device: str = device
+        self.batch_size: int = batch_size
+        self.normalize: bool = normalize
+        self.max_length: int = max_length
         self._model: BGEM3FlagModel | None = None
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
+    @override
     def embed(self, texts: list[str]) -> list[DenseVector]:
         """Return one normalized 1024-dim dense vector per text."""
         output = self._call_model(texts, return_dense=True, return_sparse=False)
         return [v.tolist() for v in output["dense_vecs"]]
 
+    @override
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         """Return one sparse {token_id: weight} dict per text."""
         output = self._call_model(texts, return_dense=False, return_sparse=True)
@@ -53,6 +55,7 @@ class BGEM3EmbeddingProvider(EmbeddingRepository):
 
     # ── Combined pass (used by the ingestion pipeline for efficiency) ──────────
 
+    @override
     def embed_both(self, texts: list[str]) -> tuple[list[DenseVector], list[SparseVector]]:
         """Dense and sparse in a single model call — preferred during ingestion."""
         output = self._call_model(texts, return_dense=True, return_sparse=True)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.rag.quality.explainable_retrieval import ChunkExplanation
@@ -8,7 +10,7 @@ from src.rag.quality.explainable_retrieval import ChunkExplanation
 class Answer(BaseModel):
     """The RAG system's response to a Query."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     query_id: str
     text: str
@@ -21,7 +23,7 @@ class Answer(BaseModel):
         default=None,
         description=(
             "Chunk ID to supporting spans copied verbatim from the LLM-facing passage text "
-            "(see chunk_context_text), not necessarily from Chunk.text when parent context "
-            "or contextual headers apply."
+            + "(see chunk_context_text), not necessarily from Chunk.text when parent context "
+            + "or contextual headers apply."
         ),
     )

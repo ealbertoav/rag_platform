@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast, override
 
 from src.core.exceptions import VectorStoreError
 from src.domain.entities.chunk import Chunk
@@ -52,17 +52,21 @@ class QdrantFeedbackStore(FeedbackStore):
     """Default backend — delegates to Qdrant compare-and-set accumulation."""
 
     def __init__(self, vector_store: VectorStoreRepository) -> None:
-        self._vector_store = vector_store
+        self._vector_store: VectorStoreRepository = vector_store
 
+    @override
     def accumulate(self, chunk_id: str, delta: float) -> float:
         return self._vector_store.accumulate_feedback_score(chunk_id, delta)
 
+    @override
     def get_score(self, chunk_id: str) -> float:
         return self._vector_store.get_feedback_score(chunk_id)
 
+    @override
     def get_scores(self, chunk_ids: list[str]) -> dict[str, float]:
         return self._vector_store.get_feedback_scores(chunk_ids)
 
+    @override
     def set_score(self, chunk_id: str, score: float) -> None:
         self._vector_store.set_feedback_score(chunk_id, score)
 
@@ -71,9 +75,10 @@ class RedisFeedbackStore(FeedbackStore):
     """Redis hash with HINCRBYFLOAT for atomic multi-pod increments."""
 
     def __init__(self, redis_client: RedisHashClient, *, hash_key: str = _REDIS_HASH_KEY) -> None:
-        self._redis = redis_client
-        self._hash_key = hash_key
+        self._redis: RedisHashClient = redis_client
+        self._hash_key: Any = hash_key
 
+    @override
     def accumulate(self, chunk_id: str, delta: float) -> float:
         try:
             raw = self._redis.hincrbyfloat(self._hash_key, chunk_id, delta)
@@ -85,6 +90,7 @@ class RedisFeedbackStore(FeedbackStore):
         # pyrefly: ignore [unnecessary-type-conversion]
         return float(raw)
 
+    @override
     def get_score(self, chunk_id: str) -> float:
         try:
             raw = self._redis.hget(self._hash_key, chunk_id)
@@ -102,6 +108,7 @@ class RedisFeedbackStore(FeedbackStore):
         except (TypeError, ValueError):
             return 0.0
 
+    @override
     def get_scores(self, chunk_ids: list[str]) -> dict[str, float]:
         unique_ids = list(dict.fromkeys(chunk_ids))
         if not unique_ids:
@@ -123,9 +130,10 @@ class RedisFeedbackStore(FeedbackStore):
                     scores[chunk_id] = 0.0
         return scores
 
+    @override
     def set_score(self, chunk_id: str, score: float) -> None:
         try:
-            self._redis.hset(self._hash_key, chunk_id, score)
+            _ = self._redis.hset(self._hash_key, chunk_id, score)
         except Exception as exc:
             raise VectorStoreError(
                 f"Redis feedback set failed for {chunk_id!r}",
@@ -137,29 +145,33 @@ class SqlFeedbackStore(FeedbackStore):
     """SQL-backed atomic increment (SQLite for local dev; Postgres DSN in production)."""
 
     def __init__(self, db_path: Path) -> None:
-        self._path = db_path
+        self._path: Path = db_path
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection]:
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self._path, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
         try:
-            with conn:
-                yield conn
+            conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
-            conn.executescript(_SQL_SCHEMA)
+            _ = conn.executescript(_SQL_SCHEMA)
 
+    @override
     def accumulate(self, chunk_id: str, delta: float) -> float:
         with self._connect() as conn:
-            conn.execute(
+            _ = conn.execute(
                 "INSERT INTO feedback_scores (chunk_id, score) VALUES (?, ?) "
-                "ON CONFLICT(chunk_id) DO UPDATE SET score = score + excluded.score",
+                + "ON CONFLICT(chunk_id) DO UPDATE SET score = score + excluded.score",
                 (chunk_id, delta),
             )
             row = conn.execute(
@@ -170,6 +182,7 @@ class SqlFeedbackStore(FeedbackStore):
             raise VectorStoreError(f"Feedback accumulate failed for {chunk_id!r}")
         return float(row[0])
 
+    @override
     def get_score(self, chunk_id: str) -> float:
         with self._connect() as conn:
             row = conn.execute(
@@ -178,6 +191,7 @@ class SqlFeedbackStore(FeedbackStore):
             ).fetchone()
         return float(row[0]) if row is not None else 0.0
 
+    @override
     def get_scores(self, chunk_ids: list[str]) -> dict[str, float]:
         unique_ids = list(dict.fromkeys(chunk_ids))
         if not unique_ids:
@@ -191,11 +205,12 @@ class SqlFeedbackStore(FeedbackStore):
         found = {str(chunk_id): float(score) for chunk_id, score in rows}
         return {chunk_id: found.get(chunk_id, 0.0) for chunk_id in unique_ids}
 
+    @override
     def set_score(self, chunk_id: str, score: float) -> None:
         with self._connect() as conn:
-            conn.execute(
+            _ = conn.execute(
                 "INSERT INTO feedback_scores (chunk_id, score) VALUES (?, ?) "
-                "ON CONFLICT(chunk_id) DO UPDATE SET score = excluded.score",
+                + "ON CONFLICT(chunk_id) DO UPDATE SET score = excluded.score",
                 (chunk_id, score),
             )
 
@@ -204,17 +219,19 @@ class FeedbackDelegatingVectorStore(VectorStoreRepository):
     """Route feedback operations to a pluggable store; delegate all vector ops to *inner*."""
 
     def __init__(self, inner: VectorStoreRepository, feedback: FeedbackStore) -> None:
-        self._inner = inner
-        self._feedback = feedback
+        self._inner: VectorStoreRepository = inner
+        self._feedback: FeedbackStore = feedback
 
     def _require_chunk(self, chunk_id: str) -> None:
         if not self._inner.chunk_exists(chunk_id):
             collection = getattr(self._inner, "collection", "vector store")
             raise VectorStoreError(f"Chunk {chunk_id!r} not found in collection {collection!r}")
 
+    @override
     def upsert(self, chunks: list[Chunk]) -> None:
         self._inner.upsert(chunks)
 
+    @override
     def search_dense(
         self,
         query_vector: DenseVector,
@@ -234,9 +251,11 @@ class FeedbackDelegatingVectorStore(VectorStoreRepository):
             filters=filters,
         )
 
+    @override
     def search_sparse(self, query_sparse: SparseVector, top_k: int) -> list[SearchResult]:
         return self._inner.search_sparse(query_sparse, top_k)
 
+    @override
     def search_hybrid(
         self,
         query_vector: DenseVector,
@@ -246,26 +265,33 @@ class FeedbackDelegatingVectorStore(VectorStoreRepository):
     ) -> list[SearchResult]:
         return self._inner.search_hybrid(query_vector, query_sparse, alpha, top_k)
 
+    @override
     def delete(self, chunk_ids: list[str]) -> None:
         self._inner.delete(chunk_ids)
 
+    @override
     def count(self) -> int:
         return self._inner.count()
 
+    @override
     def chunk_exists(self, chunk_id: str) -> bool:
         return self._inner.chunk_exists(chunk_id)
 
+    @override
     def get_feedback_score(self, chunk_id: str) -> float:
         return self._feedback.get_score(chunk_id)
 
+    @override
     def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
         self._require_chunk(chunk_id)
         self._feedback.set_score(chunk_id, feedback_score)
 
+    @override
     def accumulate_feedback_score(self, chunk_id: str, delta: float) -> float:
         self._require_chunk(chunk_id)
         return self._feedback.accumulate(chunk_id, delta)
 
+    @override
     def get_feedback_scores(self, chunk_ids: list[str]) -> dict[str, float]:
         return self._feedback.get_scores(chunk_ids)
 
@@ -283,22 +309,22 @@ def create_feedback_store(
     postgres_url: str = "",
     default_sqlite_path: Path,
 ) -> FeedbackStore:
-    if backend == "qdrant":
+    backend_name = cast(str, backend)
+    if backend_name == "qdrant":
         return QdrantFeedbackStore(vector_store)
-    if backend == "redis":
+    if backend_name == "redis":
         client = _build_redis_client(redis_url, redis_password)
         return RedisFeedbackStore(client)
-    if backend == "postgres":
+    if backend_name == "postgres":
         db_path = Path(postgres_url) if postgres_url else default_sqlite_path
         if postgres_url.startswith("postgresql://") or postgres_url.startswith("postgres://"):
             msg = (
                 "Postgres feedback backend requires a file path or sqlite URL for now; "
-                "use backend=redis for multi-replica atomic increments"
+                + "use backend=redis for multi-replica atomic increments"
             )
             raise ValueError(msg)
         return SqlFeedbackStore(db_path)
-    msg = f"Unsupported feedback backend: {backend!r}"
-    raise ValueError(msg)
+    raise ValueError(f"Unsupported feedback backend: {backend_name!r}")
 
 
 def wrap_vector_store_with_feedback(

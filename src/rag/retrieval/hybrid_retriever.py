@@ -51,16 +51,16 @@ class HybridRetriever:
         feedback_boost_multiplier: float = 0.0,
         feedback_expand_pool: bool = True,
     ) -> None:
-        self._dense = dense
-        self._bm25 = bm25
-        self.alpha = alpha
-        self.graph = graph_retriever
-        self.hype = hype_retriever
-        self.hyde = hyde_retriever
-        self.hierarchical = hierarchical_retriever
-        self._fusion_mode = fusion_mode
-        self._feedback_boost_multiplier = feedback_boost_multiplier
-        self._feedback_expand_pool = feedback_expand_pool
+        self._dense: DenseRetriever = dense
+        self._bm25: BM25Retriever = bm25
+        self.alpha: float = alpha
+        self.graph: GraphRetriever | None = graph_retriever
+        self.hype: HyPERetriever | None = hype_retriever
+        self.hyde: HyDERetriever | None = hyde_retriever
+        self.hierarchical: HierarchicalRetriever | None = hierarchical_retriever
+        self._fusion_mode: str = fusion_mode
+        self._feedback_boost_multiplier: float = feedback_boost_multiplier
+        self._feedback_expand_pool: bool = feedback_expand_pool
 
     def _uses_expanded_pool(self) -> bool:
         return self._feedback_boost_multiplier > 0 and self._feedback_expand_pool
@@ -184,7 +184,7 @@ class HybridRetriever:
         logger.debug(
             (
                 "Hybrid retrieval: %d dense + %d bm25 + %d graph + %d hype "
-                "+ %d hyde + %d hierarchical → %d fused"
+                + "+ %d hyde + %d hierarchical → %d fused"
             ),
             len(dense_results),
             len(bm25_results),

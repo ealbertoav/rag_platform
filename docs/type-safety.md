@@ -61,6 +61,61 @@ make test                  # 100% line coverage on src/
 
 - `.github/workflows/ci.yml` lint job fails on any `mypy src` error (no `continue-on-error`, no CLI `--ignore-missing-imports`)
 - `make lint` and CI run identical commands in order: ruff check → ruff format --check → mypy → basedpyright
-- basedpyright uses `typeCheckingMode = "basic"` and `failOnWarnings = false` — CI fails only on errors, not recommended-mode warnings mypy already covers
+- basedpyright uses `typeCheckingMode = "standard"` and `failOnWarnings = false` — CI fails only on errors (`--level error`), not standard-mode warnings mypy already covers
 - Pre-commit mypy hook targets `^src/` and relies on `pyproject.toml` mypy settings
 - `scripts/check_lint_gate.py` validates configuration drift before merge
+
+## Basedpyright burn-down (T-173)
+
+Audit date: 2026-07-08 · Branch: `feat/t-173-basedpyright-burn-down`
+
+### Mode progression
+
+| Stage | `typeCheckingMode` | CI gate | Status |
+|-------|-------------------|---------|--------|
+| T-171 baseline | `basic` | errors only | superseded |
+| **T-173 (current)** | **`standard`** | errors only | **done** |
+| Future | `recommended` | flip `failOnWarnings` when debt cleared | planned |
+
+### Initial inventory (recommended mode, pre-fix)
+
+Captured with all actionable rules enabled (excluding stub/`Any` noise):
+
+| Rule | Count before | Count after |
+|------|-------------|-------------|
+| `reportUnannotatedClassAttribute` | 250 | **0** |
+| `reportImplicitOverride` | 83 | **0** |
+| `reportUnusedCallResult` | 47 | **0** |
+| `reportImplicitStringConcatenation` | 20 | **0** |
+| `reportCallInDefaultInitializer` | 11 | suppressed (FastAPI `Depends`, mirrors ruff B008) |
+| Quick wins (`reportUnusedImport`, `reportUnreachable`, `reportUnnecessary*`, `reportUnusedParameter`) | 8 | **0** |
+| **Total actionable** | **421** | **0** (at `--level warning`, standard mode) |
+
+Out of scope (unchanged from T-170/T-171): `reportMissingTypeStubs`, `reportAny`, `reportExplicitAny`, `reportUnknown*Type`.
+
+### Enabled / suppressed rules (`pyproject.toml`)
+
+| Rule | Setting | Rationale |
+|------|---------|-----------|
+| `reportCallInDefaultInitializer` | `false` | FastAPI `Depends()` defaults — intentional (ruff B008) |
+| `reportMissingImports` | `false` | Optional runtime deps |
+| `reportMissingTypeStubs` | `false` | Third-party stub gaps (neo4j, ragas, …) |
+| `reportAny` / `reportUnknown*Type` | `false` | Aligned with mypy overrides (T-170) |
+
+### `failOnWarnings` flip criteria
+
+Keep `failOnWarnings = false` until:
+
+1. `typeCheckingMode = "recommended"` is enabled and `--level warning` reports **0** warnings (excluding permanently suppressed rules above).
+2. Linux CI and macOS both pass `uv run basedpyright --level warning src`.
+
+Then enable `failOnWarnings = true` in a follow-up PR.
+
+### Verification
+
+```bash
+make lint                              # exit 0 (standard mode, error-level basedpyright)
+uv run basedpyright --level warning src  # 0 warnings at standard mode
+uv run mypy src                        # strict, exit 0
+make test                              # 100% line coverage on src/
+```

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from src.core.exceptions import EmbeddingError
 from src.domain.repositories.embedding_repository import (
@@ -35,6 +35,7 @@ class SentenceTransformerEmbeddingProvider(EmbeddingRepository, ABC):
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
+    @override
     def embed(self, texts: list[str]) -> list[DenseVector]:
         """Return one dense vector per text."""
         if not texts:
@@ -53,6 +54,7 @@ class SentenceTransformerEmbeddingProvider(EmbeddingRepository, ABC):
                 f"{type(self).__name__} encode failed for {len(texts)} texts", cause=exc
             ) from exc
 
+    @override
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         """Return empty sparse vectors — sentence-transformer models are dense-only.
 
