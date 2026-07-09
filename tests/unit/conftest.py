@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
@@ -16,7 +17,5 @@ if os.environ.get("OTEL_SDK_DISABLED", "").lower() in {"1", "true", "yes"}:
 @pytest.fixture(scope="session", autouse=True)
 def _preload_datasets_once() -> None:
     """Import datasets once per xdist worker to avoid pyarrow extension re-registration."""
-    try:
+    with contextlib.suppress(ImportError):
         import datasets  # noqa: F401
-    except ImportError:
-        pass
