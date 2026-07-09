@@ -218,6 +218,60 @@ class TestBenchmarkInfraCli:
         assert code == 2
 
     @pytest.mark.asyncio
+    async def test_run_compare_failure_count_regression_exit_code(self, tmp_path):
+        from src.evals.e2e.infra_benchmark import (
+            InfraBenchmarkReport,
+            InfraBenchmarkThresholds,
+            ScenarioMetrics,
+        )
+
+        report = InfraBenchmarkReport(
+            timestamp="ts",
+            scenarios=[
+                ScenarioMetrics(
+                    "concurrent_chats",
+                    p50_ms=10.0,
+                    p95_ms=20.0,
+                    samples=8,
+                    failures=2,
+                )
+            ],
+        )
+        benchmark = MagicMock()
+        benchmark.run = AsyncMock(return_value=report)
+        thresholds = InfraBenchmarkThresholds(
+            regression_p95_pct=10.0,
+            baseline_path=tmp_path / "baseline.json",
+        )
+
+        args = argparse.Namespace(
+            scenarios="concurrent_chats",
+            compare=True,
+            save_baseline=False,
+        )
+
+        with (
+            patch("src.evals.e2e.infra_benchmark.InfraBenchmark", return_value=benchmark),
+            patch("src.evals.e2e.infra_benchmark.load_infra_thresholds", return_value=thresholds),
+            patch(
+                "src.evals.e2e.infra_benchmark.load_infra_baseline",
+                return_value={
+                    "scenarios": {
+                        "concurrent_chats": {
+                            "p95_ms": 20.0,
+                            "failures": 0,
+                            "samples": 10,
+                        }
+                    }
+                },
+            ),
+            patch("src.core.constants.EXPORTS_DIR", tmp_path),
+        ):
+            code = await cli.run(args)
+
+        assert code == 2
+
+    @pytest.mark.asyncio
     async def test_run_save_baseline(self, tmp_path):
         from src.evals.e2e.infra_benchmark import InfraBenchmarkReport, ScenarioMetrics
 

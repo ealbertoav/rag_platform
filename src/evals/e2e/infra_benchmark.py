@@ -23,6 +23,7 @@ from src.rag.retrieval.bm25_retriever import BM25Retriever
 from src.rag.retrieval.graph_retriever import GraphRetriever
 
 if TYPE_CHECKING:
+    from src.domain.repositories.llm_repository import LLMRepository
     from src.rag.pipelines.chat_pipeline import ChatPipeline
 
 logger = logging.getLogger(__name__)
@@ -129,8 +130,8 @@ class BaselineComparisonResult:
     regressions: list[RegressionWarning]
     failures: list[BaselineScenarioFailure]
 
-    @property
     def has_issues(self) -> bool:
+        """Return whether regressions or scenario failures were detected."""
         return bool(self.regressions or self.failures)
 
 
@@ -376,6 +377,14 @@ def compare_to_baseline(
         if metrics.error:
             failures.append(BaselineScenarioFailure(scenario=name, reason=metrics.error))
             continue
+        base_failures = _coerce_int(base_entry.get("failures"), 0)
+        if metrics.failures > base_failures:
+            failures.append(
+                BaselineScenarioFailure(
+                    scenario=name,
+                    reason=f"failures increased from {base_failures} to {metrics.failures}",
+                )
+            )
         base_p95 = base_entry.get("p95_ms")
         if not isinstance(base_p95, (int, float)) or isinstance(base_p95, bool) or base_p95 <= 0:
             continue
@@ -448,6 +457,39 @@ class InfraBenchmark:
         self._graph_retriever_factory = graph_retriever_factory
         self._bm25_fixture_builder = bm25_fixture_builder or build_bm25_fixture_chunks
         self._neo4j_available = neo4j_available or _neo4j_reachable
+        self._cached_pipeline: ChatPipeline | None = None
+
+    async def _get_pipeline(self) -> ChatPipeline:
+        if self._pipeline_factory is None:
+            raise RuntimeError("no pipeline factory configured")
+        if self._cached_pipeline is None:
+            self._cached_pipeline = await self._pipeline_factory()
+        return self._cached_pipeline
+
+    def _get_graph_retriever(self) -> GraphRetriever:
+        if self._graph_retriever_factory is None:
+            raise RuntimeError("no graph retriever factory configured")
+        llm = _llm_from_pipeline(self._cached_pipeline) if self._cached_pipeline else None
+        factory = self._graph_retriever_factory
+        if llm is not None:
+            try:
+                return factory(llm=llm)  # type: ignore[call-arg]
+            except TypeError:
+                pass
+        return factory()
+
+    async def _warm_pipeline_cache(self) -> None:
+        """Load the chat pipeline when graph retrieval can reuse its LLM."""
+        if self._pipeline_factory is None:
+            return
+        try:
+            await self._get_pipeline()
+        except (RuntimeError, OSError, ImportError, ValueError) as exc:
+            logger.debug(
+                "Pipeline unavailable for shared LLM (%s); "
+                + "graph retriever will use its own LLM if needed",
+                exc,
+            )
 
     async def run(
         self,
@@ -456,6 +498,7 @@ class InfraBenchmark:
         timestamp: str | None = None,
     ) -> InfraBenchmarkReport:
         ts = timestamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        self._cached_pipeline = None
         selected = scenario_names or [
             "streaming_chat",
             "concurrent_chats",
@@ -489,7 +532,7 @@ class InfraBenchmark:
                 skip_reason="no pipeline factory configured",
             )
         try:
-            pipeline = await self._pipeline_factory()
+            pipeline = await self._get_pipeline()
             stream = await pipeline.chat(self._thresholds.streaming_sample_question)
             latencies = await measure_stream_inter_token_latencies_ms(stream)
         except Exception as exc:
@@ -531,7 +574,7 @@ class InfraBenchmark:
         question = self._thresholds.streaming_sample_question
 
         try:
-            pipeline = await self._pipeline_factory()
+            pipeline = await self._get_pipeline()
         except Exception as exc:
             logger.exception("Concurrent chat benchmark failed to initialize pipeline")
             return ScenarioMetrics(
@@ -614,7 +657,8 @@ class InfraBenchmark:
                 skip_reason="no graph retriever factory configured",
             )
         try:
-            retriever = self._graph_retriever_factory()
+            await self._warm_pipeline_cache()
+            retriever = self._get_graph_retriever()
             latencies = await _run_graph_searches(
                 retriever,
                 iterations=self._thresholds.graph_search_iterations,
@@ -762,10 +806,22 @@ async def build_default_pipeline() -> ChatPipeline:
     return cast("ChatPipeline", build_benchmark_pipeline())
 
 
-def build_default_graph_retriever() -> GraphRetriever:
+def _llm_from_pipeline(pipeline: ChatPipeline) -> LLMRepository | None:
+    llm = getattr(pipeline, "_llm", None)
+    if llm is not None:
+        return cast("LLMRepository", llm)
+    generation = getattr(pipeline, "generation", None)
+    if generation is not None:
+        gen_llm = getattr(generation, "_llm", None)
+        if gen_llm is not None:
+            return cast("LLMRepository", gen_llm)
+    return None
+
+
+def build_default_graph_retriever(*, llm: LLMRepository | None = None) -> GraphRetriever:
     from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
     from src.infrastructure.vectordb.bm25 import BM25Index
 
-    llm = LlamaCppProvider.from_settings()
+    resolved_llm = llm or LlamaCppProvider.from_settings()
     bm25 = BM25Retriever(BM25Index.load_or_create())
-    return GraphRetriever.from_settings(llm=llm, bm25=bm25)
+    return GraphRetriever.from_settings(llm=resolved_llm, bm25=bm25)

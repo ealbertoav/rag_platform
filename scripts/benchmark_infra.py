@@ -4,12 +4,12 @@ Usage:
     uv run python scripts/benchmark_infra.py
     uv run python scripts/benchmark_infra.py --compare
     uv run python scripts/benchmark_infra.py --save-baseline
-    uv run python scripts/benchmark_infra.py --scenarios bm25_100k,graph_retrieval
+    uv run python scripts/benchmark_infra.py --scenarios bm25_100k, graph_retrieval
 
 Scenario 5 (concurrent feedback) lives in tests/benchmarks/test_feedback_concurrency.py.
 
-Exit code 0 when the run completes; 1 on error; 2 when --compare detects p95 regression
-or a baselined scenario failed/skipped.
+Exit code 0 when the run completes; 1 on error; 2 when --compare detects p95 regression,
+failure-count regression, or a baselined scenario failed/skipped.
 """
 
 from __future__ import annotations
@@ -82,9 +82,9 @@ async def run(args: argparse.Namespace) -> int:
             print(f"\nRegression warnings (> {thresholds.regression_p95_pct:.0f}% p95 increase):")
             for warning in comparison.regressions:
                 print(f"  ⚠ {warning.message()}")
-        if comparison.has_issues:
+        if comparison.has_issues():
             return 2
-        print("\nNo p95 regressions vs committed baseline.")
+        print("\nNo p95 regressions or failure-count increases vs committed baseline.")
 
     return 0
 
@@ -105,7 +105,7 @@ def main() -> None:
     parser.add_argument(
         "--compare",
         action="store_true",
-        help="Compare results to data/exports/infra_baseline.json (>10%% p95 increase warns)",
+        help="Compare results to data/exports/infra_baseline.json (>10%% p95 increase or failures warn)",
     )
     parser.add_argument(
         "--save-baseline",

@@ -84,6 +84,34 @@ def _pipeline_mock(
     return pipeline
 
 
+def _graph_llm_sharing_benchmark(
+    *,
+    graph_search_iterations: int = 1,
+) -> tuple[InfraBenchmark, list[dict[str, object]], MagicMock]:
+    """Benchmark wired to record which LLM the graph factory receives."""
+    shared_llm = MagicMock()
+    pipeline = MagicMock()
+    pipeline._llm = shared_llm
+    retriever = MagicMock()
+    retriever.search = AsyncMock(return_value=[])
+    calls: list[dict[str, object]] = []
+
+    async def pipeline_factory():
+        return pipeline
+
+    def graph_factory(*, llm=None):
+        calls.append({"llm": llm})
+        return retriever
+
+    benchmark = InfraBenchmark(
+        thresholds=InfraBenchmarkThresholds(graph_search_iterations=graph_search_iterations),
+        pipeline_factory=pipeline_factory,
+        graph_retriever_factory=graph_factory,
+        neo4j_available=lambda: True,
+    )
+    return benchmark, calls, shared_llm
+
+
 class TestPercentile:
     def test_empty_returns_zero(self):
         assert percentile([], 50) == 0.0
@@ -296,6 +324,45 @@ class TestCompareToBaseline:
         assert result.failures[0].reason == "neo4j down"
         assert result.failures[1].reason == "boom"
 
+    def test_detects_failure_count_regression(self):
+        current = {
+            "concurrent_chats": _scenario("concurrent_chats", p95=20.0, failures=2, samples=8),
+        }
+        baseline = {
+            "scenarios": {
+                "concurrent_chats": {"p95_ms": 20.0, "failures": 0, "samples": 10},
+            }
+        }
+        result = compare_to_baseline(current, baseline, regression_p95_pct=10.0)
+        assert result.regressions == []
+        assert len(result.failures) == 1
+        assert result.failures[0].reason == "failures increased from 0 to 2"
+
+    def test_allows_failures_matching_baseline(self):
+        current = {
+            "concurrent_chats": _scenario("concurrent_chats", p95=20.0, failures=1, samples=9),
+        }
+        baseline = {
+            "scenarios": {
+                "concurrent_chats": {"p95_ms": 20.0, "failures": 1, "samples": 10},
+            }
+        }
+        result = compare_to_baseline(current, baseline, regression_p95_pct=10.0)
+        assert result == BaselineComparisonResult(regressions=[], failures=[])
+
+    def test_failure_count_regression_with_invalid_baseline_failures(self):
+        current = {
+            "concurrent_chats": _scenario("concurrent_chats", p95=20.0, failures=1, samples=9),
+        }
+        baseline = {
+            "scenarios": {
+                "concurrent_chats": {"p95_ms": 20.0, "failures": "bad", "samples": 10},
+            }
+        }
+        result = compare_to_baseline(current, baseline, regression_p95_pct=10.0)
+        assert len(result.failures) == 1
+        assert result.failures[0].reason == "failures increased from 0 to 1"
+
     def test_regression_warning_message(self):
         warning = RegressionWarning("s", "p95_ms", 10.0, 15.0, 50.0)
         assert "s.p95_ms" in warning.message()
@@ -310,8 +377,8 @@ class TestCompareToBaseline:
             regressions=[RegressionWarning("s", "p95_ms", 1.0, 2.0, 100.0)],
             failures=[],
         )
-        assert result.has_issues is True
-        assert BaselineComparisonResult(regressions=[], failures=[]).has_issues is False
+        assert result.has_issues() is True
+        assert BaselineComparisonResult(regressions=[], failures=[]).has_issues() is False
 
 
 class TestBuildBm25FixtureChunks:
@@ -387,6 +454,33 @@ class TestMeasureStreamLatencies:
         latencies = await measure_stream_inter_token_latencies_ms(_token_stream("only"))
         assert latencies == []
 
+    @pytest.mark.asyncio
+    async def test_get_pipeline_raises_without_factory(self):
+        benchmark = InfraBenchmark(pipeline_factory=None)
+        with pytest.raises(RuntimeError, match="no pipeline factory configured"):
+            await benchmark._get_pipeline()
+
+    @pytest.mark.asyncio
+    async def test_get_graph_retriever_raises_without_factory(self):
+        benchmark = InfraBenchmark(graph_retriever_factory=None)
+        with pytest.raises(RuntimeError, match="no graph retriever factory configured"):
+            benchmark._get_graph_retriever()
+
+    @pytest.mark.asyncio
+    async def test_warm_pipeline_cache_noop_without_factory(self):
+        benchmark = InfraBenchmark(pipeline_factory=None)
+        await benchmark._warm_pipeline_cache()
+        assert benchmark._cached_pipeline is None
+
+    @pytest.mark.asyncio
+    async def test_warm_pipeline_cache_swallows_pipeline_errors(self):
+        async def pipeline_factory():
+            raise RuntimeError("pipeline unavailable")
+
+        benchmark = InfraBenchmark(pipeline_factory=pipeline_factory)
+        await benchmark._warm_pipeline_cache()
+        assert benchmark._cached_pipeline is None
+
 
 class TestInfraBenchmarkScenarios:
     @pytest.mark.asyncio
@@ -398,8 +492,10 @@ class TestInfraBenchmarkScenarios:
     @pytest.mark.asyncio
     async def test_streaming_chat_success(self):
         pipeline = _pipeline_mock(stream_tokens=("x", "y", "z"))
+        calls = {"n": 0}
 
         async def factory():
+            calls["n"] += 1
             return pipeline
 
         benchmark = InfraBenchmark(
@@ -407,9 +503,52 @@ class TestInfraBenchmarkScenarios:
             pipeline_factory=factory,
         )
         result = await benchmark.run_streaming_chat()
+        assert calls["n"] == 1
         assert result.name == "streaming_chat"
         assert result.samples == 2
         assert result.p95_ms >= 0.0
+
+    @pytest.mark.asyncio
+    async def test_pipeline_factory_reused_across_chat_scenarios(self):
+        pipeline = _pipeline_mock()
+        calls = {"n": 0}
+
+        async def factory():
+            calls["n"] += 1
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                concurrent_chat_count=2,
+                streaming_sample_question="q",
+            ),
+            pipeline_factory=factory,
+        )
+        report = await benchmark.run(["streaming_chat", "concurrent_chats"])
+        assert calls["n"] == 1
+        assert len(report.scenarios) == 2
+        assert report.scenarios[0].name == "streaming_chat"
+        assert report.scenarios[1].name == "concurrent_chats"
+
+    @pytest.mark.asyncio
+    async def test_run_resets_pipeline_cache_between_runs(self):
+        pipeline = _pipeline_mock()
+        calls = {"n": 0}
+
+        async def factory():
+            calls["n"] += 1
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                concurrent_chat_count=1,
+                streaming_sample_question="q",
+            ),
+            pipeline_factory=factory,
+        )
+        await benchmark.run(["streaming_chat"])
+        await benchmark.run(["concurrent_chats"])
+        assert calls["n"] == 2
 
     @pytest.mark.asyncio
     async def test_streaming_chat_no_factory(self):
@@ -627,6 +766,65 @@ class TestInfraBenchmarkScenarios:
         assert result.error == "graph search returned no timings"
 
     @pytest.mark.asyncio
+    async def test_graph_retrieval_reuses_cached_pipeline_llm(self):
+        benchmark, calls, shared_llm = _graph_llm_sharing_benchmark()
+        await benchmark.run(["streaming_chat", "graph_retrieval"])
+        assert calls == [{"llm": shared_llm}]
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_warms_pipeline_for_shared_llm(self):
+        benchmark, calls, shared_llm = _graph_llm_sharing_benchmark()
+        result = await benchmark.run_graph_retrieval()
+        assert calls == [{"llm": shared_llm}]
+        assert result.samples == 1
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_falls_back_when_factory_rejects_llm_kwarg(self):
+        shared_llm = MagicMock()
+        pipeline = MagicMock()
+        pipeline._llm = shared_llm
+        retriever = MagicMock()
+        retriever.search = AsyncMock(return_value=[])
+
+        async def pipeline_factory():
+            return pipeline
+
+        def factory() -> MagicMock:
+            return retriever
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(graph_search_iterations=1),
+            pipeline_factory=pipeline_factory,
+            graph_retriever_factory=factory,
+            neo4j_available=lambda: True,
+        )
+        result = await benchmark.run_graph_retrieval()
+        assert result.samples == 1
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_continues_when_pipeline_warm_fails(self):
+        retriever = MagicMock()
+        retriever.search = AsyncMock(return_value=[])
+        calls: list[dict[str, object]] = []
+
+        async def pipeline_factory():
+            raise RuntimeError("pipeline unavailable")
+
+        def graph_factory(*, llm=None):
+            calls.append({"llm": llm})
+            return retriever
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(graph_search_iterations=1),
+            pipeline_factory=pipeline_factory,
+            graph_retriever_factory=graph_factory,
+            neo4j_available=lambda: True,
+        )
+        result = await benchmark.run_graph_retrieval()
+        assert calls == [{"llm": None}]
+        assert result.samples == 1
+
+    @pytest.mark.asyncio
     async def test_run_all_default_scenarios(self):
         pipeline = _pipeline_mock()
         retriever = MagicMock()
@@ -762,6 +960,52 @@ class TestDefaultFactories:
             gr.return_value = MagicMock()
             result = build_default_graph_retriever()
             assert result is gr.return_value
+            llm.assert_called_once()
+
+    def test_build_default_graph_retriever_reuses_provided_llm(self):
+        llm_path = "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+        idx_path = "src.infrastructure.vectordb.bm25.BM25Index.load_or_create"
+        gr_path = "src.rag.retrieval.graph_retriever.GraphRetriever.from_settings"
+        shared = MagicMock()
+        with (
+            patch(llm_path) as llm,
+            patch(idx_path) as idx,
+            patch(gr_path) as gr,
+        ):
+            idx.return_value = MagicMock()
+            gr.return_value = MagicMock()
+            result = build_default_graph_retriever(llm=shared)
+            assert result is gr.return_value
+            llm.assert_not_called()
+            gr.assert_called_once()
+            assert gr.call_args.kwargs["llm"] is shared
+
+
+class TestLlmFromPipeline:
+    def test_reads_pipeline_llm(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        shared = MagicMock()
+        pipeline = MagicMock()
+        pipeline._llm = shared
+        assert mod._llm_from_pipeline(pipeline) is shared
+
+    def test_falls_back_to_generation_llm(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        shared = MagicMock()
+        pipeline = MagicMock()
+        pipeline._llm = None
+        pipeline.generation._llm = shared
+        assert mod._llm_from_pipeline(pipeline) is shared
+
+    def test_returns_none_when_missing(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        pipeline = MagicMock()
+        pipeline._llm = None
+        pipeline.generation._llm = None
+        assert mod._llm_from_pipeline(pipeline) is None
 
 
 class TestCoerceHelpers:
