@@ -126,28 +126,30 @@ class IngestionPipeline:
 
         with self._bm25.deferred_rebuild():
             chunks = self._service.prepare(document)
+            indexed_chunks = list(chunks)
 
-            if not chunks:
+            if chunks:
+                if self._hierarchical_indexer is not None:
+                    chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)
+                    indexed_chunks = list(chunks)
+                    indexed_chunks.extend(summary_chunks)
+                if self._augmentor is not None:
+                    augmented = self._augmentor.augment(chunks)
+                    indexed_chunks.extend(augmented)
+                if self._hype_indexer is not None:
+                    hype_chunks = self._hype_indexer.index(chunks)
+                    indexed_chunks.extend(hype_chunks)
+
+            if self._table_chunker is not None:
+                table_chunks = self._table_chunker.index(document)
+                indexed_chunks.extend(table_chunks)
+
+            if not indexed_chunks:
                 self._purge_superseded_chunks(old_chunk_ids)
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 if self._metadata is not None:
                     _ = self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
                 return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
-
-            indexed_chunks = list(chunks)
-            if self._hierarchical_indexer is not None:
-                chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)
-                indexed_chunks = list(chunks)
-                indexed_chunks.extend(summary_chunks)
-            if self._augmentor is not None:
-                augmented = self._augmentor.augment(chunks)
-                indexed_chunks.extend(augmented)
-            if self._hype_indexer is not None:
-                hype_chunks = self._hype_indexer.index(chunks)
-                indexed_chunks.extend(hype_chunks)
-            if self._table_chunker is not None:
-                table_chunks = self._table_chunker.index(document)
-                indexed_chunks.extend(table_chunks)
 
             self._index_graph(chunks, document.id)
             self._vector_store.upsert(indexed_chunks)

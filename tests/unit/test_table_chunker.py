@@ -29,7 +29,11 @@ from src.rag.ingestion.table_chunker import (
     is_table_chunk,
 )
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
-from tests.unit.ingestion_helpers import embedded_chunk, mock_ingestion_pipeline
+from tests.unit.ingestion_helpers import (
+    embedded_chunk,
+    mock_ingestion_pipeline,
+    mock_reingest_metadata,
+)
 
 _TABLE_CHUNKER = "src.rag.ingestion.table_chunker"
 _INGESTION_PIPELINE = "src.rag.pipelines.ingestion_pipeline"
@@ -42,6 +46,11 @@ def _internal(module: str, name: str) -> object:
 resolve_table_text = cast(
     Callable[[dict[str, Any], str | None], str | None],
     _internal(_TABLE_CHUNKER, "_resolve_table_text"),
+)
+
+content_table_for_id = cast(
+    Callable[[str, list[str]], str | None],
+    _internal(_TABLE_CHUNKER, "_content_table_for_id"),
 )
 
 build_table_chunker = cast(
@@ -101,6 +110,17 @@ class TestExtractMarkdownTables:
         assert extract_markdown_tables("") == []
 
 
+class TestContentTableForId:
+    def test_maps_table_id_to_nth_content_table(self) -> None:
+        tables = [_SAMPLE_TABLE, _SAMPLE_TABLE_2]
+        assert content_table_for_id("table-1", tables) == _SAMPLE_TABLE
+        assert content_table_for_id("table-2", tables) == _SAMPLE_TABLE_2
+
+    def test_returns_none_for_unknown_or_non_numeric_ids(self) -> None:
+        assert content_table_for_id("table-99", [_SAMPLE_TABLE]) is None
+        assert content_table_for_id("custom-id", [_SAMPLE_TABLE]) is None
+
+
 class TestResolveTableText:
     def test_prefers_text_key(self) -> None:
         entry = {"text": " from metadata "}
@@ -156,6 +176,19 @@ class TestBuildTableChunks:
         chunks = build_table_chunks(document)
         assert len(chunks) == 1
         assert chunks[0].text == _SAMPLE_TABLE
+
+    def test_fallback_uses_table_id_not_metadata_index(self) -> None:
+        base = _doc(
+            content=f"{_SAMPLE_TABLE}\n\n{_SAMPLE_TABLE_2}",
+            tables=[{TABLE_ID_KEY: "table-2"}],
+        )
+        metadata = dict(base.metadata)
+        metadata["tables"] = ["bad", metadata["tables"][0]]
+        document = base.model_copy(update={"metadata": metadata})
+        chunks = build_table_chunks(document)
+        assert len(chunks) == 1
+        assert chunks[0].metadata[TABLE_ID_KEY] == "table-2"
+        assert chunks[0].text == _SAMPLE_TABLE_2
 
     def test_skips_non_dict_entries(self, caplog: pytest.LogCaptureFixture) -> None:
         base = _doc(tables=[{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}])
@@ -251,6 +284,55 @@ class TestIngestionPipelineTableChunks:
         assert any(is_table_chunk(c) for c in upserted)
         bm25_added = bm25.add.call_args.args[0]
         assert any(is_table_chunk(c) for c in bm25_added)
+
+    def test_table_only_document_indexes_without_text_chunks(self, tmp_path: Path) -> None:
+        path = tmp_path / "tables-only.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        table = _table_chunk()
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = [table]
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(prepared_chunks=[])
+        pipeline._table_chunker = table_chunker  # noqa: SLF001
+
+        with patch(
+            "src.rag.pipelines.ingestion_pipeline.load_document",
+            return_value=_doc(source=str(path.resolve())),
+        ):
+            result = pipeline.ingest_file(path)
+
+        assert result.chunk_count == 0
+        service.prepare.assert_called_once()
+        table_chunker.index.assert_called_once()
+        vector_store.upsert.assert_called_once()
+        upserted = vector_store.upsert.call_args.args[0]
+        assert len(upserted) == 1
+        assert is_table_chunk(upserted[0])
+        bm25.add.assert_called_once()
+
+    def test_table_only_reingest_purges_old_chunks_and_indexes_tables(self, tmp_path: Path) -> None:
+        path = tmp_path / "tables-only.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        table = _table_chunk()
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = [table]
+        metadata = mock_reingest_metadata()
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(
+            prepared_chunks=[],
+            metadata=metadata,
+        )
+        pipeline._table_chunker = table_chunker  # noqa: SLF001
+
+        with patch(
+            "src.rag.pipelines.ingestion_pipeline.load_document",
+            return_value=_doc(source=str(path.resolve())),
+        ):
+            result = pipeline.ingest_file(path)
+
+        assert result.chunk_count == 0
+        vector_store.upsert.assert_called_once()
+        vector_store.delete.assert_called_once_with(["old-chunk-1"])
+        bm25.remove_by_ids.assert_called_once_with(["old-chunk-1"])
+        metadata.upsert_document.assert_called_once()
 
     def test_table_chunker_none_skips_indexing(self, tmp_path: Path) -> None:
         path = tmp_path / "doc.md"

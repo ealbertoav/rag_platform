@@ -6,6 +6,7 @@ Docling is mocked at the unit boundary (heavy ML dependency).
 from __future__ import annotations
 
 import importlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -200,6 +201,25 @@ class TestDoclingMetadataHelpers:
         result = docling_extract_tables(doc)
         assert result == [{TABLE_ID_KEY: "table-1", "text": "table-md"}]
         table.export_to_markdown.assert_called_once()
+
+    def test_extract_tables_continues_when_export_fails(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        good = MagicMock()
+        good.export_to_markdown.return_value = "ok-table"
+        good.prov = []
+        bad = MagicMock()
+        bad.export_to_markdown.side_effect = RuntimeError("export failed")
+        bad.prov = []
+        doc = MagicMock()
+        doc.tables = [good, bad]
+        with caplog.at_level(logging.WARNING, logger=_DOCLING_PARSER):
+            result = docling_extract_tables(doc)
+        assert result == [
+            {TABLE_ID_KEY: "table-1", "text": "ok-table"},
+            {TABLE_ID_KEY: "table-2"},
+        ]
+        assert "Failed to export table table-2" in caplog.text
 
     def test_extract_figures_without_caption(self) -> None:
         picture = MagicMock()

@@ -26,6 +26,7 @@ _MARKDOWN_TABLE_RE = re.compile(
     r"(\|[^\n]+\|\n\|[-: |]+\|\n(?:\|[^\n]+\|\n?)+)",
     re.MULTILINE,
 )
+_TABLE_ID_NUMERIC_RE = re.compile(r"^table-(\d+)$")
 
 
 def is_table_chunk(chunk: Chunk) -> bool:
@@ -36,6 +37,17 @@ def is_table_chunk(chunk: Chunk) -> bool:
 def extract_markdown_tables(content: str) -> list[str]:
     """Return Markdown table blocks in document order."""
     return [block.strip() for block in _MARKDOWN_TABLE_RE.findall(content) if block.strip()]
+
+
+def _content_table_for_id(table_id: str, content_tables: list[str]) -> str | None:
+    """Map Docling ``table-N`` ids to the Nth markdown table in document content."""
+    match = _TABLE_ID_NUMERIC_RE.match(table_id)
+    if match is None:
+        return None
+    index = int(match.group(1)) - 1
+    if 0 <= index < len(content_tables):
+        return content_tables[index]
+    return None
 
 
 def _resolve_table_text(entry: dict[str, Any], fallback: str | None) -> str | None:
@@ -66,7 +78,7 @@ def build_table_chunks(document: Document) -> list[Chunk]:
             logger.debug("Skipping table entry without %s at index %d", TABLE_ID_KEY, index)
             continue
 
-        fallback = content_tables[index] if index < len(content_tables) else None
+        fallback = _content_table_for_id(str(table_id), content_tables)
         text = _resolve_table_text(raw_entry, fallback)
         if not text:
             logger.warning(
