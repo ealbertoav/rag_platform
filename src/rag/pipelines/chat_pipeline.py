@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -112,7 +113,12 @@ class ChatPipeline:
         result = await self.retrieval.retrieve(query)
         resolution = await self._resolve_context(query.text, result)
 
-        answer = self.generation.generate(query.text, resolution.context, resolution.sources)
+        answer = await asyncio.to_thread(
+            self.generation.generate,
+            query.text,
+            resolution.context,
+            resolution.sources,
+        )
 
         highlighting_requested = highlights or self._source_highlighting_enabled
         llm = self._llm
@@ -133,7 +139,8 @@ class ChatPipeline:
         explanations = None
         highlights_result = None
         if explain and highlighting_requested and source_chunks is not None and llm is not None:
-            explanation_list, highlight_map = explain_and_highlight(
+            explanation_list, highlight_map = await asyncio.to_thread(
+                explain_and_highlight,
                 query.text,
                 answer,
                 source_chunks,
@@ -145,7 +152,12 @@ class ChatPipeline:
                 highlights_result = highlight_map
 
         if explain and explanations is None and source_chunks is not None and llm is not None:
-            explanation_list = explain_chunks(query.text, source_chunks, llm)
+            explanation_list = await asyncio.to_thread(
+                explain_chunks,
+                query.text,
+                source_chunks,
+                llm,
+            )
             if explanation_list:
                 explanations = explanation_list
 
@@ -155,7 +167,12 @@ class ChatPipeline:
             and source_chunks is not None
             and llm is not None
         ):
-            highlight_map = extract_highlights(answer, source_chunks, llm)
+            highlight_map = await asyncio.to_thread(
+                extract_highlights,
+                answer,
+                source_chunks,
+                llm,
+            )
             if highlight_map:
                 highlights_result = highlight_map
 
@@ -186,7 +203,12 @@ class ChatPipeline:
         retrieval_result = await self.retrieval.retrieve(query)
         resolution = await self._resolve_context(question, retrieval_result)
 
-        answer = self.generation.generate(question, resolution.context, resolution.sources)
+        answer = await asyncio.to_thread(
+            self.generation.generate,
+            question,
+            resolution.context,
+            resolution.sources,
+        )
 
         elapsed = (time.monotonic() - t0) * 1000
         answer = answer.model_copy(

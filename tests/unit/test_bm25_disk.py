@@ -705,6 +705,7 @@ class TestBM25Factory:
 
 
 class TestDiskBM25Scale:
+    @pytest.mark.slow
     def test_indexes_and_searches_100k_chunks(self, tmp_path: Path):
         n = 100_000
         path = tmp_path / "large"

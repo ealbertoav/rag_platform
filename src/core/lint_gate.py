@@ -71,12 +71,16 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _ci_lint_job_section(workflow_text: str) -> str:
-    """Return the "lint" job block from a GitHub Actions workflow file."""
-    marker = "  lint:"
-    if marker not in workflow_text:
+def _extract_ci_job_section(workflow_text: str, job_id: str) -> str:
+    """Return one top-level job block from a GitHub Actions workflow file."""
+    pattern = re.compile(
+        rf"^  {re.escape(job_id)}:\n(?=    (?:name:|runs-on:))",
+        re.MULTILINE,
+    )
+    match = pattern.search(workflow_text)
+    if match is None:
         return ""
-    rest = workflow_text.split(marker, maxsplit=1)[1]
+    rest = workflow_text[match.end() :]
     lines: list[str] = []
     for line in rest.splitlines():
         stripped = line.strip()
@@ -89,6 +93,15 @@ def _ci_lint_job_section(workflow_text: str) -> str:
             break
         lines.append(line)
     return "\n".join(lines)
+
+
+def _ci_lint_job_section(workflow_text: str) -> str:
+    """Return the quality or lint job block from a GitHub Actions workflow file."""
+    for job_id in ("quality", "lint"):
+        section = _extract_ci_job_section(workflow_text, job_id)
+        if section:
+            return section
+    return ""
 
 
 def _lint_job_step_block(lint_job_text: str, step_name: str) -> str:
@@ -125,7 +138,7 @@ def check_ci_workflow(*, workflow_path: Path | None = None) -> LintGateResult:
     if not lint_job:
         return LintGateResult(
             status=GateStatus.FAILED,
-            message="CI workflow missing lint job.",
+            message="CI workflow missing quality or lint job.",
         )
 
     if _mypy_step_uses_continue_on_error(lint_job):
@@ -146,7 +159,7 @@ def check_ci_workflow(*, workflow_path: Path | None = None) -> LintGateResult:
         if not command_in_text(lint_job, command):
             return LintGateResult(
                 status=GateStatus.FAILED,
-                message=f"CI lint job missing command: {command}",
+                message=f"CI quality/lint job missing command: {command}",
             )
 
     return LintGateResult(status=GateStatus.PASSED, message="CI lint commands aligned.")

@@ -107,12 +107,10 @@ class TestBGERerankerProvider:
 
     def test_model_load_error_raises_retrieval_error(self):
         p = BGERerankerProvider(model_path="bad/path", device="cpu")
+        fake_flag = MagicMock()
+        fake_flag.FlagReranker.side_effect = OSError("not found")
         with (
-            patch(
-                "src.infrastructure.rerankers.bge_reranker.FlagReranker",
-                side_effect=OSError("not found"),
-                create=True,
-            ),
+            patch.dict("sys.modules", {"FlagEmbedding": fake_flag}),
             pytest.raises(RetrievalError),
         ):
             p._get_model()

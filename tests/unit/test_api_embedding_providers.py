@@ -23,6 +23,12 @@ _TEXTS = ["Hello world.", "Kubernetes IAM roles.", "Vector databases are cool."]
 _DIM = 1536
 
 
+@pytest.fixture(autouse=True)
+def no_tenacity_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid real backoff sleeps in tenacity retry tests."""
+    monkeypatch.setattr("tenacity.nap.time.sleep", lambda _: None)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 

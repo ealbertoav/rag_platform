@@ -19,7 +19,8 @@ models/
 data/raw/
 data/processed/
 data/chunks/
-data/exports/
+data/exports/*
+!data/exports/infra_baseline.json
 data/qdrant/
 
 # Datasets (generated, not golden)

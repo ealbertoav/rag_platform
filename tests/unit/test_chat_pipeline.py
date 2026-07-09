@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -301,7 +302,7 @@ class TestChatPipelineFull:
     @pytest.mark.asyncio
     @patch("src.rag.pipelines.chat_pipeline.time.monotonic")
     async def test_chat_full_latency_includes_explain(self, mock_monotonic):
-        mock_monotonic.side_effect = [0.0, 0.5, 0.5, 0.5]
+        mock_monotonic.side_effect = itertools.chain([0.0, 0.5], itertools.repeat(0.5))
         llm = _llm_with_post_gen_responses(_explain_json())
         result = await _pipeline(llm=llm).chat_full("q", explain=True)
         assert result.latency_ms == pytest.approx(500.0)

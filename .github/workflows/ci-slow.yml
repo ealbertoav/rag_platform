@@ -1,0 +1,26 @@
+name: CI Slow Tests
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Weekly — Monday 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ci-slow-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_CACHE_DIR: /tmp/.uv-cache
+  OTEL_SDK_DISABLED: "true"
+
+jobs:
+  slow-unit-tests:
+    name: Slow Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-python-env
+
+      - name: Run slow unit tests
+        run: uv run pytest tests/unit -m slow -v --tb=short

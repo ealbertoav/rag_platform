@@ -143,6 +143,7 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
+    "pytest-xdist>=3.5.0",
     "ruff>=0.15.20",
     "mypy>=1.10.0",
     "types-PyYAML>=6.0.0",
@@ -225,6 +226,9 @@ ignore_errors = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["scripts"]
+markers = [
+    "slow: disk/scale tests (>10s); run with -m slow or make test-slow",
+]
 filterwarnings = [
     # qdrant-client version probe when Docker is not running (integration skip checks)
     "ignore:Failed to obtain server version:UserWarning:qdrant_client.qdrant_remote",
