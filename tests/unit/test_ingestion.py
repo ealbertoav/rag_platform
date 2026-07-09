@@ -458,6 +458,29 @@ class TestIngestionPipelineDirectory:
         _, kwargs = metadata.upsert_document.call_args
         assert kwargs["chunk_count"] == 1
 
+    def test_unchanged_hash_with_augmentor_runs_full_reindex(self, tmp_path: Path):
+        path = tmp_path / "doc.md"
+        path.write_text("stable content")
+        metadata = MagicMock()
+        metadata.get_by_source.return_value = MagicMock(
+            id="doc-1",
+            content_hash=content_hash(str(path.resolve()), "stable content"),
+            chunk_count=1,
+        )
+        metadata.get_chunk_ids.return_value = ["c1"]
+        augmentor = MagicMock()
+        augmentor.augment.return_value = []
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
+            metadata=metadata,
+            augmentor=augmentor,
+        )
+        result = pipeline.ingest_file(path)
+        assert result.skipped is False
+        service.prepare.assert_called_once()
+        vector_store.delete.assert_called_once_with(["c1"])
+        vector_store.upsert.assert_called_once()
+        bm25.add.assert_called_once()
+
 
 class TestIngestionPipelineFromSettings:
     def test_from_settings_builds_pipeline(self):

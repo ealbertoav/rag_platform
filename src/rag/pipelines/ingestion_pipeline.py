@@ -12,6 +12,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from src.core.constants import SUPPORTED_EXTENSIONS
 from src.core.exceptions import DocumentLoadError, IngestionError
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.document import Document
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.metadata_repository import DocumentRecord, MetadataRepository
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
@@ -105,22 +106,34 @@ class IngestionPipeline:
         if self._metadata is not None:
             existing = self._metadata.get_by_source(source)
             if existing is not None and existing.content_hash == doc_hash:
-                elapsed_ms = (time.monotonic() - t0) * 1000
-                _ = self._metadata.upsert_document(
-                    source,
-                    doc_hash,
-                    self._metadata.get_chunk_ids(existing.id),
-                    chunk_count=existing.chunk_count,
-                    duration_ms=elapsed_ms,
-                    skipped=True,
-                )
-                logger.info("Skipped %s (unchanged)", path.name)
-                return IngestionResult(
-                    source=source,
-                    chunk_count=existing.chunk_count,
-                    content_hash=doc_hash,
-                    skipped=True,
-                )
+                if self._requires_full_reindex_on_skip():
+                    old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
+                else:
+                    backfill = self._backfill_table_chunks_on_skip(
+                        document,
+                        source,
+                        doc_hash,
+                        existing,
+                        t0,
+                    )
+                    if backfill is not None:
+                        return backfill
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    _ = self._metadata.upsert_document(
+                        source,
+                        doc_hash,
+                        self._metadata.get_chunk_ids(existing.id),
+                        chunk_count=existing.chunk_count,
+                        duration_ms=elapsed_ms,
+                        skipped=True,
+                    )
+                    logger.info("Skipped %s (unchanged)", path.name)
+                    return IngestionResult(
+                        source=source,
+                        chunk_count=existing.chunk_count,
+                        content_hash=doc_hash,
+                        skipped=True,
+                    )
             if existing is not None:
                 old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
 
@@ -230,6 +243,64 @@ class IngestionPipeline:
         indexable = _bm25_indexable(indexed_chunks)
         if indexable:
             self._bm25.add(indexable)
+
+    def _requires_full_reindex_on_skip(self) -> bool:
+        """LLM-based supplemental indexers need to prepare() and cannot be backfilled cheaply."""
+        return any(
+            (
+                self._augmentor is not None,
+                self._hype_indexer is not None,
+                self._hierarchical_indexer is not None,
+                self._graph_indexer is not None,
+            )
+        )
+
+    def _backfill_table_chunks_on_skip(
+        self,
+        document: Document,
+        source: str,
+        doc_hash: str,
+        existing: DocumentRecord,
+        t0: float,
+    ) -> IngestionResult | None:
+        """Index missing table chunks when base content is unchanged."""
+        if self._table_chunker is None or self._metadata is None:
+            return None
+
+        table_chunks = self._table_chunker.index(document)
+        if not table_chunks:
+            return None
+
+        existing_ids = set(self._metadata.get_chunk_ids(existing.id))
+        new_chunks = [chunk for chunk in table_chunks if chunk.id not in existing_ids]
+        if not new_chunks:
+            return None
+
+        with self._bm25.deferred_rebuild():
+            self._vector_store.upsert(new_chunks)
+            self._bm25_add(new_chunks)
+
+        merged_ids = list(
+            dict.fromkeys(self._metadata.get_chunk_ids(existing.id) + [c.id for c in new_chunks])
+        )
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        _ = self._metadata.upsert_document(
+            source,
+            doc_hash,
+            merged_ids,
+            chunk_count=existing.chunk_count,
+            duration_ms=elapsed_ms,
+        )
+        logger.info(
+            "Backfilled %d table chunk(s) for %s (unchanged content)",
+            len(new_chunks),
+            Path(source).name,
+        )
+        return IngestionResult(
+            source=source,
+            chunk_count=existing.chunk_count,
+            content_hash=doc_hash,
+        )
 
     def _purge_superseded_chunks(self, chunk_ids: list[str]) -> None:
         """Remove superseded chunk IDs from dense and lexical indexes together."""

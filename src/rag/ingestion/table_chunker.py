@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from typing import Any
 
 from src.core.constants import (
@@ -27,6 +28,12 @@ _MARKDOWN_TABLE_RE = re.compile(
     re.MULTILINE,
 )
 _TABLE_ID_NUMERIC_RE = re.compile(r"^table-(\d+)$")
+_TABLE_CHUNK_NAMESPACE = uuid.UUID("a3f8c2e1-7b4d-4e9f-8c1a-2d6e5f0b9a37")
+
+
+def table_chunk_id(document_id: str, table_id: str) -> str:
+    """Stable chunk ID for idempotent table backfill on unchanged documents."""
+    return str(uuid.uuid5(_TABLE_CHUNK_NAMESPACE, f"{document_id}:{table_id}"))
 
 
 def is_table_chunk(chunk: Chunk) -> bool:
@@ -97,7 +104,14 @@ def build_table_chunks(document: Document) -> list[Chunk]:
         if BBOX_KEY in raw_entry:
             metadata[BBOX_KEY] = raw_entry[BBOX_KEY]
 
-        chunks.append(Chunk(document_id=document.id, text=text, metadata=metadata))
+        chunks.append(
+            Chunk(
+                id=table_chunk_id(document.id, str(table_id)),
+                document_id=document.id,
+                text=text,
+                metadata=metadata,
+            )
+        )
 
     return chunks
 

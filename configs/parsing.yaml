@@ -13,4 +13,4 @@ parsing:
   table_chunks:
     enabled: false              # T-202 structured type=table chunks at ingest; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.
-    # Re-ingest after enabling — existing indexes are not updated retroactively.
+    # Re-ingest after enabling — unchanged documents backfill missing table chunks.
