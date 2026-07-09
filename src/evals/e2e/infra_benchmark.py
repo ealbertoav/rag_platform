@@ -40,6 +40,7 @@ __all__ = [
     "build_default_graph_retriever",
     "build_default_pipeline",
     "compare_to_baseline",
+    "concurrent_chat_batch_timeout_s",
     "default_baseline_path",
     "load_infra_baseline",
     "load_infra_thresholds",
@@ -423,6 +424,25 @@ def build_bm25_fixture_chunks(count: int, *, needle_index: int | None = None) ->
     return chunks
 
 
+def concurrent_chat_batch_timeout_s(per_chat_timeout_s: float, chat_count: int) -> float:
+    """Return the wall-clock budget for N concurrent chats on one serialized LLM.
+
+    "concurrent_chat_timeout_s" is a per-request generation budget. When every
+    call shares a single "LlamaCppProvider", later requests queue behind the
+    process-wide inference lock, so the scenario timeout must scale with N.
+    """
+    if chat_count <= 0:
+        return per_chat_timeout_s
+    return per_chat_timeout_s * chat_count
+
+
+def _remaining_timeout_or_raise(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
 async def measure_stream_inter_token_latencies_ms(
     stream: Any,
 ) -> list[float]:
@@ -584,11 +604,14 @@ class InfraBenchmark:
                 error=str(exc),
             )
 
+        batch_deadline = time.monotonic() + concurrent_chat_batch_timeout_s(timeout_s, count)
+
         async def _one_chat() -> float:
             started = time.monotonic()
+            remaining = _remaining_timeout_or_raise(batch_deadline)
             await asyncio.wait_for(
                 pipeline.chat_full(question),
-                timeout=timeout_s,
+                timeout=remaining,
             )
             return (time.monotonic() - started) * 1000.0
 

@@ -25,6 +25,7 @@ from src.evals.e2e.infra_benchmark import (
     build_default_graph_retriever,
     build_default_pipeline,
     compare_to_baseline,
+    concurrent_chat_batch_timeout_s,
     default_baseline_path,
     load_infra_baseline,
     load_infra_thresholds,
@@ -124,6 +125,32 @@ class TestPercentile:
 
     def test_unsorted_input(self):
         assert percentile([30.0, 10.0, 20.0], 50) == 20.0
+
+
+class TestConcurrentChatBatchTimeout:
+    def test_scales_with_chat_count(self):
+        assert concurrent_chat_batch_timeout_s(120.0, 10) == 1200.0
+
+    def test_non_positive_count_returns_per_chat_timeout(self):
+        assert concurrent_chat_batch_timeout_s(120.0, 0) == 120.0
+        assert concurrent_chat_batch_timeout_s(120.0, -1) == 120.0
+
+
+class TestRemainingTimeoutOrRaise:
+    def test_returns_positive_remaining(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        with patch("src.evals.e2e.infra_benchmark.time.monotonic", return_value=10.0):
+            assert mod._remaining_timeout_or_raise(12.5) == 2.5
+
+    def test_raises_when_deadline_elapsed(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        with (
+            patch("src.evals.e2e.infra_benchmark.time.monotonic", return_value=20.0),
+            pytest.raises(TimeoutError),
+        ):
+            mod._remaining_timeout_or_raise(10.0)
 
 
 class TestLoadInfraThresholds:
@@ -664,6 +691,54 @@ class TestInfraBenchmarkScenarios:
         )
         result = await benchmark.run_concurrent_chats()
         assert result.failures == 2
+        assert result.samples == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_timeout_accounts_for_serialized_llm(self):
+        llm_lock = asyncio.Lock()
+        pipeline = MagicMock()
+
+        async def _serialized_chat_full(_question: str) -> MagicMock:
+            async with llm_lock:
+                await asyncio.sleep(0.03)
+            return MagicMock()
+
+        pipeline.chat_full = AsyncMock(side_effect=_serialized_chat_full)
+
+        async def factory():
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                concurrent_chat_count=3,
+                concurrent_chat_timeout_s=0.05,
+            ),
+            pipeline_factory=factory,
+        )
+        result = await benchmark.run_concurrent_chats()
+        assert result.failures == 0
+        assert result.samples == 3
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_fails_when_batch_deadline_elapsed(self):
+        pipeline = _pipeline_mock()
+
+        async def factory():
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                concurrent_chat_count=1,
+                concurrent_chat_timeout_s=0.01,
+            ),
+            pipeline_factory=factory,
+        )
+        with patch(
+            "src.evals.e2e.infra_benchmark._remaining_timeout_or_raise",
+            side_effect=TimeoutError(),
+        ):
+            result = await benchmark.run_concurrent_chats()
+        assert result.failures == 1
         assert result.samples == 0
 
     @pytest.mark.asyncio
