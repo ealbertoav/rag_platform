@@ -8,7 +8,8 @@ Usage:
 
 Scenario 5 (concurrent feedback) lives in tests/benchmarks/test_feedback_concurrency.py.
 
-Exit code 0 when the run completes; 1 on error; 2 when --compare detects p95 regression.
+Exit code 0 when the run completes; 1 on error; 2 when --compare detects p95 regression
+or a baselined scenario failed/skipped.
 """
 
 from __future__ import annotations
@@ -68,15 +69,20 @@ async def run(args: argparse.Namespace) -> int:
 
     if args.compare:
         baseline = load_infra_baseline(thresholds.baseline_path)
-        warnings = compare_to_baseline(
+        comparison = compare_to_baseline(
             report.scenario_map(),
             baseline,
             regression_p95_pct=thresholds.regression_p95_pct,
         )
-        if warnings:
+        if comparison.failures:
+            print("\nBaseline scenario failures:")
+            for failure in comparison.failures:
+                print(f"  ✗ {failure.message()}")
+        if comparison.regressions:
             print(f"\nRegression warnings (> {thresholds.regression_p95_pct:.0f}% p95 increase):")
-            for warning in warnings:
+            for warning in comparison.regressions:
                 print(f"  ⚠ {warning.message()}")
+        if comparison.has_issues:
             return 2
         print("\nNo p95 regressions vs committed baseline.")
 

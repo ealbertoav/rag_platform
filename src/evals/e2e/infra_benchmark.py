@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "BaselineComparisonResult",
+    "BaselineScenarioFailure",
     "InfraBenchmark",
     "InfraBenchmarkReport",
     "InfraBenchmarkThresholds",
@@ -111,6 +113,25 @@ class RegressionWarning:
             + f"{self.pct_change:+.1f}% "
             + f"({self.baseline_value:.2f} → {self.current_value:.2f} ms)"
         )
+
+
+@dataclasses.dataclass
+class BaselineScenarioFailure:
+    scenario: str
+    reason: str
+
+    def message(self) -> str:
+        return f"{self.scenario}: baseline scenario failed ({self.reason})"
+
+
+@dataclasses.dataclass(frozen=True)
+class BaselineComparisonResult:
+    regressions: list[RegressionWarning]
+    failures: list[BaselineScenarioFailure]
+
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.regressions or self.failures)
 
 
 @dataclasses.dataclass
@@ -330,27 +351,37 @@ def compare_to_baseline(
     baseline: object,
     *,
     regression_p95_pct: float = 10.0,
-) -> list[RegressionWarning]:
-    """Return warnings when the current p95 exceeds the baseline by *regression_p95_pct* or more."""
+) -> BaselineComparisonResult:
+    """Compare current metrics to baseline p95 values and scenario health."""
     if not isinstance(baseline, dict):
-        return []
+        return BaselineComparisonResult(regressions=[], failures=[])
     raw_scenarios = baseline.get("scenarios")
     if not isinstance(raw_scenarios, dict):
-        return []
+        return BaselineComparisonResult(regressions=[], failures=[])
 
-    warnings: list[RegressionWarning] = []
+    regressions: list[RegressionWarning] = []
+    failures: list[BaselineScenarioFailure] = []
     for name, metrics in current.items():
-        if metrics.skipped or metrics.error:
-            continue
         base_entry = raw_scenarios.get(name)
         if not isinstance(base_entry, dict):
+            continue
+        if metrics.skipped:
+            failures.append(
+                BaselineScenarioFailure(
+                    scenario=name,
+                    reason=metrics.skip_reason or "skipped",
+                )
+            )
+            continue
+        if metrics.error:
+            failures.append(BaselineScenarioFailure(scenario=name, reason=metrics.error))
             continue
         base_p95 = base_entry.get("p95_ms")
         if not isinstance(base_p95, (int, float)) or isinstance(base_p95, bool) or base_p95 <= 0:
             continue
         pct_change = ((metrics.p95_ms - float(base_p95)) / float(base_p95)) * 100.0
         if pct_change > regression_p95_pct:
-            warnings.append(
+            regressions.append(
                 RegressionWarning(
                     scenario=name,
                     metric="p95_ms",
@@ -359,7 +390,7 @@ def compare_to_baseline(
                     pct_change=pct_change,
                 )
             )
-    return warnings
+    return BaselineComparisonResult(regressions=regressions, failures=failures)
 
 
 def build_bm25_fixture_chunks(count: int, *, needle_index: int | None = None) -> list[Chunk]:
@@ -512,7 +543,10 @@ class InfraBenchmark:
 
         async def _one_chat() -> float:
             started = time.monotonic()
-            await asyncio.wait_for(pipeline.chat_full(question), timeout=timeout_s)
+            await asyncio.wait_for(
+                pipeline.chat_full(question),
+                timeout=timeout_s,
+            )
             return (time.monotonic() - started) * 1000.0
 
         results = await asyncio.gather(*[_one_chat() for _ in range(count)], return_exceptions=True)

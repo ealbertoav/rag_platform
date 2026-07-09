@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -186,7 +187,12 @@ class AgentPipeline:
         run = await self._agentic_retrieve(question, max_iterations=max_iter)
         context = self._build_context(run.chunks)
         sources = [chunk_id for c in run.chunks for chunk_id in chunk_source_ids(c)]
-        answer = self._pipeline.generation.generate(question, context, sources)
+        answer = await asyncio.to_thread(
+            self._pipeline.generation.generate,
+            question,
+            context,
+            sources,
+        )
         elapsed = (time.monotonic() - t0) * 1000
         final_answer = answer.model_copy(
             update={

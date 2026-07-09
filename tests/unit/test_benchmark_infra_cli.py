@@ -83,6 +83,7 @@ class TestBenchmarkInfraCli:
     @pytest.mark.asyncio
     async def test_run_compare_regression_exit_code(self, tmp_path):
         from src.evals.e2e.infra_benchmark import (
+            BaselineComparisonResult,
             InfraBenchmarkReport,
             InfraBenchmarkThresholds,
             RegressionWarning,
@@ -115,7 +116,10 @@ class TestBenchmarkInfraCli:
             ),
             patch(
                 "src.evals.e2e.infra_benchmark.compare_to_baseline",
-                return_value=[RegressionWarning("bm25_100k", "p95_ms", 100.0, 200.0, 100.0)],
+                return_value=BaselineComparisonResult(
+                    regressions=[RegressionWarning("bm25_100k", "p95_ms", 100.0, 200.0, 100.0)],
+                    failures=[],
+                ),
             ),
             patch("src.core.constants.EXPORTS_DIR", tmp_path),
         ):
@@ -126,6 +130,7 @@ class TestBenchmarkInfraCli:
     @pytest.mark.asyncio
     async def test_run_compare_no_regression(self, tmp_path):
         from src.evals.e2e.infra_benchmark import (
+            BaselineComparisonResult,
             InfraBenchmarkReport,
             InfraBenchmarkThresholds,
             ScenarioMetrics,
@@ -155,12 +160,62 @@ class TestBenchmarkInfraCli:
                 "src.evals.e2e.infra_benchmark.load_infra_baseline",
                 return_value={"scenarios": {"bm25_100k": {"p95_ms": 2.0}}},
             ),
-            patch("src.evals.e2e.infra_benchmark.compare_to_baseline", return_value=[]),
+            patch(
+                "src.evals.e2e.infra_benchmark.compare_to_baseline",
+                return_value=BaselineComparisonResult(regressions=[], failures=[]),
+            ),
             patch("src.core.constants.EXPORTS_DIR", tmp_path),
         ):
             code = await cli.run(args)
 
         assert code == 0
+
+    @pytest.mark.asyncio
+    async def test_run_compare_scenario_failure_exit_code(self, tmp_path):
+        from src.evals.e2e.infra_benchmark import (
+            BaselineComparisonResult,
+            BaselineScenarioFailure,
+            InfraBenchmarkReport,
+            InfraBenchmarkThresholds,
+            ScenarioMetrics,
+        )
+
+        report = InfraBenchmarkReport(
+            timestamp="ts",
+            scenarios=[ScenarioMetrics("bm25_100k", p50_ms=0.0, p95_ms=0.0, error="index down")],
+        )
+        benchmark = MagicMock()
+        benchmark.run = AsyncMock(return_value=report)
+        thresholds = InfraBenchmarkThresholds(
+            regression_p95_pct=10.0,
+            baseline_path=tmp_path / "baseline.json",
+        )
+
+        args = argparse.Namespace(
+            scenarios="bm25_100k",
+            compare=True,
+            save_baseline=False,
+        )
+
+        with (
+            patch("src.evals.e2e.infra_benchmark.InfraBenchmark", return_value=benchmark),
+            patch("src.evals.e2e.infra_benchmark.load_infra_thresholds", return_value=thresholds),
+            patch(
+                "src.evals.e2e.infra_benchmark.load_infra_baseline",
+                return_value={"scenarios": {"bm25_100k": {"p95_ms": 2.0}}},
+            ),
+            patch(
+                "src.evals.e2e.infra_benchmark.compare_to_baseline",
+                return_value=BaselineComparisonResult(
+                    regressions=[],
+                    failures=[BaselineScenarioFailure("bm25_100k", "index down")],
+                ),
+            ),
+            patch("src.core.constants.EXPORTS_DIR", tmp_path),
+        ):
+            code = await cli.run(args)
+
+        assert code == 2
 
     @pytest.mark.asyncio
     async def test_run_save_baseline(self, tmp_path):

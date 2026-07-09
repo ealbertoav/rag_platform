@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +14,8 @@ import yaml
 
 from src.domain.entities.chunk import Chunk
 from src.evals.e2e.infra_benchmark import (
+    BaselineComparisonResult,
+    BaselineScenarioFailure,
     InfraBenchmark,
     InfraBenchmarkReport,
     InfraBenchmarkThresholds,
@@ -244,49 +248,70 @@ class TestCompareToBaseline:
     def test_no_regression(self):
         current = {"streaming_chat": _scenario("streaming_chat", p95=20.0)}
         baseline = {"scenarios": {"streaming_chat": {"p95_ms": 20.0}}}
-        assert compare_to_baseline(current, baseline, regression_p95_pct=10.0) == []
+        result = compare_to_baseline(current, baseline, regression_p95_pct=10.0)
+        assert result == BaselineComparisonResult(regressions=[], failures=[])
 
     def test_detects_regression(self):
         current = {"streaming_chat": _scenario("streaming_chat", p95=25.0)}
         baseline = {"scenarios": {"streaming_chat": {"p95_ms": 20.0}}}
-        warnings = compare_to_baseline(current, baseline, regression_p95_pct=10.0)
-        assert len(warnings) == 1
-        assert warnings[0].pct_change == 25.0
+        result = compare_to_baseline(current, baseline, regression_p95_pct=10.0)
+        assert len(result.regressions) == 1
+        assert result.regressions[0].pct_change == 25.0
 
     def test_skips_missing_baseline_scenario(self):
         current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
-        assert compare_to_baseline(current, {"scenarios": {}}, regression_p95_pct=10.0) == []
+        result = compare_to_baseline(current, {"scenarios": {}}, regression_p95_pct=10.0)
+        assert result == BaselineComparisonResult(regressions=[], failures=[])
 
     def test_skips_invalid_baseline(self):
         current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
-        assert compare_to_baseline(current, {}, regression_p95_pct=10.0) == []
+        result = compare_to_baseline(current, {}, regression_p95_pct=10.0)
+        assert result == BaselineComparisonResult(regressions=[], failures=[])
 
     def test_skips_non_dict_scenarios_section(self):
         current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
-        assert compare_to_baseline(current, {"scenarios": []}, regression_p95_pct=0.0) == []
+        result = compare_to_baseline(current, {"scenarios": []}, regression_p95_pct=0.0)
+        assert result == BaselineComparisonResult(regressions=[], failures=[])
 
     def test_skips_non_dict_baseline_object(self):
         current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
-        assert compare_to_baseline(current, "not-a-dict", regression_p95_pct=0.0) == []
+        result = compare_to_baseline(current, "not-a-dict", regression_p95_pct=0.0)
+        assert result == BaselineComparisonResult(regressions=[], failures=[])
 
     def test_skips_invalid_baseline_p95(self):
         current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
         baseline = {"scenarios": {"bm25_100k": {"p95_ms": True}}}
-        assert compare_to_baseline(current, baseline, regression_p95_pct=0.0) == []
+        assert compare_to_baseline(current, baseline, regression_p95_pct=0.0).regressions == []
         baseline_zero = {"scenarios": {"bm25_100k": {"p95_ms": 0}}}
-        assert compare_to_baseline(current, baseline_zero, regression_p95_pct=0.0) == []
+        assert compare_to_baseline(current, baseline_zero, regression_p95_pct=0.0).regressions == []
 
-    def test_skips_skipped_and_error_scenarios(self):
+    def test_detects_skipped_and_error_scenarios(self):
         current = {
-            "a": _scenario("a", skipped=True, skip_reason="x"),
-            "b": _scenario("b", error="x"),
+            "a": _scenario("a", skipped=True, skip_reason="neo4j down"),
+            "b": _scenario("b", error="boom"),
         }
         baseline = {"scenarios": {"a": {"p95_ms": 1}, "b": {"p95_ms": 1}}}
-        assert compare_to_baseline(current, baseline, regression_p95_pct=0.0) == []
+        result = compare_to_baseline(current, baseline, regression_p95_pct=0.0)
+        assert len(result.failures) == 2
+        assert result.failures[0].reason == "neo4j down"
+        assert result.failures[1].reason == "boom"
 
     def test_regression_warning_message(self):
         warning = RegressionWarning("s", "p95_ms", 10.0, 15.0, 50.0)
         assert "s.p95_ms" in warning.message()
+
+    def test_baseline_scenario_failure_message(self):
+        failure = BaselineScenarioFailure("bm25_100k", "index missing")
+        assert "bm25_100k" in failure.message()
+        assert "index missing" in failure.message()
+
+    def test_comparison_result_has_issues(self):
+        result = BaselineComparisonResult(
+            regressions=[RegressionWarning("s", "p95_ms", 1.0, 2.0, 100.0)],
+            failures=[],
+        )
+        assert result.has_issues is True
+        assert BaselineComparisonResult(regressions=[], failures=[]).has_issues is False
 
 
 class TestBuildBm25FixtureChunks:
@@ -477,6 +502,30 @@ class TestInfraBenchmarkScenarios:
             pipeline_factory=factory,
         ).run_concurrent_chats()
         assert result.error == "pipeline load failed"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_enforces_timeout(self):
+        pipeline = MagicMock()
+
+        async def _slow_chat_full(_question: str) -> MagicMock:
+            await asyncio.to_thread(time.sleep, 0.05)
+            return MagicMock()
+
+        pipeline.chat_full = AsyncMock(side_effect=_slow_chat_full)
+
+        async def factory():
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                concurrent_chat_count=2,
+                concurrent_chat_timeout_s=0.01,
+            ),
+            pipeline_factory=factory,
+        )
+        result = await benchmark.run_concurrent_chats()
+        assert result.failures == 2
+        assert result.samples == 0
 
     @pytest.mark.asyncio
     async def test_concurrent_chats_no_factory(self):
