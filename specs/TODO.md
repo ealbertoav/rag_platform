@@ -4,10 +4,9 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 17 — Code Quality & Type Safety. **T-171 complete** (PR #39). **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16 complete** — T-160–T-165 (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
+> **Current focus:** Phase 17 complete — **T-172** ✅ (PR #41). **T-171** ✅ (PR #39). **T-173** ✅. **Phase 15** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16** — T-160–T-165 complete (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
 >
-> **Next tasks (recommended order):**
-> 1. **T-173** — Basedpyright warning burn-down & mode progression (follow-up to T-171 CI config)
+> **All planned specification tasks complete.** Ongoing maintenance: refresh `data/exports/infra_baseline.json` on target hardware after Phase 16 changes; extend golden datasets as the corpus grows.
 
 ---
 
@@ -1771,7 +1770,7 @@
   | Per-pod BM25 metadata drift under multi-replica | Medium | **Fixed** — Qdrant is write source of truth; boost reads `vector_store.get_feedback_scores` | — | T-145 hardening |
   | CAS retry insufficient under extreme same-chunk contention | Low | **Mitigated** — use `backend: redis` for HINCRBYFLOAT | Feedback drives ranking in prod **and** load tests show lost increments | T-146 |
   | No rate limit on `/feedback` | Medium | **Fixed** — T-160 middleware includes `/feedback` when enabled | Public API or abuse observed | **T-160** |
-  | No multi-pod feedback load test / baseline | Low | **Fixed** — `tests/benchmarks/test_feedback_concurrency.py` | Before enabling Helm HPA in prod | **T-172** |
+  | No multi-pod feedback load test / baseline | Low | **Fixed** — `test_feedback_concurrency.py` (scenario 5) + T-172 infra suite | Before enabling Helm HPA in prod | T-172 ✅ |
   | Shared BM25 PVC last-writer-wins on shutdown save | Low | **Mitigated** — skip BM25 save when unchanged | Multiple API replicas share BM25 persistence volume | T-146 |
   | True atomic increment (Redis / Postgres) | Low | **Fixed** — `quality.feedback_loop.backend: redis \| postgres` | Business-critical feedback under heavy multi-pod load | T-146 |
 
@@ -1805,7 +1804,7 @@
   - Local dev, Docker Compose single `api` container, `uvicorn --workers 1`
   - Production with `replicaCount.api: 1` and normal human feedback volume
 - **Do not deploy without T-146 + T-160 progress:**
-  - Public-facing API with Helm HPA (`minReplicas ≥ 2`) and business-critical feedback-driven ranking **without** `api.rate_limit.enabled=true` and a concurrency baseline (`tests/benchmarks/test_feedback_concurrency.py` or **T-172** scenario 5)
+  - Public-facing API with Helm HPA (`minReplicas ≥ 2`) and business-critical feedback-driven ranking **without** `api.rate_limit.enabled=true` and a concurrency baseline (`test_feedback_concurrency.py` or T-172 `make benchmark-infra`)
 
 ---
 
@@ -1943,7 +1942,7 @@
 >
 > **Depends on:** Phase 3 (T-032 API), Phase 6 (T-061 CI), Phase 8 (T-082 Docker), Phase 9 (T-095 Ingress)
 >
-> **Progress:** T-160 complete · T-161 complete · T-162 complete (PR #34) · T-163 complete · T-164 complete (PR #36) · T-165 complete (PR #37)
+> **Progress:** T-160 complete · T-161 complete · T-162 complete (PR #34) · T-163 complete · T-164 complete (PR #36) · T-165 complete (PR #37) · **T-172** infra baselines (PR #41) for measuring optimizations
 
 ---
 
@@ -2114,6 +2113,8 @@
 > **Reference:** `CODE_ANALYSIS_REPORT.md` — Type Safety Gaps, Code Quality
 >
 > **Depends on:** Phase 6 (T-060, T-061), Phase 12 (T-120–T-124 — source of recent type regressions)
+>
+> **Progress:** T-170 ✅ · T-171 ✅ (PR #39) · T-172 ✅ (PR #41) · T-173 ✅
 
 ---
 
@@ -2213,34 +2214,51 @@
   - [x] `failOnWarnings` remains `false` until Phase 5 done; document flip criteria in `docs/type-safety.md`
   - [x] No new `# type: ignore` in `src/`; mypy strict remains exit 0
   - [x] README lint workflow mentions basedpyright mode progression (link to `docs/type-safety.md`)
-- **Notes:** T-171 intentionally kept basedpyright as an **error-level complement** to mypy — not a second strict gate. Linux CI failed with `0 errors, 427 warnings, exit 1` because basedpyright defaults to `recommended` + `failOnWarnings = true`; most CI warnings were `reportUnannotatedClassAttribute`, not runtime bugs. This task is ~2–3 sessions if done in full; phases 2–3 can ship as a small PR (~1 session). Can run **in parallel** with T-172 (no dependency). Reuse T-152 baseline pattern: commit `.basedpyright/baseline.json`, burn down, shrink baseline each PR.
+- **Notes:** T-171 intentionally kept basedpyright as an **error-level complement** to mypy — not a second strict gate. Linux CI failed with `0 errors, 427 warnings, exit 1` because basedpyright defaults to `recommended` + `failOnWarnings = true`; most CI warnings were `reportUnannotatedClassAttribute`, not runtime bugs. Completed in parallel with **T-172** (PR #41). Reuse T-152 baseline pattern: commit `.basedpyright/baseline.json`, burn down, shrink baseline each PR.
 
 ---
 
 ### T-172 · Performance Baseline & Regression Benchmark
-- **Status:** `[x]`
+- **Status:** `[x]` _(PR #41)_
 - **Goal:** Establish baseline latency/throughput metrics for the infrastructure bottlenecks flagged in the code analysis (LLM streaming, BM25 memory, Neo4j sync, feedback concurrency) so Phase 16 optimizations can be measured.
 - **Inputs:** T-043 (`RAGBenchmark`), T-051 (Prometheus metrics), T-146 (feedback hardening), T-160 (rate limiting), T-163–T-165 (optimization targets)
 - **Outputs:** Benchmark script and CI-optional regression check for p50/p95 latency under concurrent load.
 - **Files:**
-  - `scripts/benchmark_infra.py` — concurrent chat + ingest load test _(done)_
-  - `src/evals/e2e/infra_benchmark.py` — orchestrates scenarios _(done)_
-  - `configs/evals.yaml` — add `infra_benchmark` thresholds _(done)_
-  - `data/exports/infra_baseline.json` — committed baseline for comparison _(done)_
-  - `tests/benchmarks/test_infra_benchmark.py` — skip in CI unless `RUN_INFRA_BENCHMARK=1` _(done)_
+  - `scripts/benchmark_infra.py` — CLI (`--scenarios`, `--compare`, `--save-baseline`, `--llm-config`) _(done)_
+  - `src/evals/e2e/infra_benchmark.py` — `InfraBenchmark` orchestrator, baseline merge/save, `compare_to_baseline` _(done)_
+  - `src/rag/pipelines/chat_pipeline.py` — `asyncio.to_thread` for blocking LLM calls in `chat_full` (concurrent scenario health) _(done)_
+  - `src/rag/pipelines/agent_pipeline.py` — same for agent `chat_full` _(done)_
+  - `configs/evals.yaml` — `evals.infra_benchmark` thresholds _(done)_
+  - `data/exports/infra_baseline.json` — committed baseline (BM25 @ 100K; merge on `--save-baseline`) _(done)_
+  - `.gitignore` — allowlist `infra_baseline.json` under `data/exports/` _(done)_
+  - `Makefile` — `benchmark-infra` target _(done)_
+  - `tests/benchmarks/test_infra_benchmark.py` — live integration (`RUN_INFRA_BENCHMARK=1`) _(done)_
+  - `tests/unit/test_infra_benchmark.py` — unit coverage for scenarios, baseline compare, percentile helpers _(done)_
+  - `tests/unit/test_benchmark_infra_cli.py` — CLI exit codes and flag wiring _(done)_
   - `tests/benchmarks/test_feedback_concurrency.py` — scenario 5: concurrent feedback on same `chunk_id` across simulated pods _(done · T-146)_
+  - `README.md` — T-172 section, Evaluation Framework mermaid, project tree _(done)_
 - **Scenarios:**
-  1. Single streaming chat — p50/p95 token latency
-  2. 10 concurrent chats — event-loop health (no timeout failures)
-  3. BM25 search on 100K chunk fixture — memory + latency
-  4. Graph retrieval with Neo4j enabled — query latency
+  1. Single streaming chat — p50/p95 inter-token latency (`streaming_chat`)
+  2. 10 concurrent chats — event-loop health via parallel `chat_full`; failure count (`concurrent_chats`)
+  3. BM25 search on 100K chunk fixture — disk index build + search latency + resident memory (`bm25_100k`)
+  4. Graph retrieval with Neo4j enabled — entity lookup latency (`graph_retrieval`; skipped when disabled)
   5. Concurrent feedback on same `chunk_id` across simulated API pods — zero-lost increments (**T-146**; validates Qdrant CAS / Redis backend under load) — **implemented** in `test_feedback_concurrency.py`
+- **Usage:**
+  ```bash
+  make benchmark-infra
+  uv run python scripts/benchmark_infra.py --compare
+  uv run python scripts/benchmark_infra.py --save-baseline
+  uv run python scripts/benchmark_infra.py --scenarios bm25_100k
+  RUN_INFRA_BENCHMARK=1 uv run pytest tests/benchmarks/test_infra_benchmark.py -v -s
+  uv run pytest tests/unit/test_infra_benchmark.py tests/unit/test_benchmark_infra_cli.py -v
+  ```
 - **Acceptance Criteria:**
-  - [x] Baseline captured and committed — **unblocked** (T-170/T-171 complete); **next: T-172**
+  - [x] Baseline captured and committed (`data/exports/infra_baseline.json`)
   - [x] Scenario 5 runnable independently via `pytest tests/benchmarks/test_feedback_concurrency.py`
-  - [x] `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
+  - [x] `--compare` reports p95 regression (>10%), failure-count increase, or skipped/errored baselined scenarios (exit 2)
   - [x] `make benchmark-infra` documented in README
   - [x] Results saved to `data/exports/infra_benchmark_{timestamp}.json`
+- **Notes:** `InfraBenchmark` caches one `ChatPipeline` per run and shares its LLM with `GraphRetriever` when possible. Concurrent batch timeout scales as `concurrent_chat_timeout_s × concurrent_chat_count` because llama.cpp serializes inference behind a process-wide lock. `bm25_100k` builds a temp `DiskBM25Index` (T-165) with a deterministic 100K-chunk fixture — no Qdrant/LLM required. `--save-baseline` merges new scenario metrics into the committed baseline without dropping unrelated entries. CLI exit codes: `0` success, `1` error, `2` regression detected.
 
 ---
 
@@ -2318,4 +2336,4 @@ T-163 + T-164 + T-165 ──► T-172
 14. **Phase 14 — Priority 4 (Quality Gates & Explainability):** T-140 → T-141 → T-142 → T-143 → T-144 → T-145 → **T-146** _(~2 sessions + hardening follow-up)_
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
-17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → **T-172** · **T-173** _(T-172 scenario 5 done; T-173 basedpyright burn-down unblocked after T-171; can run in parallel)_
+17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → T-172 ✅ (PR #41) → T-173 ✅ _(Phase 17 complete)_

@@ -26,7 +26,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Chunk size sweep (T-151):** Automate chunk-size tuning by benchmarking multiple `chunk_size` values on the golden QA dataset — each size gets an isolated Qdrant collection (`rag_documents_cs{size}`), optional on-disk chunk/BM25 caches, and a weighted recommendation across Recall@5, Faithfulness, Relevance, and latency. Results export to `data/exports/chunk_size_sweep_{timestamp}.json`. See [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151).
 
-> **Infra performance baseline (T-172):** Capture p50/p95 latency for streaming chat, concurrent chats, 100K-chunk BM25 search, and Neo4j graph retrieval. Results export to `data/exports/infra_benchmark_{timestamp}.json`; committed thresholds live in `data/exports/infra_baseline.json`. Use `--compare` to warn when p95 regresses more than 10% vs baseline. Scenario 5 (concurrent feedback) is covered separately in `tests/benchmarks/test_feedback_concurrency.py`. See [Infrastructure Performance Baseline (T-172)](#infrastructure-performance-baseline-t-172).
+> **Infra performance baseline (T-172):** Capture p50/p95 latency for streaming chat, concurrent chats, 100K-chunk disk BM25 search, and Neo4j graph retrieval. Results export to `data/exports/infra_benchmark_{timestamp}.json`; committed comparison baseline in `data/exports/infra_baseline.json`. `--compare` warns on >10% p95 regression or increased failure counts (exit 2). Scenario 5 (concurrent feedback) lives in `tests/benchmarks/test_feedback_concurrency.py`. See [Infrastructure Performance Baseline (T-172)](#infrastructure-performance-baseline-t-172).
 
 > **Golden dataset & CI eval gates (T-152):** Populate and validate `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json` via `make evals` (requires `make ingest` first; filters placeholders, expands chunks until ≥ 20 evaluable QA pairs). Sync retrieval goldens without LLM regeneration via `make sync-retrieval-goldens`. CI runs `scripts/check_regression_gate.py` when real data is committed — enforces QA/retrieval sync, minimum sample counts, and per-row oracle Recall@5 floors from `retrieval_baseline.json`. Extend evals with human-in-the-loop feedback via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152).
 
@@ -359,7 +359,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
-| `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151) |
+| `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
 | `configs/logging.yaml` | Log level, format (json/text), OTel endpoint |
 | `configs/cve-allowlist.yaml` | Accepted CVE allowlist with review dates for `make audit-deps` (T-161/T-162) |
 
@@ -897,6 +897,8 @@ uv run python scripts/benchmark.py \
   --relev-threshold 0.75
 ```
 
+For infrastructure latency baselines (streaming, concurrency, BM25 @ 100K, graph) rather than RAG quality metrics, use `make benchmark-infra` — see [Infrastructure Performance Baseline (T-172)](#infrastructure-performance-baseline-t-172).
+
 ### Compare Models
 
 Run the same benchmark against multiple LLM profiles and see a side-by-side results table:
@@ -1044,36 +1046,83 @@ When the golden file contains only placeholder `chunk_id_*` rows, the script exi
 
 ### Infrastructure Performance Baseline (T-172)
 
-Establish infrastructure latency baselines for Phase 16 optimization work: LLM streaming inter-token delay, concurrent chat event-loop health, BM25 search at 100K chunks (memory + latency), and Neo4j graph retrieval. Scenario 5 — concurrent feedback on the same `chunk_id` across simulated API pods — lives in `tests/benchmarks/test_feedback_concurrency.py` (T-146).
+Establish infrastructure latency baselines for Phase 16 optimization work: LLM streaming inter-token delay, concurrent chat event-loop health, disk BM25 search at 100K chunks (memory + latency), and Neo4j graph retrieval. `InfraBenchmark` (`src/evals/e2e/infra_benchmark.py`) orchestrates scenarios; the CLI is `scripts/benchmark_infra.py`. Scenario 5 — concurrent feedback on the same `chunk_id` across simulated API pods — lives in `tests/benchmarks/test_feedback_concurrency.py` (T-146).
+
+**Workflow** (see also [Evaluation Framework](#evaluation-framework)):
+
+```mermaid
+flowchart LR
+    CLI["make benchmark-infra<br/>scripts/benchmark_infra.py"] --> CFG["configs/evals.yaml<br/>evals.infra_benchmark"]
+    CFG --> ORCH["InfraBenchmark"]
+    ORCH --> S1["streaming_chat<br/>inter-token p50/p95"]
+    ORCH --> S2["concurrent_chats<br/>N × chat_full<br/>failure count"]
+    ORCH --> S3["bm25_100k<br/>DiskBM25Index fixture<br/>memory + search latency"]
+    ORCH --> S4["graph_retrieval<br/>Neo4j entity lookup<br/>skip if disabled"]
+    S1 & S2 --> PIPE["ChatPipeline<br/>cached per run"]
+    S4 --> GRAPH["GraphRetriever<br/>reuses pipeline LLM"]
+    ORCH --> OUT[("data/exports<br/>infra_benchmark_{ts}.json")]
+    OUT --> CMP{"--compare?"}
+    BASE[("infra_baseline.json")] --> CMP
+    CMP -->|p95 or failures regressed| EXIT2["exit 2 ⚠"]
+    CMP -->|ok| EXIT0["exit 0 ✅"]
+```
 
 ```bash
 # Default scenarios: streaming_chat, concurrent_chats, bm25_100k, graph_retrieval
 make benchmark-infra
 
-# Compare against committed baseline (exit 2 when p95 regresses >10%)
+# Compare against committed baseline (exit 2 on regression)
 uv run python scripts/benchmark_infra.py --compare
 
-# Refresh committed baseline after a full live run
+# Refresh committed baseline after a full live run (merges into existing entries)
 uv run python scripts/benchmark_infra.py --save-baseline
 
-# Run a subset (BM25 only — no LLM/Qdrant required for indexing fixture)
+# Run a subset (BM25 only — no LLM/Qdrant required)
 uv run python scripts/benchmark_infra.py --scenarios bm25_100k
+
+# Swap LLM profile before pipeline scenarios (same as make benchmark)
+uv run python scripts/benchmark_infra.py --llm-config configs/llm/qwen3-14b.yaml
 
 # Optional live integration tests (skipped in CI by default)
 RUN_INFRA_BENCHMARK=1 uv run pytest tests/benchmarks/test_infra_benchmark.py -v -s
+
+# Fast unit coverage (no live services)
+uv run pytest tests/unit/test_infra_benchmark.py tests/unit/test_benchmark_infra_cli.py -v
 ```
 
 **Scenarios** (thresholds in `configs/evals.yaml` → `evals.infra_benchmark`):
 
 | Scenario | What it measures |
 |---|---|
-| `streaming_chat` | Inter-token p50/p95 on a single streamed chat |
+| `streaming_chat` | Inter-token p50/p95 on a single streamed `chat()` (time-to-first-token excluded) |
 | `concurrent_chats` | End-to-end latency for N parallel `chat_full` calls; failure count |
-| `bm25_100k` | Disk BM25 index build + search on a 100K-chunk fixture; resident memory |
+| `bm25_100k` | Temp `DiskBM25Index` build + search on a 100K-chunk fixture; resident memory |
 | `graph_retrieval` | Neo4j entity lookup latency (skipped when graph is disabled/unreachable) |
 | *(scenario 5)* | Concurrent feedback CAS — `tests/benchmarks/test_feedback_concurrency.py` |
 
-**Output:** Rich summary table + `data/exports/infra_benchmark_{timestamp}.json`. Committed comparison baseline: `data/exports/infra_baseline.json` (BM25 captured at 100K chunks; refresh streaming/concurrent/graph entries via `--save-baseline` on your target hardware).
+**Default thresholds** (`configs/evals.yaml` → `evals.infra_benchmark`):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `regression_p95_pct` | `10` | `--compare` warns when p95 increases more than this % vs baseline |
+| `concurrent_chat_count` | `10` | Parallel `chat_full` requests in scenario 2 |
+| `concurrent_chat_timeout_s` | `120` | Per-request generation budget; batch timeout scales × N for serialized LLM |
+| `bm25_fixture_chunks` | `100000` | Fixture corpus size for `bm25_100k` |
+| `bm25_search_iterations` | `20` | Search repetitions measured for p50/p95 |
+| `graph_search_iterations` | `10` | Graph lookup repetitions |
+| `baseline_path` | `data/exports/infra_baseline.json` | Committed comparison file |
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Run completed; `--compare` found no regressions |
+| `1` | CLI or runtime error |
+| `2` | `--compare` detected p95 regression (>10%), failure-count increase, or a baselined scenario skipped/errored |
+
+**Output:** Rich summary table + `data/exports/infra_benchmark_{timestamp}.json`. Committed comparison baseline: `data/exports/infra_baseline.json` (BM25 captured at 100K chunks; refresh streaming/concurrent/graph entries via `--save-baseline` on your target hardware — merges without dropping unrelated scenario entries).
+
+**Implementation notes:** `ChatPipeline.chat_full` and `AgentPipeline.chat_full` offload blocking LLM work via `asyncio.to_thread` so concurrent chat scenarios measure event-loop health under parallel requests. `InfraBenchmark` caches one pipeline per run and reuses its LLM for `GraphRetriever` when available. The concurrent batch deadline is `concurrent_chat_timeout_s × concurrent_chat_count` because llama.cpp serializes inference behind a process-wide lock.
 
 ---
 
@@ -1890,7 +1939,7 @@ rag_implementation/
 ├── data/                       # Runtime data (gitignored)
 │   ├── raw/                    # Source documents to ingest
 │   ├── processed/              # BM25 memory JSON / optional bm25_disk/ (T-165)
-│   └── exports/                # Benchmark results (.json)
+│   └── exports/                # Benchmark results (.json); infra_baseline.json committed (T-172)
 ├── datasets/
 │   ├── goldens/                # Golden QA + retrieval datasets + regression baseline (T-152)
 │   │   ├── qa_dataset.json
@@ -1942,6 +1991,7 @@ rag_implementation/
 │   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
 │   ├── benchmark_techniques.py # Technique matrix CLI (T-150)
 │   ├── benchmark_chunk_sizes.py # Chunk size sweep CLI (T-151)
+│   ├── benchmark_infra.py      # Infrastructure latency baseline CLI (T-172)
 │   └── compare_models.py       # Multi-model comparison table
 ├── specs/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
@@ -1954,7 +2004,7 @@ rag_implementation/
 │   │   ├── regression_gate.py  # CI regression gate logic (T-152)
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
-│   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · benchmark_samples helpers
+│   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · InfraBenchmark (T-172) · benchmark_samples helpers
 │   ├── infrastructure/         # BGE-M3, Qdrant, BM25 (+ disk backend T-165), feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search
 │   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
@@ -2114,8 +2164,11 @@ make test
 make qdrant-up
 uv run pytest tests/integration/test_qdrant.py -v
 
-# Benchmark suite (E2E, technique matrix, chunk size sweep, feedback concurrency)
+# Benchmark suite (E2E, technique matrix, chunk size sweep, infra latency, feedback concurrency)
 uv run pytest tests/benchmarks/ -v -s
+
+# Infra latency benchmarks only (optional live run; skipped in CI by default)
+RUN_INFRA_BENCHMARK=1 uv run pytest tests/benchmarks/test_infra_benchmark.py -v -s
 
 # Lint gate + type regression (T-171)
 uv run pytest tests/unit/test_lint_gate.py tests/unit/test_type_regression.py -v
@@ -2750,7 +2803,7 @@ Per-request retrieval constraints for scoped Q&A — inspired by multi-faceted f
 
 ## Evaluation Framework
 
-The platform ships four evaluation layers: synthetic dataset generation (T-040), retrieval metrics (T-041), generation metrics (T-042), end-to-end benchmarking (T-043/T-044), optional **technique comparison** (T-150) for side-by-side RAG configuration tuning, **chunk size optimization** (T-151) for corpus-specific chunking tuning, and **golden dataset hardening** (T-152) for placeholder filtering, QA/retrieval sync, and CI regression gates.
+The platform ships four evaluation layers: synthetic dataset generation (T-040), retrieval metrics (T-041), generation metrics (T-042), end-to-end benchmarking (T-043/T-044), optional **technique comparison** (T-150) for side-by-side RAG configuration tuning, **chunk size optimization** (T-151) for corpus-specific chunking tuning, **infrastructure performance baselines** (T-172) for Phase 16 latency regression checks, and **golden dataset hardening** (T-152) for placeholder filtering, QA/retrieval sync, and CI regression gates.
 
 ```mermaid
 flowchart LR
@@ -2820,12 +2873,22 @@ flowchart LR
         GATE2 --> CI2["check_regression_gate.py<br/>CI job 4"]
     end
 
+    subgraph INFRA["⚡ Infra Benchmark (T-172)"]
+        ORCH2["InfraBenchmark scenarios<br/>streaming · concurrent · BM25 · graph"] --> MET4["p50/p95 · failures · memory"]
+        MET4 --> IB[("data/exports<br/>infra_benchmark_{ts}.json")]
+        IB --> CMP2{"--compare?"}
+        BASE3[("infra_baseline.json")] --> CMP2
+        CMP2 -->|regression| WARN["exit 2 ⚠"]
+        CMP2 -->|ok| OK["exit 0 ✅"]
+    end
+
     GEN --> RET
     GEN --> GEN2
     GEN --> E2E
     GEN --> GOLDEN
     E2E --> TECH
     E2E --> SWEEP
+    E2E --> INFRA
 ```
 
 ---
