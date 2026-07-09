@@ -183,6 +183,8 @@ reportUnknownMemberType = false
 search-path = ["src", "scripts"]
 # Optional runtime deps — install via uv sync --extra api-embeddings / graph / evals.
 ignore-missing-imports = [
+    "docling",
+    "docling.*",
     "cohere",
     "cohere.*",
     "openai",

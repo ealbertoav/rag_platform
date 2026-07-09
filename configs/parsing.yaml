@@ -1,7 +1,10 @@
 parsing:
   layout_parser:
-    enabled: false              # layout-aware parsing (T-200+); off by default
-    provider: docling           # docling | future providers
+    enabled: false              # T-200 DoclingLayoutParser; off by default (plain loaders)
+    provider: docling           # docling (install separately: uv pip install docling)
+    # When enabled, .pdf and .docx route through DoclingLayoutParser → ParsedDocument
+    # before chunking. Metadata includes sections, tables (table_id), and figures
+    # (figure_id, bbox, page) for downstream multimodal chunking (T-202+).
   ocr:
     enabled: false              # OCR pipeline (T-220+); off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

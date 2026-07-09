@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 19 complete — **T-190** ✅ (parsing contracts). **Next:** Phase 20 — Layout-Aware Document Parsing (**T-200–T-202**). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 20 in progress — **T-200** ✅ (DoclingLayoutParser). **Next:** T-201–T-202. Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2338,7 +2338,7 @@
 > | Phase | Priority | Tasks | Depends on | Status |
 > |-------|----------|-------|------------|--------|
 > | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
-> | **20** | 10 | T-200 → T-202 | Phase 19 | pending |
+> | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201–T-202 pending |
 > | **21** | 11 | T-210 | Phases 19–20 | pending |
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | pending |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
@@ -2393,7 +2393,7 @@
 ---
 
 ### T-200 · Layout-Aware Parser — Docling (Primary)
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Implement `DoclingLayoutParser` for PDF/DOCX.
 - **Inputs:** T-190, T-010
 - **Outputs:** `DoclingLayoutParser` + loader delegation
