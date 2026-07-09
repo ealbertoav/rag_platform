@@ -105,6 +105,8 @@ class IngestionPipeline:
 
         if self._metadata is not None:
             existing = self._metadata.get_by_source(source)
+            if existing is not None:
+                document = document.model_copy(update={"id": existing.id})
             if existing is not None and existing.content_hash == doc_hash:
                 if self._requires_full_reindex_on_skip():
                     old_chunk_ids = self._metadata.get_chunk_ids(existing.id)

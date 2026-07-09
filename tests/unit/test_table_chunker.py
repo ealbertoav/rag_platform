@@ -132,6 +132,41 @@ def _run_skip_table_chunker_ingest(
     return result, service, vector_store, bm25, metadata
 
 
+def _doc_with_sample_table(source: str) -> Document:
+    return _doc(
+        source=source,
+        tables=[{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}],
+    )
+
+
+def _run_skip_with_indexed_table_chunks(
+    path: Path,
+    document: Document,
+) -> tuple[IngestionResult, MagicMock, MagicMock, MagicMock]:
+    table = _embedded_table_chunk(document)
+    table_chunker = MagicMock()
+    table_chunker.index.return_value = [table]
+    result, service, vector_store, bm25, _ = _run_skip_table_chunker_ingest(
+        path,
+        document,
+        table_chunker=table_chunker,
+        chunk_ids=["text-chunk-1", table.id],
+    )
+    return result, service, vector_store, bm25
+
+
+def _assert_skip_without_reindex(
+    result: IngestionResult,
+    service: MagicMock,
+    vector_store: MagicMock,
+    bm25: MagicMock,
+) -> None:
+    assert result.skipped is True
+    service.prepare.assert_not_called()
+    vector_store.upsert.assert_not_called()
+    bm25.add.assert_not_called()
+
+
 class TestIsTableChunk:
     def test_true_for_table_type(self) -> None:
         assert is_table_chunk(_table_chunk()) is True
@@ -191,7 +226,15 @@ class TestBuildTableChunks:
         second = build_table_chunks(document)
         assert len(first) == 1
         assert first[0].id == second[0].id
-        assert first[0].id == table_chunk_id(document.id, "table-1")
+        assert first[0].id == table_chunk_id(document.source, "table-1")
+
+    def test_table_chunk_ids_stable_across_document_reload(self) -> None:
+        source = "/tmp/report.pdf"
+        tables = [{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}]
+        first_load = _doc(source=source, tables=tables)
+        reloaded = _doc(source=source, tables=tables)
+        assert first_load.id != reloaded.id
+        assert build_table_chunks(first_load)[0].id == build_table_chunks(reloaded)[0].id
 
     def test_returns_empty_without_tables_metadata(self) -> None:
         assert build_table_chunks(_doc()) == []
@@ -441,6 +484,8 @@ class TestIngestionPipelineTableChunks:
         assert result.skipped is False
         service.prepare.assert_not_called()
         table_chunker.index.assert_called_once()
+        indexed_document = table_chunker.index.call_args.args[0]
+        assert indexed_document.id == "doc-1"
         vector_store.upsert.assert_called_once()
         upserted = vector_store.upsert.call_args.args[0]
         assert len(upserted) == 1
@@ -450,33 +495,49 @@ class TestIngestionPipelineTableChunks:
         _, _, merged_ids = metadata.upsert_document.call_args.args
         assert merged_ids == ["text-chunk-1", table.id]
 
-    def test_skip_skips_when_table_chunks_already_indexed(self, tmp_path: Path) -> None:
+    def test_skip_unchanged_without_table_chunker(self, tmp_path: Path) -> None:
         path = _report_pdf_path(tmp_path)
-        document = _doc(
-            source=str(path.resolve()),
-            tables=[{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}],
-        )
-        table = _embedded_table_chunk(document)
-        table_chunker = MagicMock()
-        table_chunker.index.return_value = [table]
-        result, service, vector_store, bm25, _ = _run_skip_table_chunker_ingest(
-            path,
-            document,
-            table_chunker=table_chunker,
-            chunk_ids=["text-chunk-1", table.id],
-        )
+        document = _doc(source=str(path.resolve()))
+        metadata = _unchanged_hash_metadata(path, document, chunk_ids=["text-chunk-1"])
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        pipeline._table_chunker = None  # noqa: SLF001
+        with patch(
+            "src.rag.pipelines.ingestion_pipeline.load_document",
+            return_value=document,
+        ):
+            result = pipeline.ingest_file(path)
 
         assert result.skipped is True
-        service.prepare.assert_not_called()
-        vector_store.upsert.assert_not_called()
-        bm25.add.assert_not_called()
+        _assert_skip_without_reindex(result, service, vector_store, bm25)
+
+    def test_skip_skips_when_table_chunks_already_indexed(self, tmp_path: Path) -> None:
+        path = _report_pdf_path(tmp_path)
+        result, service, vector_store, bm25 = _run_skip_with_indexed_table_chunks(
+            path,
+            _doc_with_sample_table(str(path.resolve())),
+        )
+        _assert_skip_without_reindex(result, service, vector_store, bm25)
+
+    def test_skip_skips_when_table_chunks_already_indexed_after_reload(
+        self, tmp_path: Path
+    ) -> None:
+        path = _report_pdf_path(tmp_path)
+        source = str(path.resolve())
+        first_load = _doc_with_sample_table(source)
+        reloaded = _doc_with_sample_table(source)
+        assert first_load.id != reloaded.id
+        result, service, vector_store, bm25 = _run_skip_with_indexed_table_chunks(
+            path,
+            reloaded,
+        )
+        _assert_skip_without_reindex(result, service, vector_store, bm25)
 
     def test_skip_backfill_noop_when_table_chunker_returns_empty(self, tmp_path: Path) -> None:
         path = _report_pdf_path(tmp_path)
         document = _doc(source=str(path.resolve()))
         table_chunker = MagicMock()
         table_chunker.index.return_value = []
-        result, service, vector_store, _, _ = _run_skip_table_chunker_ingest(
+        result, service, vector_store, bm25, _ = _run_skip_table_chunker_ingest(
             path,
             document,
             table_chunker=table_chunker,
@@ -484,5 +545,4 @@ class TestIngestionPipelineTableChunks:
         )
 
         assert result.skipped is True
-        service.prepare.assert_not_called()
-        vector_store.upsert.assert_not_called()
+        _assert_skip_without_reindex(result, service, vector_store, bm25)

@@ -31,9 +31,13 @@ _TABLE_ID_NUMERIC_RE = re.compile(r"^table-(\d+)$")
 _TABLE_CHUNK_NAMESPACE = uuid.UUID("a3f8c2e1-7b4d-4e9f-8c1a-2d6e5f0b9a37")
 
 
-def table_chunk_id(document_id: str, table_id: str) -> str:
-    """Stable chunk ID for idempotent table backfill on unchanged documents."""
-    return str(uuid.uuid5(_TABLE_CHUNK_NAMESPACE, f"{document_id}:{table_id}"))
+def table_chunk_id(source: str, table_id: str) -> str:
+    """Stable chunk ID for idempotent table backfill on unchanged documents.
+
+    Keys off *source* (resolved file path), not ephemeral "Document.id" values
+    assigned at load time, so unchanged re-ingests produce the same chunk IDs.
+    """
+    return str(uuid.uuid5(_TABLE_CHUNK_NAMESPACE, f"{source}:{table_id}"))
 
 
 def is_table_chunk(chunk: Chunk) -> bool:
@@ -47,7 +51,7 @@ def extract_markdown_tables(content: str) -> list[str]:
 
 
 def _content_table_for_id(table_id: str, content_tables: list[str]) -> str | None:
-    """Map Docling ``table-N`` ids to the Nth markdown table in document content."""
+    """Map Docling "table-N" ids to the Nth Markdown table in document content."""
     match = _TABLE_ID_NUMERIC_RE.match(table_id)
     if match is None:
         return None
@@ -106,7 +110,7 @@ def build_table_chunks(document: Document) -> list[Chunk]:
 
         chunks.append(
             Chunk(
-                id=table_chunk_id(document.id, str(table_id)),
+                id=table_chunk_id(document.source, str(table_id)),
                 document_id=document.id,
                 text=text,
                 metadata=metadata,
