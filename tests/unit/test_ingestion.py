@@ -278,16 +278,13 @@ class TestIngestionPipelineFile:
     def test_layout_parser_misconfiguration_raises_ingestion_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from src.core.settings import Settings
         from src.infrastructure.parsers import clear_layout_parser_cache
 
         clear_layout_parser_cache()
         monkeypatch.setattr(
-            "src.infrastructure.loaders.settings.parsing.layout_parser.enabled",
-            True,
-        )
-        monkeypatch.setattr(
-            "src.infrastructure.loaders.settings.parsing.layout_parser.provider",
-            "unknown",
+            "src.infrastructure.loaders._settings",
+            lambda: Settings(parsing={"layout_parser": {"enabled": True, "provider": "unknown"}}),
         )
         path = tmp_path / "report.pdf"
         path.write_bytes(b"%PDF-1.4")

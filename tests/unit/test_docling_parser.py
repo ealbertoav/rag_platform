@@ -61,7 +61,9 @@ docling_create_converter = cast(Callable[[], object], _internal("_create_convert
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_LAYOUT_PARSER_ENABLED = "src.infrastructure.loaders.settings.parsing.layout_parser.enabled"
+
+def _layout_parser_settings(*, enabled: bool = True, provider: str = "docling") -> Settings:
+    return Settings(parsing={"layout_parser": {"enabled": enabled, "provider": provider}})
 
 
 @pytest.fixture(autouse=True)
@@ -69,8 +71,17 @@ def _reset_layout_parser_cache() -> None:
     clear_layout_parser_cache()
 
 
-def _enable_layout_parser(monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True) -> None:
-    monkeypatch.setattr(_LAYOUT_PARSER_ENABLED, enabled)
+def _enable_layout_parser(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    enabled: bool = True,
+    provider: str = "docling",
+) -> None:
+    monkeypatch.setattr(
+        "src.infrastructure.loaders._settings",
+        lambda: _layout_parser_settings(enabled=enabled, provider=provider),
+    )
+    clear_layout_parser_cache()
 
 
 def _prov(page_no: int = 1, bbox: tuple[float, float, float, float] | None = None) -> list[object]:
@@ -359,9 +370,19 @@ class TestGetLayoutParser:
         assert get_layout_parser(settings) is None
 
     def test_returns_none_when_disabled_without_explicit_settings(self) -> None:
-        with patch("src.infrastructure.parsers.default_settings") as mock_settings:
-            mock_settings.parsing.layout_parser.enabled = False
+        disabled = _layout_parser_settings(enabled=False)
+        with patch("src.infrastructure.parsers._settings", return_value=disabled):
             assert get_layout_parser() is None
+
+    def test_reads_live_settings_when_not_passed(self) -> None:
+        from src.evals.e2e.technique_benchmark import temporary_config
+
+        key = "PARSING__LAYOUT_PARSER__ENABLED"
+        with temporary_config({key: "false"}):
+            assert get_layout_parser() is None
+        with temporary_config({key: "true"}):
+            parser = get_layout_parser()
+            assert isinstance(parser, DoclingLayoutParser)
 
     def test_returns_docling_parser_when_enabled(self) -> None:
         settings = Settings(parsing={"layout_parser": {"enabled": True, "provider": "docling"}})
@@ -500,11 +521,7 @@ class TestLayoutParserLoaderDelegation:
     def test_unknown_provider_raises_document_load_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _enable_layout_parser(monkeypatch)
-        monkeypatch.setattr(
-            "src.infrastructure.loaders.settings.parsing.layout_parser.provider",
-            "unknown",
-        )
+        _enable_layout_parser(monkeypatch, provider="unknown")
         path = tmp_path / "report.pdf"
         path.write_bytes(b"%PDF-1.4")
         with pytest.raises(DocumentLoadError, match="misconfigured") as exc_info:

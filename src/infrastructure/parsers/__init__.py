@@ -4,7 +4,6 @@ from pathlib import Path
 
 from src.core.exceptions import ConfigurationError
 from src.core.settings import Settings
-from src.core.settings import settings as default_settings
 from src.domain.entities.document import Document
 from src.domain.entities.parsed_document import ParsedDocument
 from src.domain.repositories.layout_parser_repository import LayoutParserRepository
@@ -21,6 +20,13 @@ _cached_parser_key: tuple[bool, str] | None = None
 _cached_parser: LayoutParserRepository | None = None
 
 
+def _settings() -> Settings:
+    """Read settings lazily so env reloads apply without re-importing this module."""
+    from src.core.settings import settings
+
+    return settings
+
+
 def clear_layout_parser_cache() -> None:
     """Reset the cached layout parser instance (for tests and settings reloads)."""
     global _cached_parser_key, _cached_parser
@@ -33,7 +39,7 @@ def get_layout_parser(app_settings: Settings | None = None) -> LayoutParserRepos
     global _cached_parser_key, _cached_parser
 
     if app_settings is None:
-        app_settings = default_settings
+        app_settings = _settings()
 
     cfg = app_settings.parsing.layout_parser
     cache_key = (cfg.enabled, cfg.provider)

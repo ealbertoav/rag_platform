@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
+from src.core.settings import Settings
 from src.domain.entities.answer import Answer
 from src.domain.entities.evaluation import BenchmarkRun
 from src.evals.e2e.technique_benchmark import (
@@ -228,6 +229,24 @@ class TestTemporaryConfig:
             assert retrieval_pipeline._settings().query_expansion.enabled is True
         with temporary_config({key: "false"}):
             assert retrieval_pipeline._settings().query_expansion.enabled is False
+
+    def test_reload_settings_clears_layout_parser_cache(self):
+        from src.infrastructure.parsers import get_layout_parser
+
+        settings = Settings(parsing={"layout_parser": {"enabled": True, "provider": "docling"}})
+        first = get_layout_parser(settings)
+        reload_settings_module()
+        second = get_layout_parser(settings)
+        assert first is not second
+
+    def test_reload_settings_refreshes_loader_layout_parser_bindings(self):
+        import src.infrastructure.loaders as loaders_mod
+
+        key = "PARSING__LAYOUT_PARSER__ENABLED"
+        with temporary_config({key: "true"}):
+            assert loaders_mod._settings().parsing.layout_parser.enabled is True
+        with temporary_config({key: "false"}):
+            assert loaders_mod._settings().parsing.layout_parser.enabled is False
 
     def test_sequential_overrides_apply_to_pipeline_factory(self):
         """Each technique must see its own env overrides when building the pipeline."""
