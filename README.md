@@ -40,6 +40,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Mypy CI gate hardening (T-171):** CI, `make lint`, and the pre-commit mypy hook run identical static analysis — `ruff check` → `ruff format --check` → `mypy src` → `basedpyright --level error src` — with no CLI `--ignore-missing-imports` bypass. `scripts/check_lint_gate.py` validates config drift across CI, Makefile, and pre-commit, then re-runs mypy. Typed smoke modules under `src/type_regression/` exercise compression and contextual-header APIs so mypy catches return-type regressions at lint time. Builds on the T-170 type-ignore audit ([docs/type-safety.md](docs/type-safety.md)). See [Lint workflow for contributors](#lint-workflow-for-contributors).
 
+> **Multimodal parsing contracts (T-190):** Domain-layer ABCs for layout-aware parsing and OCR — `LayoutParserRepository`, `OcrRepository`, and `ParsedDocument` — plus feature-flagged `ParsingSettings` in `configs/parsing.yaml` (both subsystems disabled by default). Multimodal chunk types (`table`, `caption`, `figure`, `page`) and metadata keys (`table_id`, `figure_id`, `bbox`, `page`, `section`) are defined in `src/core/constants.py` for Phases 20–28. Ingestion behavior is unchanged until T-200+ wires a layout parser. See [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190).
+
 ---
 
 ## Table of Contents
@@ -53,6 +55,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 - [Usage](#usage)
   - [Ingest Documents](#ingest-documents)
     - [Optional Chunk Enrichment](#optional-chunk-enrichment)
+    - [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190)
   - [Start the API Server](#start-the-api-server)
   - [Chat](#chat)
     - [Scoped retrieval filters (T-134)](#scoped-retrieval-filters-t-134)
@@ -339,6 +342,12 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
 
+# Multimodal parsing (disabled by default — contracts only until T-200+/T-220+)
+PARSING__LAYOUT_PARSER__ENABLED=false   # layout-aware Docling parser (T-200+)
+PARSING__LAYOUT_PARSER__PROVIDER=docling
+PARSING__OCR__ENABLED=false             # OCR pipeline (T-220+)
+PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
+
 # API security (optional — local dev leaves API key empty)
 API__API_KEY=                          # when set, require X-API-Key on /ingest, /chat, /feedback, /evals
 API__MAX_UPLOAD_BYTES=10485760           # POST /ingest/upload size cap (10 MiB)
@@ -357,6 +366,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
+| `configs/parsing.yaml` | Layout parser and OCR feature flags (T-190); both disabled by default until T-200+ / T-220+ implementations land |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -396,8 +406,11 @@ With `chunking.strategy: parent_child`, both parent and child chunks are indexed
 
 ```mermaid
 flowchart LR
-    SRC["📄 Source File<br/>.pdf/.docx/.html/.md"] --> LD["Document Loader"]
-    LD --> CL["Text Cleaning"]
+    SRC["📄 Source File<br/>.pdf/.docx/.html/.md"] --> LP{"Layout parser?<br/>(optional · T-200+)"}
+    LP -->|disabled / default| LD["Document Loader"]
+    LP -->|parsing.layout_parser.enabled| PARSE["LayoutParserRepository<br/>→ ParsedDocument"]
+    PARSE --> CL["Text Cleaning"]
+    LD --> CL
     CL --> CH{"Chunking<br/>Strategy"}
     CH -->|recursive| RC["Recursive<br/>Splitter"]
     CH -->|semantic| SC["Semantic<br/>Splitter"]
@@ -545,6 +558,73 @@ chunking:
 CHUNKING__HIERARCHICAL__ENABLED=true
 CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 ```
+
+#### Multimodal Parsing Contracts (T-190)
+
+Phase 19 defines **domain contracts** for upcoming multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). No layout parser or OCR provider is wired into the ingestion pipeline yet — defaults keep today’s text loaders unchanged.
+
+```mermaid
+flowchart TB
+    subgraph DOMAIN["domain/ — contracts only (T-190)"]
+        LPR["LayoutParserRepository<br/>parse(path) → ParsedDocument"]
+        OCR["OcrRepository<br/>ocr(path) → str"]
+        PD["ParsedDocument<br/>source · content · metadata"]
+        CONST["constants.py<br/>table · caption · figure · page<br/>table_id · figure_id · bbox"]
+    end
+
+    subgraph CONFIG["configs/parsing.yaml — off by default"]
+        LPSET["layout_parser.enabled=false<br/>provider=docling"]
+        OCRSET["ocr.enabled=false<br/>provider=tesseract"]
+    end
+
+    subgraph FUTURE["Upcoming implementations"]
+        T200["T-200 DoclingLayoutParser"]
+        T201["T-201 PPTX loader"]
+        T220["T-220 OCR provider factory"]
+        T202["T-202 table chunks at ingest"]
+    end
+
+    LPR --> PD
+    CONFIG -.->|gates| T200
+    CONFIG -.->|gates| T220
+    T200 -.->|implements| LPR
+    T220 -.->|implements| OCR
+    T200 --> T201
+    T200 --> T202
+    CONST -.->|metadata keys for| T202
+```
+
+| Artifact | Location | Role |
+|---|---|---|
+| `LayoutParserRepository` | `src/domain/repositories/layout_parser_repository.py` | ABC for layout-aware PDF/DOCX/PPTX parsing |
+| `OcrRepository` | `src/domain/repositories/ocr_repository.py` | ABC for scanned-page / image OCR |
+| `ParsedDocument` | `src/domain/entities/parsed_document.py` | Immutable parse result before chunking (`source`, `content`, optional `metadata`) |
+| `ParsingSettings` | `src/core/settings.py` + `configs/parsing.yaml` | Feature flags and provider selection |
+| Multimodal chunk constants | `src/core/constants.py` | `CHUNK_TYPE_TABLE`, `CHUNK_TYPE_CAPTION`, `CHUNK_TYPE_FIGURE`, `CHUNK_TYPE_PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY`; reuses `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata |
+
+```yaml
+# configs/parsing.yaml
+parsing:
+  layout_parser:
+    enabled: false              # T-200+ Docling parser
+    provider: docling
+  ocr:
+    enabled: false              # T-220+ OCR pipeline
+    provider: tesseract         # tesseract | easyocr | docling | azure_di
+```
+
+```bash
+PARSING__LAYOUT_PARSER__ENABLED=false
+PARSING__LAYOUT_PARSER__PROVIDER=docling
+PARSING__OCR__ENABLED=false
+PARSING__OCR__PROVIDER=tesseract
+```
+
+**Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so future layout parsers populate the same keys layout-aware chunkers will consume (T-240/T-241).
+
+**Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`.
+
+**Next steps:** Phase 20 (**T-200–T-202**) implements `DoclingLayoutParser`, PPTX loading, and structured table chunks. Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
 
 ### Start the API Server
 
@@ -1929,6 +2009,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
+│   ├── parsing.yaml            # Layout parser + OCR flags (T-190; disabled until T-200+/T-220+)
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
@@ -1988,6 +2069,7 @@ rag_implementation/
 │   ├── check_dependencies.sh   # CI/local dependency scan entrypoint (T-161)
 │   ├── check_diskcache_cve.py  # diskcache upstream monitor (T-162)
 │   ├── check_diskcache_cve.sh  # CI/local diskcache CVE check entrypoint (T-162)
+│   ├── migrate_ci_checks.sh    # Branch protection migration helper (T-180)
 │   ├── benchmark.py            # E2E benchmark CLI (--llm-config for model swap)
 │   ├── benchmark_techniques.py # Technique matrix CLI (T-150)
 │   ├── benchmark_chunk_sizes.py # Chunk size sweep CLI (T-151)
@@ -1997,8 +2079,8 @@ rag_implementation/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
 ├── src/
 │   ├── api/                    # FastAPI routers + DI + rate_limit middleware (T-160)
-│   ├── core/                   # Settings, logging, exceptions, async_bridge (T-164), diskcache_cve_check (T-162), lint_gate (T-171)
-│   ├── domain/                 # Entities, repository ABCs, services
+│   ├── core/                   # Settings (+ ParsingSettings T-190), logging, exceptions, async_bridge (T-164), diskcache_cve_check (T-162), lint_gate (T-171)
+│   ├── domain/                 # Entities (+ ParsedDocument T-190), repository ABCs (+ LayoutParser/Ocr T-190), services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
 │   │   ├── regression_gate.py  # CI regression gate logic (T-152)
@@ -2028,7 +2110,7 @@ rag_implementation/
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 2100+ unit tests (zero external deps)
+│   └── unit/                   # 2100+ unit tests (zero external deps; incl. test_parsing_repositories T-190)
 ├── .dockerignore
 ├── .env.example
 ├── .github/
@@ -2120,6 +2202,8 @@ CHUNKING__PROPOSITION__QUALITY_THRESHOLD=7
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 CHUNKING__HIERARCHICAL__ENABLED=false
+PARSING__LAYOUT_PARSER__ENABLED=false
+PARSING__OCR__ENABLED=false
 NEO4J__ENABLED=true
 EMBEDDINGS__DEVICE=cpu
 ```

@@ -17,7 +17,7 @@
 ### T-001 · Core Settings & Configuration loader
 - **Status:** `[x]`
 - **Goal:** Implement a Pydantic-Settings model that reads from `.env` and `configs/*.yaml`, exposing a single `settings` singleton used across the entire app.
-- **Inputs:** `.env.example`, `configs/app.yaml`, `configs/llm.yaml`, `configs/embeddings.yaml`, `configs/retrieval.yaml`, `configs/logging.yaml`
+- **Inputs:** `.env.example`, `configs/app.yaml`, `configs/llm.yaml`, `configs/embeddings.yaml`, `configs/retrieval.yaml`, `configs/parsing.yaml`, `configs/logging.yaml`
 - **Outputs:** Importable `settings` object with typed fields for every config key.
 - **Files:**
   - `src/core/settings.py` — `Settings(BaseSettings)` with nested models per domain
@@ -2335,24 +2335,26 @@
 
 > Phases are numbered sequentially after Phase 18. **Task IDs follow Phase × 10** (Phase 20 → T-200…). Every precondition is satisfied by an earlier phase.
 >
-> | Phase | Priority | Tasks | Depends on |
-> |-------|----------|-------|------------|
-> | **19** | 9 | T-190 | Phases 0–3, 18 |
-> | **20** | 10 | T-200 → T-202 | Phase 19 |
-> | **21** | 11 | T-210 | Phases 19–20 |
-> | **22** | 12 | T-220 → T-223 | Phases 19–20 |
-> | **23** | 13 | T-230 → T-232 | Phases 20–21 |
-> | **24** | 14 | T-240 → T-243 | Phases 20–21 |
-> | **25** | 15 | T-250 → T-253 | Phase 21 |
-> | **26** | 16 | T-260 → T-263 | Phase 25 |
-> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 |
-> | **28** | 18 | T-280 → T-282 | Phases 25–26 |
+> | Phase | Priority | Tasks | Depends on | Status |
+> |-------|----------|-------|------------|--------|
+> | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
+> | **20** | 10 | T-200 → T-202 | Phase 19 | pending |
+> | **21** | 11 | T-210 | Phases 19–20 | pending |
+> | **22** | 12 | T-220 → T-223 | Phases 19–20 | pending |
+> | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
+> | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
+> | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
+> | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
+> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
+> | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
 
 > **Motivation:** Define parsing/OCR ABCs and chunk-type constants before layout implementations.
 >
 > **Preconditions:** Phases 0–3, 18
+>
+> **Status:** complete — T-190 ✅
 
 ---
 
@@ -2361,11 +2363,23 @@
 - **Goal:** Define `LayoutParserRepository`, `OcrRepository`, `ParsedDocument`, `ParsingSettings`, and multimodal chunk constants.
 - **Inputs:** T-004, T-003
 - **Outputs:** ABCs + `configs/parsing.yaml` + constants in `src/core/constants.py`
-- **Files:** `src/domain/repositories/layout_parser_repository.py`, `ocr_repository.py`, `entities/parsed_document.py`, `tests/unit/test_parsing_repositories.py`
+- **Files:**
+  - `src/domain/repositories/layout_parser_repository.py` — `LayoutParserRepository` ABC _(done)_
+  - `src/domain/repositories/ocr_repository.py` — `OcrRepository` ABC _(done)_
+  - `src/domain/repositories/__init__.py` — export new ABCs _(done)_
+  - `src/domain/entities/parsed_document.py` — frozen `ParsedDocument` entity _(done)_
+  - `src/domain/entities/__init__.py` — export `ParsedDocument` _(done)_
+  - `src/core/constants.py` — `CHUNK_TYPE_TABLE/CAPTION/FIGURE/PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY` _(done)_
+  - `src/core/settings.py` — `ParsingSettings`, `LayoutParserSettings`, `OcrSettings` _(done)_
+  - `configs/parsing.yaml` — feature flags (both disabled by default) _(done)_
+  - `src/rag/chunking/contextual_headers.py` — use `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata _(done)_
+  - `tests/unit/test_parsing_repositories.py` — ABC rules, constants, domain import hygiene _(done)_
+  - `tests/unit/test_settings.py` — parsing YAML defaults + env overrides _(done)_
 - **Acceptance Criteria:**
   - [x] Feature-flagged or backward-compatible defaults preserved
   - [x] Unit tests pass for new modules
   - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Contracts-only phase — no `infrastructure/` parsers or ingestion wiring. `domain/` modules must not import from `infrastructure/`. Layout parsers populate `metadata.page` / `metadata.section` via `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` (not `page_number` / `section_title`). README documents contracts, config, and upcoming Phase 20–28 roadmap.
 
 ---
 
@@ -2978,7 +2992,7 @@ T-150 + T-281 ──► T-282
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → T-172 ✅ (PR #41) → T-173 ✅ _(Phase 17 complete)_
 18. **Phase 18 — Priority 8 (CI Performance):** T-180 ✅ → T-181 ✅ → T-182 ✅
 
-19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190
+19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190 ✅ _(complete)_
 20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 → T-201 → T-202
 21. **Phase 21 — Priority 11 (Domain Model):** T-210
 22. **Phase 22 — Priority 12 (OCR):** T-220 → T-221 → T-222 → T-223
