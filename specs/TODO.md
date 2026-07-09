@@ -2389,6 +2389,8 @@
 > **Motivation:** Docling layout parser, PPTX loader, structured table chunks.
 >
 > **Preconditions:** Phase 19 (T-190)
+>
+> **Status:** in progress — T-200 ✅ · T-201–T-202 pending
 
 ---
 
@@ -2396,12 +2398,26 @@
 - **Status:** `[x]`
 - **Goal:** Implement `DoclingLayoutParser` for PDF/DOCX.
 - **Inputs:** T-190, T-010
-- **Outputs:** `DoclingLayoutParser` + loader delegation
-- **Files:** `src/infrastructure/parsers/docling_parser.py`, tests
+- **Outputs:** `DoclingLayoutParser` + loader delegation + chunk metadata filtering
+- **Files:**
+  - `src/infrastructure/parsers/docling_parser.py` — `DoclingLayoutParser`, `build_docling_metadata()` _(done)_
+  - `src/infrastructure/parsers/__init__.py` — `get_layout_parser()`, `clear_layout_parser_cache()`, `parsed_to_document()` _(done)_
+  - `src/infrastructure/loaders/__init__.py` — route `.pdf`/`.docx` through layout parser when enabled _(done)_
+  - `src/infrastructure/loaders/docx_loader.py` — promote first heading to `CHUNK_SECTION_KEY` _(done)_
+  - `src/infrastructure/loaders/markdown_loader.py` — promote first heading to `CHUNK_SECTION_KEY` _(done)_
+  - `src/rag/chunking/metadata.py` — `chunk_metadata()` filters `LAYOUT_DOCUMENT_METADATA_KEYS` _(done)_
+  - `src/core/constants.py` — `LAYOUT_DOCUMENT_METADATA_KEYS` _(done)_
+  - `src/rag/chunking/recursive_chunker.py`, `semantic_chunker.py`, `proposition_chunker.py` — spread `chunk_metadata()` _(done)_
+  - `src/rag/enrichment/hierarchical_indexer.py` — use `chunk_metadata()` _(done)_
+  - `configs/parsing.yaml` — layout parser flag + Docling install note _(done)_
+  - `tests/unit/test_docling_parser.py` — parser, metadata extraction, factory cache, settings reload _(done)_
+  - `tests/unit/test_chunk_metadata.py` — metadata filtering and section promotion _(done)_
+  - `tests/unit/test_loaders.py`, `test_ingestion.py`, `test_parsing_repositories.py`, `test_technique_benchmark.py` — routing and integration _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Disabled by default — plain `PdfLoader`/`DocxLoader` unchanged when `enabled: false`. Docling is an optional runtime dependency (`uv pip install docling`); missing package or unknown provider raises `ConfigurationError` / `DocumentLoadError`. Parser instance is cached keyed on `(enabled, provider)`; `clear_layout_parser_cache()` supports tests and live settings reload. Document-level `tables`/`figures`/`sections`/`headings` stay on `Document.metadata` for T-202 but are excluded from chunk payloads via `chunk_metadata()`. README documents enablement, ingestion routing, metadata keys, and mermaid flows.
 
 ---
 
@@ -2993,7 +3009,7 @@ T-150 + T-281 ──► T-282
 18. **Phase 18 — Priority 8 (CI Performance):** T-180 ✅ → T-181 ✅ → T-182 ✅
 
 19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190 ✅ _(complete)_
-20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 → T-201 → T-202
+20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 → T-202
 21. **Phase 21 — Priority 11 (Domain Model):** T-210
 22. **Phase 22 — Priority 12 (OCR):** T-220 → T-221 → T-222 → T-223
 23. **Phase 23 — Priority 13 (VLM):** T-230 → T-231 → T-232
