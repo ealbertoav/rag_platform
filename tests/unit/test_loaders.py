@@ -14,6 +14,7 @@ import pytest
 
 from src.core.exceptions import DocumentLoadError
 from src.domain.entities.document import Document
+from src.domain.entities.parsed_document import ParsedDocument
 from src.infrastructure.loaders import load_document
 from src.infrastructure.loaders.docx_loader import DocxLoader
 from src.infrastructure.loaders.html_loader import HtmlLoader
@@ -185,6 +186,7 @@ class TestDocxLoader:
         doc = DocxLoader().load(docx_file)
         assert "Introduction" in doc.metadata["sections"]
         assert "Details" in doc.metadata["sections"]
+        assert doc.metadata["section"] == "Introduction"
 
     def test_source_is_absolute(self, docx_file: Path):
         doc = DocxLoader().load(docx_file)
@@ -254,6 +256,7 @@ class TestMarkdownLoader:
         assert "Title" in doc.metadata["headings"]
         assert "Section One" in doc.metadata["headings"]
         assert "Section Two" in doc.metadata["headings"]
+        assert doc.metadata["section"] == "Title"
 
     def test_metadata_keys(self, markdown_file: Path):
         doc = MarkdownLoader().load(markdown_file)
@@ -303,3 +306,44 @@ class TestLoadDocument:
         path.write_text("# Hello\n\nWorld.")
         doc = load_document(path)
         assert doc.metadata["loader"] == "markdown"
+
+    def test_reload_settings_refreshes_layout_parser_routing(self, tmp_path: Path):
+        """Env reloads must change whether PDFs route through the layout parser."""
+        import src.infrastructure.loaders as loaders_mod
+        from src.evals.e2e.technique_benchmark import temporary_config
+
+        path = tmp_path / "report.pdf"
+        path.write_bytes(b"%PDF-1.4 placeholder")
+
+        reader = MagicMock()
+        page = MagicMock()
+        page.extract_text.return_value = "plain pdf text"
+        reader.pages = [page]
+
+        key = "PARSING__LAYOUT_PARSER__ENABLED"
+        with temporary_config({key: "false"}):
+            assert loaders_mod._settings().parsing.layout_parser.enabled is False
+            with patch(
+                "src.infrastructure.loaders.pdf_loader.PdfReader",
+                return_value=reader,
+            ):
+                doc = load_document(path)
+            assert doc.metadata["loader"] == "pdf"
+
+        parsed = ParsedDocument(
+            source=str(path.resolve()),
+            content="layout text",
+            metadata={"loader": "docling", "filename": "report.pdf"},
+        )
+        mock_parser = MagicMock()
+        mock_parser.parse.return_value = parsed
+
+        with temporary_config({key: "true"}):
+            assert loaders_mod._settings().parsing.layout_parser.enabled is True
+            with patch(
+                "src.infrastructure.parsers.get_layout_parser",
+                return_value=mock_parser,
+            ):
+                doc = load_document(path)
+            mock_parser.parse.assert_called_once_with(path)
+            assert doc.metadata["loader"] == "docling"

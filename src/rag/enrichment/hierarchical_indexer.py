@@ -14,6 +14,7 @@ from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.llm_repository import LLMRepository
+from src.rag.chunking.metadata import chunk_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def tag_detail_chunks(chunks: list[Chunk]) -> list[Chunk]:
 
 def make_summary_chunk(document: Document, summary: str) -> Chunk:
     """Build a document-level summary index point."""
-    metadata = dict(document.metadata)
+    metadata = chunk_metadata(document.metadata)
     metadata[CHUNK_TYPE_KEY] = CHUNK_TYPE_SUMMARY
     metadata[CHUNK_SOURCE_KEY] = document.source
     return Chunk(document_id=document.id, text=summary, metadata=metadata)

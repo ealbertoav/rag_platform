@@ -56,6 +56,7 @@ __all__ = [
     "reload_settings_module",
     "run_technique_matrix",
     "temporary_config",
+    "temporary_feedback_seed",
 ]
 
 _DEFAULT_QA_PATH = DATASETS_DIR / "goldens" / "qa_dataset.json"
@@ -305,8 +306,10 @@ def _default_technique_configs() -> list[TechniqueConfig]:
 def reload_settings_module() -> None:
     """Reload the settings singleton after env var changes."""
     import src.core.settings as settings_mod
+    from src.infrastructure.parsers import clear_layout_parser_cache
 
     _ = importlib.reload(settings_mod)
+    clear_layout_parser_cache()
 
 
 @contextmanager

@@ -275,6 +275,23 @@ class TestIngestionPipelineFile:
         with pytest.raises(IngestionError):
             pipeline.ingest_file(path)
 
+    def test_layout_parser_misconfiguration_raises_ingestion_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from src.core.settings import Settings
+        from src.infrastructure.parsers import clear_layout_parser_cache
+
+        clear_layout_parser_cache()
+        monkeypatch.setattr(
+            "src.infrastructure.loaders._settings",
+            lambda: Settings(parsing={"layout_parser": {"enabled": True, "provider": "unknown"}}),
+        )
+        path = tmp_path / "report.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        pipeline, *_ = mock_ingestion_pipeline()
+        with pytest.raises(IngestionError, match="Cannot load report.pdf"):
+            pipeline.ingest_file(path)
+
 
 class TestIngestionPipelineDirectory:
     def test_returns_results_for_each_file(self, tmp_path: Path):

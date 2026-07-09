@@ -4,6 +4,7 @@ from pathlib import Path
 
 import docx as python_docx
 
+from src.core.constants import CHUNK_SECTION_KEY
 from src.core.exceptions import DocumentLoadError
 from src.domain.entities.document import Document
 
@@ -29,16 +30,20 @@ class DocxLoader:
                 ):
                     section_titles.append(p.text)
 
+            metadata: dict[str, object] = {
+                "filename": path.name,
+                "extension": path.suffix.lower(),
+                "loader": "docx",
+                "paragraph_count": len(paragraphs),
+                "sections": section_titles,
+            }
+            if section_titles:
+                metadata[CHUNK_SECTION_KEY] = section_titles[0]
+
             return Document(
                 source=str(path.resolve()),
                 content=content,
-                metadata={
-                    "filename": path.name,
-                    "extension": path.suffix.lower(),
-                    "loader": "docx",
-                    "paragraph_count": len(paragraphs),
-                    "sections": section_titles,
-                },
+                metadata=metadata,
             )
         except DocumentLoadError:
             raise

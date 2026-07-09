@@ -7,7 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.constants import CHUNK_TYPE_DETAIL, CHUNK_TYPE_KEY, CHUNK_TYPE_SUMMARY
+from src.core.constants import (
+    CHUNK_SECTION_KEY,
+    CHUNK_TYPE_DETAIL,
+    CHUNK_TYPE_KEY,
+    CHUNK_TYPE_SUMMARY,
+)
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.entities.query import Query
@@ -77,6 +82,23 @@ class TestChunkMetadata:
         assert summary.metadata[CHUNK_TYPE_KEY] == CHUNK_TYPE_SUMMARY
         assert summary.document_id == "doc-1"
         assert is_summary_chunk(summary)
+
+    def test_make_summary_chunk_excludes_layout_metadata(self) -> None:
+        document = Document(
+            id="doc-1",
+            source="/data/raw/report.pdf",
+            content="Revenue grew 12%.",
+            metadata={
+                "tables": [{"table_id": "table-1"}],
+                "figures": [{"figure_id": "figure-1"}],
+                "sections": ["Revenue"],
+            },
+        )
+        summary = make_summary_chunk(document, "Revenue overview.")
+        assert "tables" not in summary.metadata
+        assert "figures" not in summary.metadata
+        assert "sections" not in summary.metadata
+        assert summary.metadata[CHUNK_SECTION_KEY] == "Revenue"
 
 
 class TestHierarchicalIndexer:

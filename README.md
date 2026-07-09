@@ -40,7 +40,9 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Mypy CI gate hardening (T-171):** CI, `make lint`, and the pre-commit mypy hook run identical static analysis — `ruff check` → `ruff format --check` → `mypy src` → `basedpyright --level error src` — with no CLI `--ignore-missing-imports` bypass. `scripts/check_lint_gate.py` validates config drift across CI, Makefile, and pre-commit, then re-runs mypy. Typed smoke modules under `src/type_regression/` exercise compression and contextual-header APIs so mypy catches return-type regressions at lint time. Builds on the T-170 type-ignore audit ([docs/type-safety.md](docs/type-safety.md)). See [Lint workflow for contributors](#lint-workflow-for-contributors).
 
-> **Multimodal parsing contracts (T-190):** Domain-layer ABCs for layout-aware parsing and OCR — `LayoutParserRepository`, `OcrRepository`, and `ParsedDocument` — plus feature-flagged `ParsingSettings` in `configs/parsing.yaml` (both subsystems disabled by default). Multimodal chunk types (`table`, `caption`, `figure`, `page`) and metadata keys (`table_id`, `figure_id`, `bbox`, `page`, `section`) are defined in `src/core/constants.py` for Phases 20–28. Ingestion behavior is unchanged until T-200+ wires a layout parser. See [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190).
+> **Multimodal parsing contracts (T-190):** Domain-layer ABCs for layout-aware parsing and OCR — `LayoutParserRepository`, `OcrRepository`, and `ParsedDocument` — plus feature-flagged `ParsingSettings` in `configs/parsing.yaml`. Multimodal chunk types (`table`, `caption`, `figure`, `page`) and metadata keys (`table_id`, `figure_id`, `bbox`, `page`, `section`) are defined in `src/core/constants.py` for Phases 20–28. See [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190).
+
+> **Layout-aware parsing (T-200):** Optional Docling-backed layout parser for PDF/DOCX — `DoclingLayoutParser` implements `LayoutParserRepository` and routes through `load_document()` when `parsing.layout_parser.enabled=true` (off by default). Exports markdown plus layout metadata (sections, tables, figures with `table_id`/`figure_id`/`bbox`/`page`); `chunk_metadata()` filters document-level structures from per-chunk payloads and promotes `CHUNK_SECTION_KEY` for contextual headers. Install Docling separately: `uv pip install docling`. See [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200).
 
 ---
 
@@ -56,6 +58,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Ingest Documents](#ingest-documents)
     - [Optional Chunk Enrichment](#optional-chunk-enrichment)
     - [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190)
+    - [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200)
   - [Start the API Server](#start-the-api-server)
   - [Chat](#chat)
     - [Scoped retrieval filters (T-134)](#scoped-retrieval-filters-t-134)
@@ -186,6 +189,7 @@ flowchart LR
 | Vector DB | [Qdrant](https://qdrant.tech) (self-hosted, with embedding model versioning) |
 | Sparse search | BM25 via `rank-bm25` (`memory` default; optional `disk` backend — T-165) |
 | Knowledge graph | [Neo4j](https://neo4j.com) (optional, `uv sync --extra graph`) |
+| Layout parser (optional) | [Docling](https://github.com/docling-project/docling) — PDF/DOCX layout-aware parsing (T-200; `uv pip install docling`) |
 | API framework | [FastAPI](https://fastapi.tiangolo.com) |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
 | Linting | [Ruff](https://docs.astral.sh/ruff/) + [mypy](https://mypy-lang.org/) + [basedpyright](https://docs.basedpyright.com/) |
@@ -342,8 +346,8 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
 
-# Multimodal parsing (disabled by default — contracts only until T-200+/T-220+)
-PARSING__LAYOUT_PARSER__ENABLED=false   # layout-aware Docling parser (T-200+)
+# Multimodal parsing (layout parser off by default; OCR contracts only until T-220+)
+PARSING__LAYOUT_PARSER__ENABLED=false   # Docling layout parser for .pdf/.docx (T-200)
 PARSING__LAYOUT_PARSER__PROVIDER=docling
 PARSING__OCR__ENABLED=false             # OCR pipeline (T-220+)
 PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
@@ -366,7 +370,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
-| `configs/parsing.yaml` | Layout parser and OCR feature flags (T-190); both disabled by default until T-200+ / T-220+ implementations land |
+| `configs/parsing.yaml` | Layout parser feature flag + Docling provider (T-200; disabled by default) and OCR flags (T-190/T-220+) |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -406,12 +410,13 @@ With `chunking.strategy: parent_child`, both parent and child chunks are indexed
 
 ```mermaid
 flowchart LR
-    SRC["📄 Source File<br/>.pdf/.docx/.html/.md"] --> LP{"Layout parser?<br/>(optional · T-200+)"}
-    LP -->|disabled / default| LD["Document Loader"]
-    LP -->|parsing.layout_parser.enabled| PARSE["LayoutParserRepository<br/>→ ParsedDocument"]
+    SRC["📄 Source File<br/>.pdf/.docx/.html/.md"] --> LP{"Layout parser?<br/>(optional · T-200)"}
+    LP -->|disabled / default| LD["Plain Loader<br/>pypdf · python-docx · …"]
+    LP -->|parsing.layout_parser.enabled| PARSE["DoclingLayoutParser<br/>→ ParsedDocument<br/>→ Document"]
     PARSE --> CL["Text Cleaning"]
     LD --> CL
-    CL --> CH{"Chunking<br/>Strategy"}
+    CL --> CM["chunk_metadata()<br/>filter doc-level keys<br/>promote section"]
+    CM --> CH{"Chunking<br/>Strategy"}
     CH -->|recursive| RC["Recursive<br/>Splitter"]
     CH -->|semantic| SC["Semantic<br/>Splitter"]
     CH -->|parent_child| PC["Parent-Child<br/>Splitter<br/>(child embed · parent stored)"]
@@ -561,24 +566,24 @@ CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 #### Multimodal Parsing Contracts (T-190)
 
-Phase 19 defines **domain contracts** for upcoming multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). No layout parser or OCR provider is wired into the ingestion pipeline yet — defaults keep today’s text loaders unchanged.
+Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing is implemented in T-200; OCR remains contracts-only until T-220+.
 
 ```mermaid
 flowchart TB
-    subgraph DOMAIN["domain/ — contracts only (T-190)"]
+    subgraph DOMAIN["domain/ — contracts (T-190)"]
         LPR["LayoutParserRepository<br/>parse(path) → ParsedDocument"]
         OCR["OcrRepository<br/>ocr(path) → str"]
         PD["ParsedDocument<br/>source · content · metadata"]
         CONST["constants.py<br/>table · caption · figure · page<br/>table_id · figure_id · bbox"]
     end
 
-    subgraph CONFIG["configs/parsing.yaml — off by default"]
+    subgraph CONFIG["configs/parsing.yaml"]
         LPSET["layout_parser.enabled=false<br/>provider=docling"]
         OCRSET["ocr.enabled=false<br/>provider=tesseract"]
     end
 
-    subgraph FUTURE["Upcoming implementations"]
-        T200["T-200 DoclingLayoutParser"]
+    subgraph IMPL["Implementations"]
+        T200["T-200 DoclingLayoutParser ✅"]
         T201["T-201 PPTX loader"]
         T220["T-220 OCR provider factory"]
         T202["T-202 table chunks at ingest"]
@@ -600,31 +605,79 @@ flowchart TB
 | `OcrRepository` | `src/domain/repositories/ocr_repository.py` | ABC for scanned-page / image OCR |
 | `ParsedDocument` | `src/domain/entities/parsed_document.py` | Immutable parse result before chunking (`source`, `content`, optional `metadata`) |
 | `ParsingSettings` | `src/core/settings.py` + `configs/parsing.yaml` | Feature flags and provider selection |
-| Multimodal chunk constants | `src/core/constants.py` | `CHUNK_TYPE_TABLE`, `CHUNK_TYPE_CAPTION`, `CHUNK_TYPE_FIGURE`, `CHUNK_TYPE_PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY`; reuses `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata |
+| Multimodal chunk constants | `src/core/constants.py` | `CHUNK_TYPE_TABLE`, `CHUNK_TYPE_CAPTION`, `CHUNK_TYPE_FIGURE`, `CHUNK_TYPE_PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY`, `LAYOUT_DOCUMENT_METADATA_KEYS`; reuses `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata |
 
 ```yaml
 # configs/parsing.yaml
 parsing:
   layout_parser:
-    enabled: false              # T-200+ Docling parser
+    enabled: false              # T-200 Docling parser (off by default)
     provider: docling
   ocr:
     enabled: false              # T-220+ OCR pipeline
     provider: tesseract         # tesseract | easyocr | docling | azure_di
 ```
 
-```bash
-PARSING__LAYOUT_PARSER__ENABLED=false
-PARSING__LAYOUT_PARSER__PROVIDER=docling
-PARSING__OCR__ENABLED=false
-PARSING__OCR__PROVIDER=tesseract
-```
-
-**Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so future layout parsers populate the same keys layout-aware chunkers will consume (T-240/T-241).
+**Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
 **Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`.
 
-**Next steps:** Phase 20 (**T-200–T-202**) implements `DoclingLayoutParser`, PPTX loading, and structured table chunks. Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
+#### Layout-Aware Parsing (T-200)
+
+When `parsing.layout_parser.enabled=true`, `.pdf` and `.docx` files route through `DoclingLayoutParser` instead of the plain-text loaders. All other extensions (`.html`, `.md`) keep their existing loaders. The flag defaults to `false`, so ingestion behavior is unchanged unless you opt in.
+
+```mermaid
+flowchart LR
+    PATH[".pdf / .docx"] --> LD["load_document()"]
+    LD --> GP{"get_layout_parser()"}
+    GP -->|enabled| DL["DoclingLayoutParser.parse()"]
+    GP -->|disabled| PL["PdfLoader / DocxLoader"]
+    DL --> PD["ParsedDocument<br/>markdown + layout metadata"]
+    PD --> DOC["parsed_to_document() → Document"]
+    PL --> DOC2["Document"]
+    DOC --> CM["chunk_metadata()"]
+    DOC2 --> CM
+    CM --> CH["Chunker → embed → Qdrant + BM25"]
+```
+
+**Docling metadata** (on `Document.metadata` when layout parsing is active):
+
+| Key | Content |
+|---|---|
+| `sections` | Ordered section headers from the document outline |
+| `section` (`CHUNK_SECTION_KEY`) | First section title — promoted onto each chunk via `chunk_metadata()` |
+| `tables` | List of `{table_id, page?, bbox?}` entries for downstream table chunking (T-202) |
+| `figures` | List of `{figure_id, caption?, page?, bbox?}` entries |
+| `page_count` | Total pages detected by Docling |
+
+Document-level keys (`tables`, `figures`, `sections`, `headings`) are listed in `LAYOUT_DOCUMENT_METADATA_KEYS` and **stripped** from per-chunk metadata by `chunk_metadata()` so large layout structures are not duplicated on every indexed chunk. Plain DOCX/Markdown loaders also populate `sections`/`headings` and promote the first title to `CHUNK_SECTION_KEY` when layout parsing is off.
+
+**Enable layout parsing:**
+
+```bash
+# Install Docling (optional runtime dependency — not in base uv sync)
+uv pip install docling
+
+# Enable via env or configs/parsing.yaml
+PARSING__LAYOUT_PARSER__ENABLED=true
+PARSING__LAYOUT_PARSER__PROVIDER=docling
+
+# Re-ingest PDFs/DOCXs to pick up layout metadata
+make ingest SOURCE=data/raw/
+```
+
+| Component | Location | Role |
+|---|---|---|
+| `DoclingLayoutParser` | `src/infrastructure/parsers/docling_parser.py` | Docling-backed `LayoutParserRepository` for PDF/DOCX |
+| Parser factory | `src/infrastructure/parsers/__init__.py` | `get_layout_parser()` (cached by `(enabled, provider)`), `clear_layout_parser_cache()`, `parsed_to_document()` |
+| Loader routing | `src/infrastructure/loaders/__init__.py` | `load_document()` delegates PDF/DOCX to layout parser when enabled |
+| Chunk metadata filter | `src/rag/chunking/metadata.py` | `chunk_metadata()` — filters doc-level keys, promotes `CHUNK_SECTION_KEY` |
+
+**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text until OCR lands (T-220+). Re-ingest after toggling the flag — existing indexes are not updated retroactively.
+
+**Tests:** `tests/unit/test_docling_parser.py` (parser, metadata extraction, factory cache, settings reload), `tests/unit/test_chunk_metadata.py` (filtering and section promotion), plus routing coverage in `tests/unit/test_loaders.py` and `tests/unit/test_ingestion.py`.
+
+**Next steps:** **T-201** (PPTX loader), **T-202** (structured `type=table` chunks at ingest). Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
 
 ### Start the API Server
 
@@ -2009,7 +2062,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
-│   ├── parsing.yaml            # Layout parser + OCR flags (T-190; disabled until T-200+/T-220+)
+│   ├── parsing.yaml            # Layout parser (T-200 Docling) + OCR flags (T-190/T-220+)
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
@@ -2087,9 +2140,11 @@ rag_implementation/
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · InfraBenchmark (T-172) · benchmark_samples helpers
-│   ├── infrastructure/         # BGE-M3, Qdrant, BM25 (+ disk backend T-165), feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search
+│   ├── infrastructure/         # BGE-M3, Qdrant, BM25 (+ disk backend T-165), feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search, parsers (T-200)
 │   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
+│   │   ├── loaders/            # PDF/DOCX/HTML/Markdown loaders; load_document() routes to layout parser (T-200)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
+│   │   ├── parsers/            # DoclingLayoutParser factory + cache (T-200)
 │   │   └── search/             # DuckDuckGo · Tavily · Null web search providers (T-142)
 │   ├── observability/          # OTel tracing, Prometheus metrics
 │   ├── prompts/                # Prompt templates (string.Template)
@@ -2097,7 +2152,7 @@ rag_implementation/
 │   │   ├── quality/              # relevance_grading (T-140) · self_rag_* (T-141) · crag_knowledge_refinement (T-142) · explain_retrieval (T-143) · source_highlighting (T-144) · explain_and_highlight (T-143+T-144)
 │   │   └── retrieval/          # query_expansion · step_back · query_classification · hyde_generate · entity_extraction · agent_decision
 │   ├── rag/                    # Chunkers, retrievers, pipelines
-│   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers
+│   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers + metadata filter (T-200)
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
 │   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141) · CRAG (T-142) · explainable retrieval (T-143) · source highlighting (T-144) · feedback loop (T-145) · post_generation (combined explain+highlight)
 │   │   ├── structured_output.py # Shared Pydantic JSON parsing for LLM structured output
@@ -2110,7 +2165,7 @@ rag_implementation/
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 2100+ unit tests (zero external deps; incl. test_parsing_repositories T-190)
+│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
 ├── .dockerignore
 ├── .env.example
 ├── .github/
@@ -2265,7 +2320,7 @@ RUN_INFRA_BENCHMARK=1 uv run pytest tests/benchmarks/test_infra_benchmark.py -v 
 uv run pytest tests/unit/test_lint_gate.py tests/unit/test_type_regression.py -v
 ```
 
-**Test coverage:** 130+ source files · 94 test files · 2188 tests (32 skipped without models/services).
+**Test coverage:** 130+ source files · 96 test files · 2389 tests (32 skipped without models/services).
 
 Integration tests auto-skip when models or Qdrant are absent (CI runs them but does not start Docker services).
 
