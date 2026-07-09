@@ -7,8 +7,7 @@
 > **Current focus:** Phase 17 — Code Quality & Type Safety. **T-171 complete** (PR #39). **Phase 15 complete** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16 complete** — T-160–T-165 (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
 >
 > **Next tasks (recommended order):**
-> 1. **T-172** — Infra performance baseline (`scripts/benchmark_infra.py`; scenario 5 feedback concurrency already done)
-> 2. **T-173** — Basedpyright warning burn-down & mode progression (follow-up to T-171 CI config)
+> 1. **T-173** — Basedpyright warning burn-down & mode progression (follow-up to T-171 CI config)
 
 ---
 
@@ -2219,16 +2218,16 @@
 ---
 
 ### T-172 · Performance Baseline & Regression Benchmark
-- **Status:** `[~]` — scenario 5 (concurrent feedback) **done** in `tests/benchmarks/test_feedback_concurrency.py`; full infra benchmark script **pending**
+- **Status:** `[x]`
 - **Goal:** Establish baseline latency/throughput metrics for the infrastructure bottlenecks flagged in the code analysis (LLM streaming, BM25 memory, Neo4j sync, feedback concurrency) so Phase 16 optimizations can be measured.
 - **Inputs:** T-043 (`RAGBenchmark`), T-051 (Prometheus metrics), T-146 (feedback hardening), T-160 (rate limiting), T-163–T-165 (optimization targets)
 - **Outputs:** Benchmark script and CI-optional regression check for p50/p95 latency under concurrent load.
 - **Files:**
-  - `scripts/benchmark_infra.py` — concurrent chat + ingest load test _(pending)_
-  - `src/evals/e2e/infra_benchmark.py` — orchestrates scenarios _(pending)_
-  - `configs/evals.yaml` — add `infra_benchmark` thresholds _(pending)_
-  - `data/exports/infra_baseline.json` — committed baseline for comparison _(pending)_
-  - `tests/benchmarks/test_infra_benchmark.py` — skip in CI unless `RUN_INFRA_BENCHMARK=1` _(pending)_
+  - `scripts/benchmark_infra.py` — concurrent chat + ingest load test _(done)_
+  - `src/evals/e2e/infra_benchmark.py` — orchestrates scenarios _(done)_
+  - `configs/evals.yaml` — add `infra_benchmark` thresholds _(done)_
+  - `data/exports/infra_baseline.json` — committed baseline for comparison _(done)_
+  - `tests/benchmarks/test_infra_benchmark.py` — skip in CI unless `RUN_INFRA_BENCHMARK=1` _(done)_
   - `tests/benchmarks/test_feedback_concurrency.py` — scenario 5: concurrent feedback on same `chunk_id` across simulated pods _(done · T-146)_
 - **Scenarios:**
   1. Single streaming chat — p50/p95 token latency
@@ -2237,11 +2236,11 @@
   4. Graph retrieval with Neo4j enabled — query latency
   5. Concurrent feedback on same `chunk_id` across simulated API pods — zero-lost increments (**T-146**; validates Qdrant CAS / Redis backend under load) — **implemented** in `test_feedback_concurrency.py`
 - **Acceptance Criteria:**
-  - [ ] Baseline captured and committed — **unblocked** (T-170/T-171 complete); **next: T-172**
+  - [x] Baseline captured and committed — **unblocked** (T-170/T-171 complete); **next: T-172**
   - [x] Scenario 5 runnable independently via `pytest tests/benchmarks/test_feedback_concurrency.py`
-  - [ ] `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
-  - [ ] `make benchmark-infra` documented in README
-  - [ ] Results saved to `data/exports/infra_benchmark_{timestamp}.json`
+  - [x] `--compare` flag reports regression vs baseline (> 10% p95 increase = warn)
+  - [x] `make benchmark-infra` documented in README
+  - [x] Results saved to `data/exports/infra_benchmark_{timestamp}.json`
 
 ---
 

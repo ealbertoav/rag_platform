@@ -57,3 +57,13 @@ evals:
       faithfulness: 0.35
       relevance: 0.20
       latency: 0.10
+
+  infra_benchmark:
+    regression_p95_pct: 10
+    concurrent_chat_count: 10
+    concurrent_chat_timeout_s: 120
+    bm25_fixture_chunks: 100000
+    bm25_search_iterations: 20
+    graph_search_iterations: 10
+    streaming_sample_question: "What is retrieval augmented generation?"
+    baseline_path: data/exports/infra_baseline.json

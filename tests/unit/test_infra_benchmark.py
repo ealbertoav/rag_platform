@@ -1,0 +1,650 @@
+"""T-172 — InfraBenchmark unit tests."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+import yaml
+
+from src.domain.entities.chunk import Chunk
+from src.evals.e2e.infra_benchmark import (
+    InfraBenchmark,
+    InfraBenchmarkReport,
+    InfraBenchmarkThresholds,
+    RegressionWarning,
+    ScenarioMetrics,
+    build_bm25_fixture_chunks,
+    build_default_graph_retriever,
+    build_default_pipeline,
+    compare_to_baseline,
+    default_baseline_path,
+    load_infra_baseline,
+    load_infra_thresholds,
+    measure_stream_inter_token_latencies_ms,
+    percentile,
+    report_to_baseline_payload,
+    save_infra_baseline,
+)
+
+
+async def _token_stream(*tokens: str) -> AsyncIterator[str]:
+    for token in tokens:
+        yield token
+
+
+def _scenario(
+    name: str,
+    *,
+    p50: float = 10.0,
+    p95: float = 20.0,
+    samples: int = 5,
+    failures: int = 0,
+    memory_bytes: int | None = None,
+    error: str = "",
+    skipped: bool = False,
+    skip_reason: str = "",
+) -> ScenarioMetrics:
+    return ScenarioMetrics(
+        name=name,
+        p50_ms=p50,
+        p95_ms=p95,
+        samples=samples,
+        failures=failures,
+        memory_bytes=memory_bytes,
+        error=error,
+        skipped=skipped,
+        skip_reason=skip_reason,
+    )
+
+
+def _pipeline_mock(
+    *,
+    stream_tokens: tuple[str, ...] = ("a", "b", "c"),
+    chat_full_error: BaseException | None = None,
+) -> MagicMock:
+    pipeline = MagicMock()
+
+    async def _chat(_question: str) -> AsyncIterator[str]:
+        return _token_stream(*stream_tokens)
+
+    pipeline.chat = AsyncMock(side_effect=_chat)
+
+    if chat_full_error is not None:
+        pipeline.chat_full = AsyncMock(side_effect=chat_full_error)
+    else:
+        pipeline.chat_full = AsyncMock(return_value=MagicMock())
+    return pipeline
+
+
+class TestPercentile:
+    def test_empty_returns_zero(self):
+        assert percentile([], 50) == 0.0
+
+    def test_single_value(self):
+        assert percentile([42.0], 95) == 42.0
+
+    def test_interpolates(self):
+        assert percentile([1.0, 3.0], 50) == 2.0
+
+    def test_unsorted_input(self):
+        assert percentile([30.0, 10.0, 20.0], 50) == 20.0
+
+
+class TestLoadInfraThresholds:
+    def test_defaults_when_config_missing(self, tmp_path: Path):
+        missing = tmp_path / "missing.yaml"
+        thresholds = load_infra_thresholds(missing)
+        assert thresholds.concurrent_chat_count == 10
+        assert thresholds.bm25_fixture_chunks == 100_000
+
+    def test_loads_from_yaml(self, tmp_path: Path):
+        path = tmp_path / "evals.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "evals": {
+                        "infra_benchmark": {
+                            "regression_p95_pct": 15,
+                            "concurrent_chat_count": 5,
+                            "bm25_fixture_chunks": 500,
+                            "baseline_path": "data/exports/custom_baseline.json",
+                        }
+                    }
+                }
+            )
+        )
+        thresholds = load_infra_thresholds(path)
+        assert thresholds.regression_p95_pct == 15.0
+        assert thresholds.concurrent_chat_count == 5
+        assert thresholds.bm25_fixture_chunks == 500
+        assert thresholds.baseline_path.name == "custom_baseline.json"
+
+    def test_invalid_section_uses_defaults(self, tmp_path: Path):
+        path = tmp_path / "evals.yaml"
+        path.write_text(yaml.dump({"evals": {"infra_benchmark": "bad"}}))
+        thresholds = load_infra_thresholds(path)
+        assert thresholds.regression_p95_pct == 10.0
+
+    def test_coerces_string_numbers(self, tmp_path: Path):
+        path = tmp_path / "evals.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "evals": {
+                        "infra_benchmark": {
+                            "concurrent_chat_count": "7",
+                            "regression_p95_pct": "12.5",
+                        }
+                    }
+                }
+            )
+        )
+        thresholds = load_infra_thresholds(path)
+        assert thresholds.concurrent_chat_count == 7
+        assert thresholds.regression_p95_pct == 12.5
+
+
+class TestBaselineHelpers:
+    def test_default_baseline_path(self):
+        assert default_baseline_path().name == "infra_baseline.json"
+
+    def test_load_missing_baseline(self, tmp_path: Path):
+        assert load_infra_baseline(tmp_path / "missing.json") == {}
+
+    def test_load_invalid_json(self, tmp_path: Path):
+        path = tmp_path / "bad.json"
+        path.write_text("not-json")
+        assert load_infra_baseline(path) == {}
+
+    def test_load_non_object_json(self, tmp_path: Path):
+        path = tmp_path / "list.json"
+        path.write_text("[]")
+        assert load_infra_baseline(path) == {}
+
+    def test_report_to_baseline_payload_skips_errors(self):
+        report = InfraBenchmarkReport(
+            timestamp="ts",
+            scenarios=[
+                _scenario("ok", p50=1, p95=2, memory_bytes=100),
+                _scenario("skip", skipped=True, skip_reason="n/a"),
+                _scenario("err", error="boom"),
+            ],
+        )
+        payload = report_to_baseline_payload(report)
+        assert set(payload["scenarios"].keys()) == {"ok"}  # type: ignore[index]
+
+    def test_report_save_writes_json(self, tmp_path: Path):
+        report = InfraBenchmarkReport(
+            timestamp="t",
+            scenarios=[_scenario("bm25_100k", memory_bytes=512)],
+        )
+        path = tmp_path / "nested" / "out.json"
+        report.save(path)
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert loaded["timestamp"] == "t"
+        assert loaded["scenarios"][0]["memory_bytes"] == 512
+
+    def test_scenario_to_dict_without_memory(self):
+        data = _scenario("streaming_chat").to_dict()
+        assert "memory_bytes" not in data
+
+    def test_save_infra_baseline(self, tmp_path: Path):
+        report = InfraBenchmarkReport(
+            timestamp="20260101T000000",
+            scenarios=[_scenario("bm25_100k", p50=3, p95=6, memory_bytes=2048)],
+        )
+        path = save_infra_baseline(report, tmp_path / "baseline.json")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert loaded["scenarios"]["bm25_100k"]["p95_ms"] == 6.0
+
+
+class TestCompareToBaseline:
+    def test_no_regression(self):
+        current = {"streaming_chat": _scenario("streaming_chat", p95=20.0)}
+        baseline = {"scenarios": {"streaming_chat": {"p95_ms": 20.0}}}
+        assert compare_to_baseline(current, baseline, regression_p95_pct=10.0) == []
+
+    def test_detects_regression(self):
+        current = {"streaming_chat": _scenario("streaming_chat", p95=25.0)}
+        baseline = {"scenarios": {"streaming_chat": {"p95_ms": 20.0}}}
+        warnings = compare_to_baseline(current, baseline, regression_p95_pct=10.0)
+        assert len(warnings) == 1
+        assert warnings[0].pct_change == 25.0
+
+    def test_skips_missing_baseline_scenario(self):
+        current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
+        assert compare_to_baseline(current, {"scenarios": {}}, regression_p95_pct=10.0) == []
+
+    def test_skips_invalid_baseline(self):
+        current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
+        assert compare_to_baseline(current, {}, regression_p95_pct=10.0) == []
+
+    def test_skips_invalid_baseline_p95(self):
+        current = {"bm25_100k": _scenario("bm25_100k", p95=99.0)}
+        baseline = {"scenarios": {"bm25_100k": {"p95_ms": True}}}
+        assert compare_to_baseline(current, baseline, regression_p95_pct=0.0) == []
+        baseline_zero = {"scenarios": {"bm25_100k": {"p95_ms": 0}}}
+        assert compare_to_baseline(current, baseline_zero, regression_p95_pct=0.0) == []
+
+    def test_skips_skipped_and_error_scenarios(self):
+        current = {
+            "a": _scenario("a", skipped=True, skip_reason="x"),
+            "b": _scenario("b", error="x"),
+        }
+        baseline = {"scenarios": {"a": {"p95_ms": 1}, "b": {"p95_ms": 1}}}
+        assert compare_to_baseline(current, baseline, regression_p95_pct=0.0) == []
+
+    def test_regression_warning_message(self):
+        warning = RegressionWarning("s", "p95_ms", 10.0, 15.0, 50.0)
+        assert "s.p95_ms" in warning.message()
+
+
+class TestBuildBm25FixtureChunks:
+    def test_empty_count(self):
+        assert build_bm25_fixture_chunks(0) == []
+
+    def test_needle_chunk_present(self):
+        chunks = build_bm25_fixture_chunks(100, needle_index=42)
+        assert chunks[42].text.startswith("unique needle xyzzy")
+
+
+class TestInfraBenchmarkReport:
+    def test_scenario_map(self):
+        report = InfraBenchmarkReport(
+            timestamp="t",
+            scenarios=[_scenario("a"), _scenario("b")],
+        )
+        assert set(report.scenario_map()) == {"a", "b"}
+
+    def test_summary_skipped(self):
+        report = InfraBenchmarkReport(timestamp="t", scenarios=[], skipped=True, skip_reason="n/a")
+        assert "skipped" in report.summary()
+
+    def test_summary_with_metrics(self):
+        report = InfraBenchmarkReport(
+            timestamp="t",
+            scenarios=[_scenario("bm25_100k", memory_bytes=100, failures=1)],
+        )
+        summary = report.summary()
+        assert "memory=100B" in summary
+        assert "failures=1" in summary
+
+    def test_summary_error_and_skip_lines(self):
+        report = InfraBenchmarkReport(
+            timestamp="t",
+            scenarios=[
+                _scenario("skip", skipped=True, skip_reason="neo4j"),
+                _scenario("err", error="failed"),
+            ],
+        )
+        summary = report.summary()
+        assert "skipped" in summary
+        assert "error" in summary
+
+    def test_print_table_skipped(self, capsys):
+        report = InfraBenchmarkReport(timestamp="t", scenarios=[], skipped=True, skip_reason="n/a")
+        report.print_table()
+        assert "skipped" in capsys.readouterr().out
+
+    def test_print_table_mixed_status(self, capsys):
+        report = InfraBenchmarkReport(
+            timestamp="t",
+            scenarios=[
+                _scenario("ok"),
+                _scenario("skip", skipped=True, skip_reason="x"),
+                _scenario("err", error="x"),
+            ],
+        )
+        report.print_table()
+        out = capsys.readouterr().out
+        assert "ok" in out
+        assert "SKIP" in out or "skip" in out
+
+
+class TestMeasureStreamLatencies:
+    @pytest.mark.asyncio
+    async def test_collects_latencies(self):
+        latencies = await measure_stream_inter_token_latencies_ms(_token_stream("a", "b"))
+        assert len(latencies) == 2
+
+
+class TestInfraBenchmarkScenarios:
+    @pytest.mark.asyncio
+    async def test_run_unknown_scenario(self):
+        benchmark = InfraBenchmark()
+        report = await benchmark.run(["not_a_scenario"])
+        assert report.scenarios[0].error.startswith("unknown scenario")
+
+    @pytest.mark.asyncio
+    async def test_streaming_chat_success(self):
+        pipeline = _pipeline_mock(stream_tokens=("x", "y", "z"))
+
+        async def factory():
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(streaming_sample_question="q"),
+            pipeline_factory=factory,
+        )
+        result = await benchmark.run_streaming_chat()
+        assert result.name == "streaming_chat"
+        assert result.samples == 3
+        assert result.p95_ms >= 0.0
+
+    @pytest.mark.asyncio
+    async def test_streaming_chat_no_factory(self):
+        result = await InfraBenchmark(pipeline_factory=None).run_streaming_chat()
+        assert result.skipped is True
+
+    @pytest.mark.asyncio
+    async def test_streaming_chat_pipeline_error(self):
+        pipeline = MagicMock()
+        pipeline.chat = AsyncMock(side_effect=RuntimeError("stream fail"))
+
+        async def factory():
+            return pipeline
+
+        result = await InfraBenchmark(pipeline_factory=factory).run_streaming_chat()
+        assert result.error == "stream fail"
+
+    @pytest.mark.asyncio
+    async def test_streaming_chat_no_tokens(self):
+        pipeline = _pipeline_mock(stream_tokens=())
+
+        async def factory():
+            return pipeline
+
+        result = await InfraBenchmark(pipeline_factory=factory).run_streaming_chat()
+        assert result.error == "stream produced no tokens"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_success(self):
+        pipeline = _pipeline_mock()
+
+        async def factory():
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(concurrent_chat_count=3),
+            pipeline_factory=factory,
+        )
+        result = await benchmark.run_concurrent_chats()
+        assert result.samples == 3
+        assert result.failures == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_partial_failures(self):
+        calls = {"n": 0}
+        pipeline_ok = _pipeline_mock()
+        pipeline_fail = _pipeline_mock(chat_full_error=TimeoutError("slow"))
+
+        async def factory():
+            calls["n"] += 1
+            return pipeline_fail if calls["n"] % 2 == 0 else pipeline_ok
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(concurrent_chat_count=4),
+            pipeline_factory=factory,
+        )
+        result = await benchmark.run_concurrent_chats()
+        assert result.failures == 2
+        assert result.samples == 2
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_all_fail(self):
+        pipeline = _pipeline_mock(chat_full_error=RuntimeError("down"))
+
+        async def factory():
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(concurrent_chat_count=2),
+            pipeline_factory=factory,
+        )
+        result = await benchmark.run_concurrent_chats()
+        assert result.error == "all concurrent chats failed"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_chats_no_factory(self):
+        result = await InfraBenchmark(pipeline_factory=None).run_concurrent_chats()
+        assert result.skipped is True
+
+    @pytest.mark.asyncio
+    async def test_bm25_search_success(self, tmp_path: Path):
+        def _fixture(n: int) -> list[Chunk]:
+            return build_bm25_fixture_chunks(n, needle_index=min(50, n - 1))
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                bm25_fixture_chunks=200,
+                bm25_search_iterations=3,
+            ),
+            bm25_fixture_builder=_fixture,
+        )
+        result = await benchmark.run_bm25_search()
+        assert result.name == "bm25_100k"
+        assert result.samples == 3
+        assert result.memory_bytes is not None
+
+    @pytest.mark.asyncio
+    async def test_bm25_search_large_batch_path(self):
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                bm25_fixture_chunks=5_500,
+                bm25_search_iterations=1,
+            ),
+        )
+        result = await benchmark.run_bm25_search()
+        assert result.samples == 1
+        assert result.memory_bytes is not None
+
+    @pytest.mark.asyncio
+    async def test_bm25_search_failure(self):
+        def _bad_builder(_n: int) -> list[Chunk]:
+            return [Chunk(id="x", document_id="d", text="no needle here")]
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                bm25_fixture_chunks=1,
+                bm25_search_iterations=1,
+            ),
+            bm25_fixture_builder=_bad_builder,
+        )
+        result = await benchmark.run_bm25_search()
+        assert result.error
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_unavailable(self):
+        benchmark = InfraBenchmark(neo4j_available=lambda: False)
+        result = await benchmark.run_graph_retrieval()
+        assert result.skipped is True
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_no_factory(self):
+        benchmark = InfraBenchmark(neo4j_available=lambda: True, graph_retriever_factory=None)
+        result = await benchmark.run_graph_retrieval()
+        assert result.skipped is True
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_success(self):
+        retriever = MagicMock()
+        retriever.search = AsyncMock(return_value=[])
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(graph_search_iterations=2),
+            neo4j_available=lambda: True,
+            graph_retriever_factory=lambda: retriever,
+        )
+        result = await benchmark.run_graph_retrieval()
+        assert result.samples == 2
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_error(self):
+        def _factory() -> MagicMock:
+            raise RuntimeError("graph down")
+
+        benchmark = InfraBenchmark(
+            neo4j_available=lambda: True,
+            graph_retriever_factory=_factory,
+        )
+        result = await benchmark.run_graph_retrieval()
+        assert result.error == "graph down"
+
+    @pytest.mark.asyncio
+    async def test_graph_retrieval_no_timings(self):
+        retriever = MagicMock()
+        retriever.search = AsyncMock(return_value=[])
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(graph_search_iterations=0),
+            neo4j_available=lambda: True,
+            graph_retriever_factory=lambda: retriever,
+        )
+        result = await benchmark.run_graph_retrieval()
+        assert result.error == "graph search returned no timings"
+
+    @pytest.mark.asyncio
+    async def test_run_all_default_scenarios(self):
+        pipeline = _pipeline_mock()
+        retriever = MagicMock()
+        retriever.search = AsyncMock(return_value=[])
+
+        async def pipeline_factory():
+            return pipeline
+
+        benchmark = InfraBenchmark(
+            thresholds=InfraBenchmarkThresholds(
+                concurrent_chat_count=2,
+                bm25_fixture_chunks=100,
+                bm25_search_iterations=2,
+                graph_search_iterations=1,
+            ),
+            pipeline_factory=pipeline_factory,
+            graph_retriever_factory=lambda: retriever,
+            neo4j_available=lambda: True,
+        )
+        report = await benchmark.run()
+        assert len(report.scenarios) == 4
+
+
+class TestNeo4jReachable:
+    @staticmethod
+    def _fake_neo4j_module(
+        *,
+        driver: MagicMock | None = None,
+        driver_error: BaseException | None = None,
+    ) -> MagicMock:
+        mod = MagicMock()
+        exceptions = MagicMock()
+        exceptions.Neo4jError = type("Neo4jError", (Exception,), {})
+        mod.exceptions = exceptions
+        if driver_error is not None:
+            mod.GraphDatabase.driver.side_effect = driver_error
+        elif driver is not None:
+            mod.GraphDatabase.driver.return_value = driver
+        return mod
+
+    def test_returns_false_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("NEO4J__ENABLED", "false")
+        from src.evals.e2e import infra_benchmark as mod
+        from src.evals.e2e.technique_benchmark import reload_settings_module
+
+        reload_settings_module()
+        assert mod._neo4j_reachable() is False
+
+    def test_returns_false_on_connection_error(self, monkeypatch):
+        import sys
+
+        monkeypatch.setenv("NEO4J__ENABLED", "true")
+        monkeypatch.setenv("NEO4J__PASSWORD", "secret")
+        from src.evals.e2e import infra_benchmark as mod
+        from src.evals.e2e.technique_benchmark import reload_settings_module
+
+        reload_settings_module()
+        fake_neo4j = self._fake_neo4j_module(driver_error=OSError("down"))
+        with patch.dict(
+            sys.modules,
+            {"neo4j": fake_neo4j, "neo4j.exceptions": fake_neo4j.exceptions},
+        ):
+            assert mod._neo4j_reachable() is False
+
+    def test_returns_true_when_verified(self, monkeypatch):
+        import sys
+
+        monkeypatch.setenv("NEO4J__ENABLED", "true")
+        monkeypatch.setenv("NEO4J__PASSWORD", "secret")
+        from src.evals.e2e import infra_benchmark as mod
+        from src.evals.e2e.technique_benchmark import reload_settings_module
+
+        reload_settings_module()
+        driver = MagicMock()
+        fake_neo4j = self._fake_neo4j_module(driver=driver)
+        with patch.dict(
+            sys.modules,
+            {"neo4j": fake_neo4j, "neo4j.exceptions": fake_neo4j.exceptions},
+        ):
+            assert mod._neo4j_reachable() is True
+        driver.verify_connectivity.assert_called_once()
+        driver.close.assert_called_once()
+
+    def test_returns_false_on_import_error(self, monkeypatch):
+        import sys
+
+        monkeypatch.setenv("NEO4J__ENABLED", "true")
+        monkeypatch.setenv("NEO4J__PASSWORD", "secret")
+        from src.evals.e2e import infra_benchmark as mod
+        from src.evals.e2e.technique_benchmark import reload_settings_module
+
+        reload_settings_module()
+        with patch.dict(sys.modules, {"neo4j": None}):
+            assert mod._neo4j_reachable() is False
+
+
+class TestDefaultFactories:
+    @pytest.mark.asyncio
+    async def test_build_default_pipeline(self):
+        with patch("src.evals.e2e.technique_benchmark.build_benchmark_pipeline") as build:
+            build.return_value = MagicMock()
+            pipeline = await build_default_pipeline()
+            assert pipeline is build.return_value
+
+    def test_build_default_graph_retriever(self):
+        llm_path = "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+        idx_path = "src.infrastructure.vectordb.bm25.BM25Index.load_or_create"
+        gr_path = "src.rag.retrieval.graph_retriever.GraphRetriever.from_settings"
+        with (
+            patch(llm_path) as llm,
+            patch(idx_path) as idx,
+            patch(gr_path) as gr,
+        ):
+            llm.return_value = MagicMock()
+            idx.return_value = MagicMock()
+            gr.return_value = MagicMock()
+            result = build_default_graph_retriever()
+            assert result is gr.return_value
+
+
+class TestCoerceHelpers:
+    def test_coerce_int_invalid(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        assert mod._coerce_int(True, 3) == 3
+        assert mod._coerce_int("bad", 3) == 3
+        assert mod._coerce_int([], 3) == 3
+
+    def test_coerce_float_invalid(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        assert mod._coerce_float(False, 1.5) == 1.5
+        assert mod._coerce_float("bad", 1.5) == 1.5
+        assert mod._coerce_float({}, 1.5) == 1.5
+
+    def test_coerce_int_float_and_string(self):
+        from src.evals.e2e import infra_benchmark as mod
+
+        assert mod._coerce_int(4.0, 1) == 4
+        assert mod._coerce_float("2.5", 1.0) == 2.5

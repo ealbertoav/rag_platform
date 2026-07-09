@@ -53,6 +53,7 @@ __all__ = [
     "load_technique_configs",
     "merge_technique_overrides",
     "prepare_qa_pairs",
+    "reload_settings_module",
     "run_technique_matrix",
     "temporary_config",
 ]

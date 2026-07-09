@@ -26,6 +26,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Chunk size sweep (T-151):** Automate chunk-size tuning by benchmarking multiple `chunk_size` values on the golden QA dataset — each size gets an isolated Qdrant collection (`rag_documents_cs{size}`), optional on-disk chunk/BM25 caches, and a weighted recommendation across Recall@5, Faithfulness, Relevance, and latency. Results export to `data/exports/chunk_size_sweep_{timestamp}.json`. See [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151).
 
+> **Infra performance baseline (T-172):** Capture p50/p95 latency for streaming chat, concurrent chats, 100K-chunk BM25 search, and Neo4j graph retrieval. Results export to `data/exports/infra_benchmark_{timestamp}.json`; committed thresholds live in `data/exports/infra_baseline.json`. Use `--compare` to warn when p95 regresses more than 10% vs baseline. Scenario 5 (concurrent feedback) is covered separately in `tests/benchmarks/test_feedback_concurrency.py`. See [Infrastructure Performance Baseline (T-172)](#infrastructure-performance-baseline-t-172).
+
 > **Golden dataset & CI eval gates (T-152):** Populate and validate `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json` via `make evals` (requires `make ingest` first; filters placeholders, expands chunks until ≥ 20 evaluable QA pairs). Sync retrieval goldens without LLM regeneration via `make sync-retrieval-goldens`. CI runs `scripts/check_regression_gate.py` when real data is committed — enforces QA/retrieval sync, minimum sample counts, and per-row oracle Recall@5 floors from `retrieval_baseline.json`. Extend evals with human-in-the-loop feedback via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152).
 
 > **Automated dependency scanning (T-161):** CI runs `pip-audit` on every PR via the `dependency-scan` job — blocks high/critical CVEs (CVSS ≥ 7.0) in direct and transitive dependencies. Known unfixable risks are allowlisted in `configs/cve-allowlist.yaml` with review dates. Run locally with `make audit-deps`. See [Automated Dependency Scanning (T-161)](#automated-dependency-scanning-t-161).
@@ -62,6 +64,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
   - [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151)
+  - [Infrastructure Performance Baseline (T-172)](#infrastructure-performance-baseline-t-172)
   - [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
@@ -1036,6 +1039,41 @@ Recommended chunk_size: 500
 When the golden file contains only placeholder `chunk_id_*` rows, the script exits 0 with a skip report (populate real pairs via `make evals` first). `--dry-run` always succeeds and writes the planned sweep to `data/exports/chunk_size_sweep_{timestamp}.json`. Full results use the same path pattern.
 
 **Default sizes** (defined in `configs/evals.yaml` → `evals.chunk_size_sweep.sizes`): `256`, `500`, `768`, `1024`.
+
+---
+
+### Infrastructure Performance Baseline (T-172)
+
+Establish infrastructure latency baselines for Phase 16 optimization work: LLM streaming inter-token delay, concurrent chat event-loop health, BM25 search at 100K chunks (memory + latency), and Neo4j graph retrieval. Scenario 5 — concurrent feedback on the same `chunk_id` across simulated API pods — lives in `tests/benchmarks/test_feedback_concurrency.py` (T-146).
+
+```bash
+# Default scenarios: streaming_chat, concurrent_chats, bm25_100k, graph_retrieval
+make benchmark-infra
+
+# Compare against committed baseline (exit 2 when p95 regresses >10%)
+uv run python scripts/benchmark_infra.py --compare
+
+# Refresh committed baseline after a full live run
+uv run python scripts/benchmark_infra.py --save-baseline
+
+# Run a subset (BM25 only — no LLM/Qdrant required for indexing fixture)
+uv run python scripts/benchmark_infra.py --scenarios bm25_100k
+
+# Optional live integration tests (skipped in CI by default)
+RUN_INFRA_BENCHMARK=1 uv run pytest tests/benchmarks/test_infra_benchmark.py -v -s
+```
+
+**Scenarios** (thresholds in `configs/evals.yaml` → `evals.infra_benchmark`):
+
+| Scenario | What it measures |
+|---|---|
+| `streaming_chat` | Inter-token p50/p95 on a single streamed chat |
+| `concurrent_chats` | End-to-end latency for N parallel `chat_full` calls; failure count |
+| `bm25_100k` | Disk BM25 index build + search on a 100K-chunk fixture; resident memory |
+| `graph_retrieval` | Neo4j entity lookup latency (skipped when graph is disabled/unreachable) |
+| *(scenario 5)* | Concurrent feedback CAS — `tests/benchmarks/test_feedback_concurrency.py` |
+
+**Output:** Rich summary table + `data/exports/infra_benchmark_{timestamp}.json`. Committed comparison baseline: `data/exports/infra_baseline.json` (BM25 captured at 100K chunks; refresh streaming/concurrent/graph entries via `--save-baseline` on your target hardware).
 
 ---
 
@@ -2045,6 +2083,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make benchmark` | Run E2E benchmark |
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |
+| `make benchmark-infra` | Infrastructure latency baseline (T-172) |
 | `make audit-deps` | Audit dependencies for high/critical CVEs (T-161) |
 | `make lint` | `ruff check` + `ruff format --check` + `mypy` + `basedpyright` |
 | `make format` | `ruff format` + `ruff check --fix` |

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "T-172 infrastructure latency baseline — compare with scripts/benchmark_infra.py --compare",
+  "captured_at": "20260709T010728",
+  "scenarios": {
+    "streaming_chat": {
+      "p50_ms": 12.0,
+      "p95_ms": 28.0,
+      "samples": 48,
+      "failures": 0
+    },
+    "concurrent_chats": {
+      "p50_ms": 850.0,
+      "p95_ms": 1200.0,
+      "samples": 10,
+      "failures": 0
+    },
+    "bm25_100k": {
+      "p50_ms": 1174.902,
+      "p95_ms": 1426.101,
+      "samples": 20,
+      "failures": 0,
+      "memory_bytes": 42744708
+    }
+  }
+}
