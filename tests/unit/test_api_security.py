@@ -49,6 +49,7 @@ class TestValidateIngestPath:
 class TestValidateUploadFilename:
     def test_accepts_supported_extension(self):
         assert validate_upload_filename("report.pdf") == "report.pdf"
+        assert validate_upload_filename("deck.pptx") == "deck.pptx"
 
     def test_rejects_unsupported_extension(self):
         with pytest.raises(HTTPException) as exc:
