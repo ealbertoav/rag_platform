@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 20 in progress — **T-200** ✅ (DoclingLayoutParser), **T-201** ✅ (PptxLoader). **Next:** T-202. Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 20 in progress — **T-200** ✅ (DoclingLayoutParser), **T-201** ✅ (PptxLoader), **T-202** ✅ (Table Chunks). **Next:** Phase 21 (T-210). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2338,7 +2338,7 @@
 > | Phase | Priority | Tasks | Depends on | Status |
 > |-------|----------|-------|------------|--------|
 > | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
-> | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 pending |
+> | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | pending |
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | pending |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
@@ -2390,7 +2390,7 @@
 >
 > **Preconditions:** Phase 19 (T-190)
 >
-> **Status:** in progress — T-200 ✅ · T-201 ✅ · T-202 pending
+> **Status:** complete — T-200 ✅ · T-201 ✅ · T-202 ✅
 
 ---
 
@@ -2437,15 +2437,21 @@
 
 
 ### T-202 · Structured Table Chunks at Ingest
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Emit `type=table` chunks with `table_id`.
 - **Inputs:** T-200, T-190, T-015
 - **Outputs:** Table chunks in Qdrant+BM25
-- **Files:** `src/rag/ingestion/table_chunker.py`, tests
+- **Files:**
+  - `src/rag/ingestion/table_chunker.py` — `TableChunker`, `build_table_chunks()`, `is_table_chunk()` _(done)_
+  - `src/infrastructure/parsers/docling_parser.py` — table `text` in metadata via `export_to_markdown()` _(done)_
+  - `src/rag/pipelines/ingestion_pipeline.py` — `_build_table_chunker()`, pipeline wiring _(done)_
+  - `src/core/settings.py` — `TableChunkSettings` _(done)_
+  - `configs/parsing.yaml` — `table_chunks.enabled` flag _(done)_
+  - `tests/unit/test_table_chunker.py` — chunker, pipeline, settings _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
 
 ---
 

@@ -198,8 +198,8 @@ class TestDoclingMetadataHelpers:
         doc = MagicMock()
         doc.tables = [table]
         result = docling_extract_tables(doc)
-        assert result == [{TABLE_ID_KEY: "table-1"}]
-        table.export_to_markdown.assert_not_called()
+        assert result == [{TABLE_ID_KEY: "table-1", "text": "table-md"}]
+        table.export_to_markdown.assert_called_once()
 
     def test_extract_figures_without_caption(self) -> None:
         picture = MagicMock()

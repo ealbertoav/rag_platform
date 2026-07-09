@@ -119,6 +119,9 @@ def _extract_tables(doc: _DoclingDocument) -> list[dict[str, Any]]:
             TABLE_ID_KEY: f"table-{index}",
             **_provenance_metadata(table),
         }
+        markdown = table.export_to_markdown().strip()
+        if markdown:
+            entry["text"] = markdown
         tables.append(entry)
     return tables
 

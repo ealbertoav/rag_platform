@@ -158,6 +158,7 @@ class TestYamlDefaults:
         assert settings.parsing.layout_parser.provider == "docling"
         assert settings.parsing.ocr.enabled is False
         assert settings.parsing.ocr.provider == "tesseract"
+        assert settings.parsing.table_chunks.enabled is False
 
 
 class TestEnvVarOverride:
@@ -209,6 +210,11 @@ class TestEnvVarOverride:
         s = Settings()
         assert s.parsing.ocr.enabled is True
         assert s.parsing.ocr.provider == "azure_di"
+
+    def test_parsing_table_chunks_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PARSING__TABLE_CHUNKS__ENABLED", "true")
+        s = Settings()
+        assert s.parsing.table_chunks.enabled is True
 
 
 class TestValidation:

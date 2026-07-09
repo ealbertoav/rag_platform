@@ -44,6 +44,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Layout-aware parsing (T-200):** Optional Docling-backed layout parser for PDF/DOCX — `DoclingLayoutParser` implements `LayoutParserRepository` and routes through `load_document()` when `parsing.layout_parser.enabled=true` (off by default). Exports markdown plus layout metadata (sections, tables, figures with `table_id`/`figure_id`/`bbox`/`page`); `chunk_metadata()` filters document-level structures from per-chunk payloads and promotes `CHUNK_SECTION_KEY` for contextual headers. Install Docling separately: `uv pip install docling`. See [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200).
 
+> **Structured table chunks (T-202):** Optional `type=table` index points at ingest — `TableChunker` reads layout `tables[]` metadata (with markdown fallback) and indexes embedded table chunks in Qdrant and BM25 when `parsing.table_chunks.enabled=true` (off by default). Requires T-200 layout metadata for best results. See [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202).
+
 ---
 
 ## Table of Contents
@@ -646,7 +648,7 @@ flowchart LR
 |---|---|
 | `sections` | Ordered section headers from the document outline |
 | `section` (`CHUNK_SECTION_KEY`) | First section title — promoted onto each chunk via `chunk_metadata()` |
-| `tables` | List of `{table_id, page?, bbox?}` entries for downstream table chunking (T-202) |
+| `tables` | List of `{table_id, text?, page?, bbox?}` entries for downstream table chunking (T-202) |
 | `figures` | List of `{figure_id, caption?, page?, bbox?}` entries |
 | `page_count` | Total pages detected by Docling |
 
@@ -677,7 +679,28 @@ make ingest SOURCE=data/raw/
 
 **Tests:** `tests/unit/test_docling_parser.py` (parser, metadata extraction, factory cache, settings reload), `tests/unit/test_chunk_metadata.py` (filtering and section promotion), plus routing coverage in `tests/unit/test_loaders.py` and `tests/unit/test_ingestion.py`.
 
-**Next steps:** **T-201** (PPTX loader), **T-202** (structured `type=table` chunks at ingest). Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
+#### Structured Table Chunks at Ingest (T-202)
+
+When `parsing.table_chunks.enabled=true`, the ingestion pipeline emits dedicated `type=table` chunks (with `table_id`, optional `page`/`bbox`) alongside regular text chunks. Table text comes from Docling layout metadata (`tables[].text`) or, as a fallback, markdown tables parsed from document content. Table chunks are indexed in **both** Qdrant and BM25 (unlike HyPE/summary extras).
+
+```bash
+# Requires layout metadata from T-200 (enable layout parser first)
+PARSING__LAYOUT_PARSER__ENABLED=true
+PARSING__TABLE_CHUNKS__ENABLED=true
+
+# Re-ingest to pick up table chunks
+make ingest SOURCE=data/raw/
+```
+
+| Component | Location | Role |
+|---|---|---|
+| `TableChunker` | `src/rag/ingestion/table_chunker.py` | Builds and embeds `CHUNK_TYPE_TABLE` index points |
+| Pipeline wiring | `src/rag/pipelines/ingestion_pipeline.py` | `_build_table_chunker()` — off by default |
+| Config | `configs/parsing.yaml` | `parsing.table_chunks.enabled` |
+
+**Tests:** `tests/unit/test_table_chunker.py` (chunk building, markdown fallback, embedding, pipeline integration).
+
+**Next steps:** Phase 21 (**T-210** multimodal domain model). Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
 
 ### Start the API Server
 

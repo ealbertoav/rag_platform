@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from src.rag.enrichment.hierarchical_indexer import HierarchicalIndexer
     from src.rag.enrichment.hype_indexer import HyPEIndexer
     from src.rag.ingestion.graph_indexer import GraphIndexer
+    from src.rag.ingestion.table_chunker import TableChunker
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class IngestionPipeline:
         augmentor: DocumentAugmentor | None = None,
         hype_indexer: HyPEIndexer | None = None,
         hierarchical_indexer: HierarchicalIndexer | None = None,
+        table_chunker: TableChunker | None = None,
     ) -> None:
         self._service: IngestionService = service
         self._vector_store: VectorStoreRepository = vector_store
@@ -83,6 +85,7 @@ class IngestionPipeline:
         self._augmentor: DocumentAugmentor | None = augmentor
         self._hype_indexer: HyPEIndexer | None = hype_indexer
         self._hierarchical_indexer: HierarchicalIndexer | None = hierarchical_indexer
+        self._table_chunker: TableChunker | None = table_chunker
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -142,6 +145,9 @@ class IngestionPipeline:
             if self._hype_indexer is not None:
                 hype_chunks = self._hype_indexer.index(chunks)
                 indexed_chunks.extend(hype_chunks)
+            if self._table_chunker is not None:
+                table_chunks = self._table_chunker.index(document)
+                indexed_chunks.extend(table_chunks)
 
             self._index_graph(chunks, document.id)
             self._vector_store.upsert(indexed_chunks)
@@ -284,6 +290,7 @@ class IngestionPipeline:
         augmentor = _build_augmentor(embedder, cfg.augmentation)
         hype_indexer = _build_hype_indexer(embedder, settings.retrieval.hype)
         hierarchical_indexer = _build_hierarchical_indexer(embedder, cfg.hierarchical)
+        table_chunker = _build_table_chunker(embedder, settings.parsing.table_chunks)
 
         return cls(
             service=service,
@@ -294,6 +301,7 @@ class IngestionPipeline:
             augmentor=augmentor,
             hype_indexer=hype_indexer,
             hierarchical_indexer=hierarchical_indexer,
+            table_chunker=table_chunker,
         )
 
 
@@ -373,6 +381,15 @@ def _build_hierarchical_indexer(
     except Exception as exc:
         logger.warning("Hierarchical indexer unavailable: %s", exc)
         return None
+
+
+def _build_table_chunker(embedder: EmbeddingRepository, cfg: object) -> TableChunker | None:
+    """Build a structured table chunker when table chunking is enabled."""
+    if not getattr(cfg, "enabled", False):
+        return None
+    from src.rag.ingestion.table_chunker import TableChunker
+
+    return TableChunker(embedder=embedder)
 
 
 def _bm25_indexable(chunks: list[Chunk]) -> list[Chunk]:

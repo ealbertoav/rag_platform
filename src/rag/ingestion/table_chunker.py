@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+
+from src.core.constants import (
+    BBOX_KEY,
+    CHUNK_PAGE_KEY,
+    CHUNK_SOURCE_KEY,
+    CHUNK_TYPE_KEY,
+    CHUNK_TYPE_TABLE,
+    TABLE_ID_KEY,
+)
+from src.domain.entities.chunk import Chunk
+from src.domain.entities.document import Document
+from src.domain.repositories.embedding_repository import EmbeddingRepository
+from src.rag.chunking.metadata import chunk_metadata
+
+logger = logging.getLogger(__name__)
+
+_TABLE_TEXT_KEY = "text"
+
+# GFM pipe table: header row, separator row, one or more body rows.
+_MARKDOWN_TABLE_RE = re.compile(
+    r"(\|[^\n]+\|\n\|[-: |]+\|\n(?:\|[^\n]+\|\n?)+)",
+    re.MULTILINE,
+)
+
+
+def is_table_chunk(chunk: Chunk) -> bool:
+    """Return True when *chunk* is a structured table index point."""
+    return chunk.metadata.get(CHUNK_TYPE_KEY) == CHUNK_TYPE_TABLE
+
+
+def extract_markdown_tables(content: str) -> list[str]:
+    """Return Markdown table blocks in document order."""
+    return [block.strip() for block in _MARKDOWN_TABLE_RE.findall(content) if block.strip()]
+
+
+def _resolve_table_text(entry: dict[str, Any], fallback: str | None) -> str | None:
+    for key in (_TABLE_TEXT_KEY, "markdown"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if fallback and fallback.strip():
+        return fallback.strip()
+    return None
+
+
+def build_table_chunks(document: Document) -> list[Chunk]:
+    """Build unembedded table chunks from document layout metadata."""
+    tables = document.metadata.get("tables")
+    if not isinstance(tables, list) or not tables:
+        return []
+
+    content_tables = extract_markdown_tables(document.content)
+    chunks: list[Chunk] = []
+
+    for index, raw_entry in enumerate(tables):
+        if not isinstance(raw_entry, dict):
+            logger.debug("Skipping non-dict table entry at index %d", index)
+            continue
+        table_id = raw_entry.get(TABLE_ID_KEY)
+        if not table_id:
+            logger.debug("Skipping table entry without %s at index %d", TABLE_ID_KEY, index)
+            continue
+
+        fallback = content_tables[index] if index < len(content_tables) else None
+        text = _resolve_table_text(raw_entry, fallback)
+        if not text:
+            logger.warning(
+                "No text for table %s in %s — skipping structured table chunk",
+                table_id,
+                document.source,
+            )
+            continue
+
+        metadata = chunk_metadata(document.metadata)
+        metadata[CHUNK_TYPE_KEY] = CHUNK_TYPE_TABLE
+        metadata[TABLE_ID_KEY] = str(table_id)
+        metadata[CHUNK_SOURCE_KEY] = document.source
+        if CHUNK_PAGE_KEY in raw_entry:
+            metadata[CHUNK_PAGE_KEY] = raw_entry[CHUNK_PAGE_KEY]
+        if BBOX_KEY in raw_entry:
+            metadata[BBOX_KEY] = raw_entry[BBOX_KEY]
+
+        chunks.append(Chunk(document_id=document.id, text=text, metadata=metadata))
+
+    return chunks
+
+
+class TableChunker:
+    """Emits embedded structured table chunks at ingested time."""
+
+    def __init__(self, embedder: EmbeddingRepository) -> None:
+        self._embedder: EmbeddingRepository = embedder
+
+    def index(self, document: Document) -> list[Chunk]:
+        """Return embedded table chunks for a *document*."""
+        chunks = build_table_chunks(document)
+        if not chunks:
+            return []
+
+        texts = [c.text for c in chunks]
+        try:
+            dense_vecs, sparse_vecs = self._embedder.embed_both(texts)
+        except Exception as exc:
+            logger.warning("Embedding table chunks failed for %s: %s", document.source, exc)
+            return []
+
+        return [
+            chunk.model_copy(update={"embedding": dense, "sparse_vector": sparse})
+            for chunk, dense, sparse in zip(chunks, dense_vecs, sparse_vecs, strict=True)
+        ]
