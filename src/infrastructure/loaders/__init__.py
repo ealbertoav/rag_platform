@@ -11,6 +11,7 @@ from src.infrastructure.loaders.docx_loader import DocxLoader
 from src.infrastructure.loaders.html_loader import HtmlLoader
 from src.infrastructure.loaders.markdown_loader import MarkdownLoader
 from src.infrastructure.loaders.pdf_loader import PdfLoader
+from src.infrastructure.loaders.pptx_loader import PptxLoader
 
 _LAYOUT_PARSER_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx"})
 
@@ -30,6 +31,7 @@ class DocumentLoader(Protocol):
 _LOADERS: dict[str, DocumentLoader] = {
     ".pdf": PdfLoader(),
     ".docx": DocxLoader(),
+    ".pptx": PptxLoader(),
     ".html": HtmlLoader(),
     ".htm": HtmlLoader(),
     ".md": MarkdownLoader(),
@@ -80,5 +82,6 @@ __all__ = [
     "HtmlLoader",
     "MarkdownLoader",
     "PdfLoader",
+    "PptxLoader",
     "load_document",
 ]

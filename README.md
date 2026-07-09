@@ -2267,7 +2267,7 @@ EMBEDDINGS__DEVICE=cpu
 
 | Target | Description |
 |---|---|
-| `make install` | `uv sync --extra dev --extra evals` |
+| `make install` | `uv sync --group dev --extra evals` |
 | `make serve` | Start API server natively (Metal/MPS) |
 | `make ingest SOURCE=path` | Ingest a file or directory |
 | `make evals` | Generate golden QA + retrieval datasets (requires `make ingest` first; T-152) |

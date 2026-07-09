@@ -5,6 +5,8 @@ parsing:
     # When enabled, .pdf and .docx route through DoclingLayoutParser → ParsedDocument
     # before chunking. Metadata includes sections, tables (table_id), and figures
     # (figure_id, bbox, page) for downstream multimodal chunking (T-202+).
+  # .pptx uses PptxLoader (T-201) — plain text from slide titles and shapes;
+  # not routed through the layout parser unless extended in a future phase.
   ocr:
     enabled: false              # OCR pipeline (T-220+); off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

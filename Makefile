@@ -3,7 +3,7 @@
         benchmark-chunk-sizes benchmark-infra audit-deps
 
 install:
-	uv sync --extra dev --extra evals
+	uv sync --group dev --extra evals
 
 sync:
 	uv sync

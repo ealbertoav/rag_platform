@@ -1076,6 +1076,34 @@ class TestLoaderExceptionPaths:
         ):
             MarkdownLoader().load(path)
 
+    def test_pptx_wraps_generic_exception(self, tmp_path: Path):
+        from src.infrastructure.loaders.pptx_loader import PptxLoader
+
+        path = tmp_path / "bad.pptx"
+        path.write_bytes(b"x")
+        with (
+            patch(
+                "src.infrastructure.loaders.pptx_loader.python_pptx.Presentation",
+                side_effect=ValueError("bad"),
+            ),
+            pytest.raises(DocumentLoadError, match="Cannot load PPTX"),
+        ):
+            PptxLoader().load(path)
+
+    def test_pptx_reraises_document_load_error(self, tmp_path: Path):
+        from src.infrastructure.loaders.pptx_loader import PptxLoader
+
+        path = tmp_path / "bad.pptx"
+        path.write_bytes(b"x")
+        with (
+            patch(
+                "src.infrastructure.loaders.pptx_loader.python_pptx.Presentation",
+                side_effect=DocumentLoadError("inner"),
+            ),
+            pytest.raises(DocumentLoadError, match="inner"),
+        ):
+            PptxLoader().load(path)
+
 
 class TestBgeRerankerGaps:
     def test_get_model_success_on_mps(self):

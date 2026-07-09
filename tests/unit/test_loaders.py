@@ -7,10 +7,14 @@ DOCX, HTML, and Markdown use real fixture files created in tmp_path.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Protocol, cast
 from unittest.mock import MagicMock, patch
 
 import docx as python_docx
+import pptx as python_pptx
 import pytest
+from pptx.slide import Slide
+from pptx.text.text import TextFrame
 
 from src.core.exceptions import DocumentLoadError
 from src.domain.entities.document import Document
@@ -20,8 +24,32 @@ from src.infrastructure.loaders.docx_loader import DocxLoader
 from src.infrastructure.loaders.html_loader import HtmlLoader
 from src.infrastructure.loaders.markdown_loader import MarkdownLoader
 from src.infrastructure.loaders.pdf_loader import PdfLoader
+from src.infrastructure.loaders.pptx_loader import (
+    PptxLoader,
+    _shape_text,
+    _slide_text,
+    _slide_title,
+)
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
+
+
+class _TextFrameShape(Protocol):
+    has_text_frame: bool
+    text_frame: TextFrame
+
+
+def _set_shape_text(shape: object | None, text: str) -> None:
+    if shape is None:
+        raise RuntimeError("shape is missing")
+    typed = cast(_TextFrameShape, shape)
+    assert typed.has_text_frame
+    typed.text_frame.text = text
+
+
+def _set_slide_title_and_body(slide: Slide, title: str, body: str) -> None:
+    _set_shape_text(slide.shapes.title, title)
+    _set_shape_text(slide.placeholders[1], body)
 
 
 @pytest.fixture
@@ -33,6 +61,28 @@ def docx_file(tmp_path: Path) -> Path:
     doc.add_heading("Details", level=2)
     doc.add_paragraph("This is the second paragraph with more detail.")
     doc.save(str(path))
+    return path
+
+
+@pytest.fixture
+def pptx_file(tmp_path: Path) -> Path:
+    path = tmp_path / "sample.pptx"
+    prs = python_pptx.Presentation()
+    title_slide = prs.slides.add_slide(prs.slide_layouts[0])
+    _set_slide_title_and_body(title_slide, "Introduction", "Welcome to the deck.")
+
+    content_slide = prs.slides.add_slide(prs.slide_layouts[1])
+    _set_slide_title_and_body(content_slide, "Details", "Second slide with more detail.")
+    prs.save(str(path))
+    return path
+
+
+@pytest.fixture
+def blank_pptx_file(tmp_path: Path) -> Path:
+    path = tmp_path / "blank.pptx"
+    prs = python_pptx.Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    prs.save(str(path))
     return path
 
 
@@ -197,6 +247,77 @@ class TestDocxLoader:
             DocxLoader().load(tmp_path / "ghost.docx")
 
 
+# ── PptxLoader ─────────────────────────────────────────────────────────────────
+
+
+class TestPptxLoader:
+    def test_returns_document(self, pptx_file: Path):
+        assert isinstance(PptxLoader().load(pptx_file), Document)
+
+    def test_content_contains_slide_text(self, pptx_file: Path):
+        doc = PptxLoader().load(pptx_file)
+        assert "Welcome to the deck." in doc.content
+        assert "Second slide with more detail." in doc.content
+        assert "---" in doc.content
+
+    def test_metadata_filename(self, pptx_file: Path):
+        doc = PptxLoader().load(pptx_file)
+        assert doc.metadata["filename"] == "sample.pptx"
+        assert doc.metadata["extension"] == ".pptx"
+        assert doc.metadata["loader"] == "pptx"
+
+    def test_metadata_sections(self, pptx_file: Path):
+        doc = PptxLoader().load(pptx_file)
+        assert doc.metadata["slide_count"] == 2
+        assert "Introduction" in doc.metadata["sections"]
+        assert "Details" in doc.metadata["sections"]
+        assert doc.metadata["section"] == "Introduction"
+
+    def test_blank_slide_without_title(self, blank_pptx_file: Path):
+        doc = PptxLoader().load(blank_pptx_file)
+        assert doc.metadata["slide_count"] == 1
+        assert doc.metadata["sections"] == []
+        assert "section" not in doc.metadata
+
+    def test_source_is_absolute(self, pptx_file: Path):
+        doc = PptxLoader().load(pptx_file)
+        assert Path(doc.source).is_absolute()
+
+    def test_missing_file_raises_document_load_error(self, tmp_path: Path):
+        with pytest.raises(DocumentLoadError):
+            PptxLoader().load(tmp_path / "ghost.pptx")
+
+
+class TestPptxLoaderHelpers:
+    def test_shape_text_without_text_frame(self):
+        shape = MagicMock()
+        shape.has_text_frame = False
+        assert _shape_text(shape) == ""
+
+    def test_slide_title_missing_shape(self):
+        slide = MagicMock()
+        slide.shapes.title = None
+        assert _slide_title(slide) is None
+
+    def test_slide_title_empty_text(self):
+        slide = MagicMock()
+        title_shape = MagicMock()
+        title_shape.has_text_frame = True
+        title_shape.text_frame.paragraphs = [MagicMock(text="   ")]
+        slide.shapes.title = title_shape
+        assert _slide_title(slide) is None
+
+    def test_slide_text_skips_empty_shapes(self):
+        slide = MagicMock()
+        text_shape = MagicMock()
+        text_shape.has_text_frame = True
+        text_shape.text_frame.paragraphs = [MagicMock(text="Slide body")]
+        empty_shape = MagicMock()
+        empty_shape.has_text_frame = False
+        slide.shapes = [empty_shape, text_shape]
+        assert _slide_text(slide) == "Slide body"
+
+
 # ── HtmlLoader ─────────────────────────────────────────────────────────────────
 
 
@@ -288,6 +409,10 @@ class TestLoadDocument:
     def test_dispatches_to_docx_loader(self, docx_file: Path):
         doc = load_document(docx_file)
         assert doc.metadata["loader"] == "docx"
+
+    def test_dispatches_to_pptx_loader(self, pptx_file: Path):
+        doc = load_document(pptx_file)
+        assert doc.metadata["loader"] == "pptx"
 
     def test_unsupported_extension_raises(self, tmp_path: Path):
         path = tmp_path / "file.xyz"

@@ -48,6 +48,7 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".pdf",
         ".docx",
+        ".pptx",
         ".html",
         ".htm",
         ".md",
