@@ -355,6 +355,21 @@ class ChunkingSettings(BaseModel):
     proposition: PropositionSettings = Field(default_factory=PropositionSettings)
 
 
+class LayoutParserSettings(BaseModel):
+    enabled: bool = False
+    provider: str = "docling"
+
+
+class OcrSettings(BaseModel):
+    enabled: bool = False
+    provider: str = "tesseract"
+
+
+class ParsingSettings(BaseModel):
+    layout_parser: LayoutParserSettings = Field(default_factory=LayoutParserSettings)
+    ocr: OcrSettings = Field(default_factory=OcrSettings)
+
+
 # ── Root settings ──────────────────────────────────────────────────────────────
 
 
@@ -387,6 +402,7 @@ class Settings(BaseSettings):
     quality: QualitySettings = Field(default_factory=QualitySettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
+    parsing: ParsingSettings = Field(default_factory=ParsingSettings)
     api: APISettings = Field(default_factory=APISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 

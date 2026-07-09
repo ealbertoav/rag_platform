@@ -10,6 +10,7 @@ from src.core.settings import (
     LoggingSettings,
     MetadataSettings,
     Neo4jSettings,
+    ParsingSettings,
     QdrantSettings,
     QueryExpansionSettings,
     RerankerSettings,
@@ -36,6 +37,7 @@ class TestSettingsSingleton:
         assert isinstance(settings.neo4j, Neo4jSettings)
         assert isinstance(settings.metadata, MetadataSettings)
         assert isinstance(settings.chunking, ChunkingSettings)
+        assert isinstance(settings.parsing, ParsingSettings)
 
 
 class TestYamlDefaults:
@@ -151,6 +153,12 @@ class TestYamlDefaults:
     def test_proposition_defaults_from_yaml(self):
         assert settings.chunking.proposition.quality_threshold == 7
 
+    def test_parsing_defaults_from_yaml(self):
+        assert settings.parsing.layout_parser.enabled is False
+        assert settings.parsing.layout_parser.provider == "docling"
+        assert settings.parsing.ocr.enabled is False
+        assert settings.parsing.ocr.provider == "tesseract"
+
 
 class TestEnvVarOverride:
     def test_llm_provider_override(self, monkeypatch: pytest.MonkeyPatch):
@@ -187,6 +195,20 @@ class TestEnvVarOverride:
         monkeypatch.setenv("LLM__DISABLE_DISK_CACHE", "true")
         s = Settings()
         assert s.llm.disable_disk_cache is True
+
+    def test_parsing_layout_parser_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PARSING__LAYOUT_PARSER__ENABLED", "true")
+        monkeypatch.setenv("PARSING__LAYOUT_PARSER__PROVIDER", "custom")
+        s = Settings()
+        assert s.parsing.layout_parser.enabled is True
+        assert s.parsing.layout_parser.provider == "custom"
+
+    def test_parsing_ocr_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PARSING__OCR__ENABLED", "true")
+        monkeypatch.setenv("PARSING__OCR__PROVIDER", "azure_di")
+        s = Settings()
+        assert s.parsing.ocr.enabled is True
+        assert s.parsing.ocr.provider == "azure_di"
 
 
 class TestValidation:

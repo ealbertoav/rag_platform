@@ -2032,11 +2032,11 @@ rag_implementation/
 ├── .dockerignore
 ├── .env.example
 ├── .github/
-│   ├── actions/setup-python-env/  # uv + .venv cache composite (T-174)
+│   ├── actions/setup-python-env/  # uv + .venv cache composite (T-180)
 │   ├── dependabot.yml          # Weekly llama-cpp-python updates (T-162)
 │   └── workflows/
-│       ├── ci.yml              # Quality · Unit Tests · Extended Tests (T-174–T-176)
-│       └── ci-slow.yml         # Weekly slow unit tests (T-176)
+│       ├── ci.yml              # Quality · Unit Tests · Extended Tests (T-180–T-182)
+│       └── ci-slow.yml         # Weekly slow unit tests (T-182)
 ├── .pre-commit-config.yaml
 ├── docker-compose.yml          # Full local stack
 ├── docker-compose.override.yml # Dev overrides — hot-reload + Ollama LLM
@@ -2142,7 +2142,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make format` | `ruff format` + `ruff check --fix` |
 | `make test` | Unit + integration tests with coverage |
 | `make test-unit` | Unit tests only (excludes `@pytest.mark.slow`) |
-| `make test-slow` | Slow scale unit tests only (T-175) |
+| `make test-slow` | Slow scale unit tests only (T-181) |
 | `make test-e2e` | End-to-end tests |
 | `make docker-build` | Build `api` and `worker` images |
 | `make docker-up` | Start full Docker Compose stack |
@@ -3010,7 +3010,7 @@ Three jobs share [`.github/actions/setup-python-env`](.github/actions/setup-pyth
 
 **Slow tests:** 100K-chunk BM25 scale tests are marked `@pytest.mark.slow`. Run locally with `make test-slow`. Weekly coverage via [`.github/workflows/ci-slow.yml`](.github/workflows/ci-slow.yml). Manual full suite: Actions → CI → Run workflow → enable **Include slow unit tests**.
 
-**Branch protection migration (T-174):** after the first green run, update required checks from `Dependency Scan` + `Lint` + `Integration Tests` + `Retrieval Eval Regression` to **Quality**, **Unit Tests**, **Extended Tests**. Use `./scripts/migrate_ci_checks.sh` to inspect current contexts and print a `gh api` patch template.
+**Branch protection migration (T-180):** after the first green run, update required checks from `Dependency Scan` + `Lint` + `Integration Tests` + `Retrieval Eval Regression` to **Quality**, **Unit Tests**, **Extended Tests**. Use `./scripts/migrate_ci_checks.sh` to inspect current contexts and print a `gh api` patch template.
 
 Run `uv run python scripts/check_lint_gate.py` locally to verify CI/Makefile/pre-commit parity before opening a PR (T-171). Operators can monitor upstream `diskcache` fixes locally with `./scripts/check_diskcache_cve.sh` (T-162); Dependabot opens weekly PRs for `llama-cpp-python` updates.
 

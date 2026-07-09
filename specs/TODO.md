@@ -4,7 +4,9 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 18 complete — **T-174–T-176** ✅ (CI performance). **Phase 17 complete** — T-170–T-173 ✅. **T-172** ✅ (PR #41).
+> **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
+
+> **Current focus:** Phase 19 complete — **T-190** ✅ (parsing contracts). **Next:** Phase 20 — Layout-Aware Document Parsing (**T-200–T-202**). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2268,7 +2270,7 @@
 
 ---
 
-### T-174 · CI Workflow Restructure & venv Cache
+### T-180 · CI Workflow Restructure & venv Cache
 - **Status:** `[x]`
 - **Goal:** Reduce CI installs from 5 to 3, run Quality and Unit Tests in parallel, cache `.venv` across jobs.
 - **Inputs:** T-061 (CI pipeline), T-161 (dependency scan), T-171 (lint gate)
@@ -2290,10 +2292,10 @@
 
 ---
 
-### T-175 · Unit Test Suite Performance
+### T-181 · Unit Test Suite Performance
 - **Status:** `[x]`
 - **Goal:** Cut CI unit pytest time by fixing accidental slow tests and parallelizing the default suite.
-- **Inputs:** T-174 (CI unit command), T-165 (100K BM25 disk tests), T-172 (`test_benchmark_infra_cli.py`)
+- **Inputs:** T-180 (CI unit command), T-165 (100K BM25 disk tests), T-172 (`test_benchmark_infra_cli.py`)
 - **Outputs:** `@pytest.mark.slow`, xdist, tenacity sleep mocks, faster CLI entrypoint test.
 - **Files:**
   - `tests/unit/test_benchmark_infra_cli.py` — patch `asyncio.run` in `test_module_entrypoint` _(done)_
@@ -2311,10 +2313,10 @@
 
 ---
 
-### T-176 · Path Filters & CI Policy
+### T-182 · Path Filters & CI Policy
 - **Status:** `[x]`
 - **Goal:** Skip jobs when diffs cannot affect them; add manual and scheduled slow-test coverage.
-- **Inputs:** T-174 (3-job layout)
+- **Inputs:** T-180 (3-job layout)
 - **Outputs:** `dorny/paths-filter`, expanded `paths-ignore`, `workflow_dispatch`, weekly slow workflow.
 - **Files:**
   - `.github/workflows/ci.yml` — `changes` job, per-job `if:` conditions, `workflow_dispatch` + `run_slow` input _(done)_
@@ -2326,6 +2328,550 @@
   - [x] `workflow_dispatch` can run full suite with slow tests
   - [x] Weekly `ci-slow.yml` runs `@pytest.mark.slow`
 - **Notes:** Extended tests skip when diff is narrowly scoped to `tests/unit/**` without touching `src/**` or golden datasets. Conservative `extended` filter avoids false skips on production code changes.
+
+---
+
+## Multimodal-RAG Phase Roadmap (Phases 19–28)
+
+> Phases are numbered sequentially after Phase 18. **Task IDs follow Phase × 10** (Phase 20 → T-200…). Every precondition is satisfied by an earlier phase.
+>
+> | Phase | Priority | Tasks | Depends on |
+> |-------|----------|-------|------------|
+> | **19** | 9 | T-190 | Phases 0–3, 18 |
+> | **20** | 10 | T-200 → T-202 | Phase 19 |
+> | **21** | 11 | T-210 | Phases 19–20 |
+> | **22** | 12 | T-220 → T-223 | Phases 19–20 |
+> | **23** | 13 | T-230 → T-232 | Phases 20–21 |
+> | **24** | 14 | T-240 → T-243 | Phases 20–21 |
+> | **25** | 15 | T-250 → T-253 | Phase 21 |
+> | **26** | 16 | T-260 → T-263 | Phase 25 |
+> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 |
+> | **28** | 18 | T-280 → T-282 | Phases 25–26 |
+
+## Phase 19 — Multimodal Parsing Contracts (Priority 9)
+
+> **Motivation:** Define parsing/OCR ABCs and chunk-type constants before layout implementations.
+>
+> **Preconditions:** Phases 0–3, 18
+
+---
+
+### T-190 · Layout Parser & OCR Repository ABCs
+- **Status:** `[x]`
+- **Goal:** Define `LayoutParserRepository`, `OcrRepository`, `ParsedDocument`, `ParsingSettings`, and multimodal chunk constants.
+- **Inputs:** T-004, T-003
+- **Outputs:** ABCs + `configs/parsing.yaml` + constants in `src/core/constants.py`
+- **Files:** `src/domain/repositories/layout_parser_repository.py`, `ocr_repository.py`, `entities/parsed_document.py`, `tests/unit/test_parsing_repositories.py`
+- **Acceptance Criteria:**
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 20 — Layout-Aware Document Parsing (Priority 10)
+
+> **Motivation:** Docling layout parser, PPTX loader, structured table chunks.
+>
+> **Preconditions:** Phase 19 (T-190)
+
+---
+
+### T-200 · Layout-Aware Parser — Docling (Primary)
+- **Status:** `[ ]`
+- **Goal:** Implement `DoclingLayoutParser` for PDF/DOCX.
+- **Inputs:** T-190, T-010
+- **Outputs:** `DoclingLayoutParser` + loader delegation
+- **Files:** `src/infrastructure/parsers/docling_parser.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-201 · PPT/PPTX Loader
+- **Status:** `[ ]`
+- **Goal:** Add `.pptx` to `SUPPORTED_EXTENSIONS`.
+- **Inputs:** T-190
+- **Outputs:** `PptxLoader`
+- **Files:** `src/infrastructure/loaders/pptx_loader.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-202 · Structured Table Chunks at Ingest
+- **Status:** `[ ]`
+- **Goal:** Emit `type=table` chunks with `table_id`.
+- **Inputs:** T-200, T-190, T-015
+- **Outputs:** Table chunks in Qdrant+BM25
+- **Files:** `src/rag/ingestion/table_chunker.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 21 — Multimodal Domain Model (Priority 11)
+
+> **Motivation:** Extend `Chunk`/`Answer`/`SourceReference` after parsing shapes are proven.
+>
+> **Preconditions:** Phases 19–20
+
+---
+
+### T-210 · Multimodal Domain Model Extensions
+- **Status:** `[ ]`
+- **Goal:** Add modality fields and `SourceReference`.
+- **Inputs:** T-003, T-190, T-202
+- **Outputs:** Extended entities
+- **Files:** `source_reference.py`, entity updates, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 22 — OCR Pipeline (Priority 12)
+
+> **Motivation:** Self-hosted OCR + Azure Document Intelligence (not OCR-Form-Tools UI).
+>
+> **Preconditions:** Phases 19–20
+
+---
+
+### T-220 · OCR Provider Abstraction & Settings
+- **Status:** `[ ]`
+- **Goal:** `get_ocr_provider()` factory.
+- **Inputs:** T-190
+- **Outputs:** OCR factory
+- **Files:** `src/infrastructure/ocr/__init__.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-221 · Self-Hosted OCR Providers
+- **Status:** `[ ]`
+- **Goal:** Tesseract, EasyOCR, Docling OCR.
+- **Inputs:** T-220
+- **Outputs:** Self-hosted providers
+- **Files:** `src/infrastructure/ocr/*_provider.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-222 · Azure Document Intelligence OCR Provider
+- **Status:** `[ ]`
+- **Goal:** Azure DI REST API (FOTT backend, not labeling UI).
+- **Inputs:** T-220
+- **Outputs:** `AzureDocumentIntelligenceOcr`
+- **Files:** `azure_di_provider.py`, `docs/ocr-providers.md`
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-223 · Scanned-PDF Detection & OCR Fallback Router
+- **Status:** `[ ]`
+- **Goal:** Route low-text pages through OCR.
+- **Inputs:** T-010, T-221/T-222, T-200
+- **Outputs:** OCR fallback
+- **Files:** `src/rag/ingestion/ocr_fallback.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 23 — VLM Image Understanding (Priority 13)
+
+> **Motivation:** Figure assets, VLM captions, caption chunks.
+>
+> **Preconditions:** Phases 20–21
+
+---
+
+### T-230 · Figure Asset Extraction & Storage
+- **Status:** `[ ]`
+- **Goal:** Persist figures with `figure_id`.
+- **Inputs:** T-200, T-201
+- **Outputs:** Asset store
+- **Files:** `figure_extractor.py`, `local_asset_store.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-231 · VLM Captioning at Ingest
+- **Status:** `[ ]`
+- **Goal:** Gemini/OpenAI vision captions at ingest.
+- **Inputs:** T-230, T-030
+- **Outputs:** Caption text per figure
+- **Files:** `figure_captioner.py`, vision providers, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-232 · Image Caption Chunks
+- **Status:** `[ ]`
+- **Goal:** Index `type=caption` chunks.
+- **Inputs:** T-231, T-202, T-015
+- **Outputs:** Caption chunks
+- **Files:** `caption_chunker.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 24 — Structure-Aware Chunking (Priority 14)
+
+> **Motivation:** Section/page chunking, config wiring, type registry.
+>
+> **Preconditions:** Phases 20–21
+
+---
+
+### T-240 · Section-Boundary Chunker
+- **Status:** `[ ]`
+- **Goal:** Split on headings; set `metadata.section`.
+- **Inputs:** T-011, T-200
+- **Outputs:** `SectionChunker`
+- **Files:** `section_chunker.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-241 · Page-Boundary Chunker & Per-Chunk Page Metadata
+- **Status:** `[ ]`
+- **Goal:** Set `metadata.page` per chunk.
+- **Inputs:** T-200, T-240
+- **Outputs:** `PageAwareChunker`
+- **Files:** `page_chunker.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-242 · IngestionPipeline Chunker Config Wiring Fix
+- **Status:** `[ ]`
+- **Goal:** Forward all chunking kwargs from settings.
+- **Inputs:** T-115, T-011
+- **Outputs:** Fixed `from_settings()`
+- **Files:** `ingestion_pipeline.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-243 · Modality Chunk Type Registry & Index Routing
+- **Status:** `[ ]`
+- **Goal:** Centralize BM25/dense routing per type.
+- **Inputs:** T-202, T-232, T-015
+- **Outputs:** Type registry
+- **Files:** `chunk_type_registry.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 25 — Multimodal Embeddings & Vector Indexing (Priority 15)
+
+> **Motivation:** CLIP/Voyage embeddings, Qdrant `image_dense`, ingest wiring.
+>
+> **Preconditions:** Phase 21
+
+---
+
+### T-250 · EmbeddingRepository Image API Extension
+- **Status:** `[ ]`
+- **Goal:** Add `embed_image()`.
+- **Inputs:** T-004, T-210
+- **Outputs:** Extended ABC
+- **Files:** `embedding_repository.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-251 · Multimodal Embedding Provider (CLIP / Voyage-Multimodal)
+- **Status:** `[ ]`
+- **Goal:** Image+text embedding provider.
+- **Inputs:** T-250, T-108
+- **Outputs:** CLIP/Voyage provider
+- **Files:** `clip_provider.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-252 · Qdrant Multimodal Schema Extension
+- **Status:** `[ ]`
+- **Goal:** Add optional `image_dense` vector.
+- **Inputs:** T-013, T-251, T-105
+- **Outputs:** Schema v2
+- **Files:** `qdrant.py`, migration script, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-253 · Multimodal Ingestion Pipeline Wiring
+- **Status:** `[ ]`
+- **Goal:** End-to-end multimodal ingest.
+- **Inputs:** T-200..T-232, T-252, T-015
+- **Outputs:** Full ingest path
+- **Files:** `ingestion_pipeline.py`, integration tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 26 — Multimodal Retrieval & Reranking (Priority 16)
+
+> **Motivation:** Image dense retriever, cross-modal fusion, modality reranking.
+>
+> **Preconditions:** Phase 25
+
+---
+
+### T-260 · Image Dense Retriever
+- **Status:** `[ ]`
+- **Goal:** Search `image_dense` named vector.
+- **Inputs:** T-251, T-252, T-021
+- **Outputs:** `ImageDenseRetriever`
+- **Files:** `image_dense_retriever.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-261 · Cross-Modal Hybrid Fusion
+- **Status:** `[ ]`
+- **Goal:** Add image leg to `HybridRetriever` RRF.
+- **Inputs:** T-260, T-022, T-243
+- **Outputs:** Fusion leg
+- **Files:** `hybrid_retriever.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-262 · Modality-Aware Reranking
+- **Status:** `[ ]`
+- **Goal:** Table/caption boost; implement `qwen_reranker`.
+- **Inputs:** T-023, T-131, T-243
+- **Outputs:** Modality rerank
+- **Files:** `cross_encoder.py`, `qwen_reranker.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-263 · Per-Leg RRF Weight Configuration
+- **Status:** `[ ]`
+- **Goal:** Configurable RRF weights per leg.
+- **Inputs:** T-022, T-261
+- **Outputs:** Weighted RRF
+- **Files:** `score_fusion.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 27 — Multimodal Generation & Attribution (Priority 17)
+
+> **Motivation:** Mixed-modality prompts, vision LLM, rich citations, chunk API.
+>
+> **Preconditions:** Phases 21, 24–25
+
+---
+
+### T-270 · Mixed-Modality System Prompts
+- **Status:** `[ ]`
+- **Goal:** `rag_assistant_multimodal.txt`.
+- **Inputs:** T-031, T-202/T-232
+- **Outputs:** Multimodal prompt
+- **Files:** prompts + `generation_service.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-271 · Vision-Capable LLM Generation Path
+- **Status:** `[ ]`
+- **Goal:** Pass figure assets to vision LLM.
+- **Inputs:** T-231, T-031, T-230
+- **Outputs:** Vision generation
+- **Files:** LLM + `chat_pipeline.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-272 · Rich SourceReference Model & API Response
+- **Status:** `[ ]`
+- **Goal:** Structured citations in API.
+- **Inputs:** T-210, T-144, T-032
+- **Outputs:** `source_references`
+- **Files:** entities + API schemas, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-273 · Chunk Lookup API
+- **Status:** `[ ]`
+- **Goal:** `GET /chunks/{chunk_id}`.
+- **Inputs:** T-013, T-032, T-272
+- **Outputs:** Chunk API
+- **Files:** `routers/chunks.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-274 · Agent & Streaming Multimodal Explain/Highlight
+- **Status:** `[ ]`
+- **Goal:** T-143/T-144 on agent endpoints.
+- **Inputs:** T-114, T-144, T-270
+- **Outputs:** Agent explain/highlight
+- **Files:** `agent_pipeline.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+## Phase 28 — Multimodal Evaluation (Priority 18)
+
+> **Motivation:** Golden dataset, modality metrics, regression gate.
+>
+> **Preconditions:** Phases 25–26
+
+---
+
+### T-280 · Multimodal Golden Dataset Builder
+- **Status:** `[ ]`
+- **Goal:** Table/figure QA samples.
+- **Inputs:** T-040, T-253
+- **Outputs:** Golden JSONL
+- **Files:** `build_multimodal_golden.py`, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-281 · Table & Figure Retrieval Evals
+- **Status:** `[ ]`
+- **Goal:** `table_recall@k`, `figure_recall@k`.
+- **Inputs:** T-280, T-041, T-260
+- **Outputs:** Modality metrics
+- **Files:** `modality_recall.py`, benchmark CLI, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
+
+---
+
+
+### T-282 · Multimodal Regression Gate
+- **Status:** `[ ]`
+- **Goal:** CI-optional regression check.
+- **Inputs:** T-281, T-152, T-182
+- **Outputs:** Regression gate
+- **Files:** `regression_gate.py`, CI wiring, tests
+- **Acceptance Criteria:**
+  - Feature-flagged or backward-compatible defaults preserved
+  - Unit tests pass for new modules
+  - Documented in `configs/parsing.yaml` or relevant config when applicable
 
 ---
 
@@ -2383,8 +2929,32 @@ T-060 + T-061 ──► T-170 ──► T-171 ──► T-173
 T-043 + T-051 ──► T-172
 T-146 ──► T-172
 T-163 + T-164 + T-165 ──► T-172
-T-061 + T-171 ──► T-174 ──► T-175
-T-174 ──► T-176
+T-061 + T-171 ──► T-180 ──► T-181
+T-180 ──► T-182
+T-004 ──► T-190
+T-190 ──► T-200 ──► T-202
+T-190 ──► T-201
+T-190 + T-202 ──► T-210
+T-190 ──► T-220 ──► T-221
+T-220 ──► T-222
+T-200 + T-220 + T-221 + T-222 ──► T-223
+T-200 + T-201 + T-210 ──► T-230 ──► T-231 ──► T-232
+T-200 + T-210 ──► T-240 ──► T-241
+T-011 + T-115 ──► T-242
+T-202 + T-232 ──► T-243
+T-004 + T-210 ──► T-250 ──► T-251
+T-013 + T-105 + T-251 ──► T-252
+T-200..T-232 + T-243 + T-252 + T-210 ──► T-253
+T-251 + T-252 ──► T-260 ──► T-261
+T-023 + T-131 + T-243 ──► T-262
+T-022 + T-261 ──► T-263
+T-202 + T-232 + T-241 + T-210 ──► T-270
+T-231 + T-031 ──► T-271
+T-210 + T-144 + T-032 ──► T-272
+T-013 + T-272 ──► T-273
+T-114 + T-144 + T-270 ──► T-274
+T-040 + T-253 ──► T-280 ──► T-281 ──► T-282
+T-150 + T-281 ──► T-282
 ```
 
 ## Quick Start Order for an Agent
@@ -2406,4 +2976,15 @@ T-174 ──► T-176
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → T-172 ✅ (PR #41) → T-173 ✅ _(Phase 17 complete)_
-18. **Phase 18 — Priority 8 (CI Performance):** T-174 ✅ → T-175 ✅ → T-176 ✅
+18. **Phase 18 — Priority 8 (CI Performance):** T-180 ✅ → T-181 ✅ → T-182 ✅
+
+19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190
+20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 → T-201 → T-202
+21. **Phase 21 — Priority 11 (Domain Model):** T-210
+22. **Phase 22 — Priority 12 (OCR):** T-220 → T-221 → T-222 → T-223
+23. **Phase 23 — Priority 13 (VLM):** T-230 → T-231 → T-232
+24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 → T-241 → T-242 → T-243
+25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253
+26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 → T-261 → T-262 → T-263
+27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274
+28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 → T-281 → T-282
