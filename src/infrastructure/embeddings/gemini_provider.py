@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal
+from typing import Literal, override
 
 from tenacity import (
     before_sleep_log,
@@ -30,13 +30,11 @@ def _is_rate_limit(exc: BaseException) -> bool:
     try:
         from google.api_core.exceptions import ResourceExhausted
 
-        if isinstance(exc, ResourceExhausted):
-            return True
+        return isinstance(exc, ResourceExhausted)
     except ImportError:
-        pass
-    msg = str(exc).lower()
-    keywords = ("429", "quota", "resource_exhausted", "rate_limit", "too many requests")
-    return any(kw in msg for kw in keywords)
+        msg = str(exc).lower()
+        keywords = ("429", "quota", "resource_exhausted", "rate_limit", "too many requests")
+        return any(kw in msg for kw in keywords)
 
 
 class GeminiEmbeddingProvider(EmbeddingRepository):
@@ -54,18 +52,21 @@ class GeminiEmbeddingProvider(EmbeddingRepository):
     """
 
     def __init__(self, api_key: str, model: str = "text-embedding-004") -> None:
-        self.api_key = api_key
-        self.model = model
+        self.api_key: str = api_key
+        self.model: str = model
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
+    @override
     def embed(self, texts: list[str]) -> list[DenseVector]:
         """Embed texts for document storage (task_type=RETRIEVAL_DOCUMENT)."""
         return self._embed_with_task(texts, "RETRIEVAL_DOCUMENT")
 
+    @override
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         return [{} for _ in texts]
 
+    @override
     def embed_query(self, texts: list[str]) -> list[DenseVector]:
         """Embed query texts (task_type=RETRIEVAL_QUERY). Use during retrieval."""
         return self._embed_with_task(texts, "RETRIEVAL_QUERY")

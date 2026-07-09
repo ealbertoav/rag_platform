@@ -24,8 +24,8 @@ class DenseRetriever:
         embedder: EmbeddingRepository,
         vector_store: VectorStoreRepository,
     ) -> None:
-        self._embedder = embedder
-        self._vector_store = vector_store
+        self._embedder: EmbeddingRepository = embedder
+        self._vector_store: VectorStoreRepository = vector_store
 
     @property
     def vector_store(self) -> VectorStoreRepository:

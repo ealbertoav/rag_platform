@@ -25,9 +25,9 @@ class HyPERetriever:
         vector_store: VectorStoreRepository,
         chunk_lookup: ChunkLookup,
     ) -> None:
-        self._embedder = embedder
-        self._vector_store = vector_store
-        self._lookup = chunk_lookup
+        self._embedder: EmbeddingRepository = embedder
+        self._vector_store: VectorStoreRepository = vector_store
+        self._lookup: ChunkLookup = chunk_lookup
 
     def retrieve(self, query: Query, top_k: int) -> list[SearchResult]:
         """Return up to *top_k* source chunks ranked by HyPE similarity."""

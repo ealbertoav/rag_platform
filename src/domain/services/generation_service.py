@@ -26,7 +26,7 @@ class GenerationService:
     """
 
     def __init__(self, llm: LLMRepository) -> None:
-        self._llm = llm
+        self._llm: LLMRepository = llm
         self._template: Template | None = None
 
     # ── Public ─────────────────────────────────────────────────────────────────

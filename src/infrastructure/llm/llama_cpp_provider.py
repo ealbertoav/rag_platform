@@ -8,7 +8,7 @@ import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 from src.core.exceptions import GenerationError
 from src.domain.repositories.llm_repository import LLMRepository
@@ -25,7 +25,7 @@ _SENTINEL = object()
 _STREAM_QUEUE_MAXSIZE = 256
 # Isolated from the default asyncio thread pool (retrieval, feedback, etc.).
 _STREAM_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llama-cpp-stream")
-atexit.register(_STREAM_EXECUTOR.shutdown, wait=False, cancel_futures=True)
+_ = atexit.register(_STREAM_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
 
 class LlamaCppProvider(LLMRepository):
@@ -49,18 +49,19 @@ class LlamaCppProvider(LLMRepository):
         stop_tokens: list[str] | None = None,
         disable_disk_cache: bool = False,
     ) -> None:
-        self.model_path = model_path
-        self.context_size = context_size
-        self.n_gpu_layers = n_gpu_layers
-        self.temperature = temperature
-        self.max_tokens = max_tokens
+        self.model_path: str = model_path
+        self.context_size: int = context_size
+        self.n_gpu_layers: int = n_gpu_layers
+        self.temperature: float = temperature
+        self.max_tokens: int = max_tokens
         self.stop_tokens: list[str] = stop_tokens or ["<|im_end|>"]
-        self.disable_disk_cache = disable_disk_cache
+        self.disable_disk_cache: bool = disable_disk_cache
         self._model: Llama | None = None
-        self._lock = Lock()
+        self._lock: Any = Lock()
 
     # ── LLMRepository interface ────────────────────────────────────────────────
 
+    @override
     def generate(self, prompt: str, context: str, **kwargs: Any) -> str:
         """Return the full completion as a single string (blocking)."""
         with self._lock:
@@ -83,6 +84,7 @@ class LlamaCppProvider(LLMRepository):
             except Exception as exc:
                 raise GenerationError("llama.cpp generate() failed", cause=exc) from exc
 
+    @override
     def generate_stream(self, prompt: str, context: str, **kwargs: Any) -> AsyncIterator[str]:
         """Return an async iterator that yields tokens as they are produced.
 
@@ -177,14 +179,14 @@ class LlamaCppProvider(LLMRepository):
                         delta = str(choices[0]["delta"].get("content", ""))
                         if delta:
                             thread_queue.put(delta)
-                            loop.call_soon_threadsafe(_signal_items)
+                            _ = loop.call_soon_threadsafe(_signal_items)
             except Exception as exc:
                 if not cancelled.is_set():
                     thread_queue.put(exc)
-                    loop.call_soon_threadsafe(_signal_items)
+                    _ = loop.call_soon_threadsafe(_signal_items)
             finally:
                 thread_queue.put(_SENTINEL)
-                loop.call_soon_threadsafe(_signal_items)
+                _ = loop.call_soon_threadsafe(_signal_items)
 
         async def _bridge() -> None:
             try:
@@ -213,7 +215,7 @@ class LlamaCppProvider(LLMRepository):
                     items_ready.clear()
                     if not thread_queue.empty():
                         continue
-                    await items_ready.wait()
+                    _ = await items_ready.wait()
             except Exception as exc:
                 if not cancelled.is_set():
                     await token_queue.put(exc)
@@ -229,7 +231,7 @@ class LlamaCppProvider(LLMRepository):
             # Do not drain thread_queue here: the bridge must still observe _SENTINEL.
             while True:
                 try:
-                    token_queue.get_nowait()
+                    _ = token_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
             await worker

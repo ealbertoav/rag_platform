@@ -102,6 +102,8 @@ def provider_dense_dim(name: str, settings: Settings) -> int:
                 return emb.cohere.dimensions
             case "gemini":
                 return emb.gemini.dimensions
+            case _:
+                raise AssertionError(f"Unhandled API embedding provider: {name!r}")
     return SELF_HOSTED_EMBEDDING_DEFAULT_DIMS[name]
 
 
@@ -208,7 +210,7 @@ def _require_api_key(provider: str, api_key: SecretStr) -> None:
         env_var = _API_KEY_ENV.get(provider, f"EMBEDDINGS__{provider.upper()}__API_KEY")
         raise ConfigurationError(
             f"Provider '{provider}' requires an API key. "
-            f"Set {env_var} in your environment or .env file."
+            + f"Set {env_var} in your environment or .env file."
         )
 
 

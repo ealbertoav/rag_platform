@@ -46,10 +46,10 @@ class Neo4jGraphRepository:
         *,
         max_connection_pool_size: int = 100,
     ) -> None:
-        self.uri = uri
-        self.user = user
-        self.password = password
-        self.max_connection_pool_size = max_connection_pool_size
+        self.uri: str = uri
+        self.user: str = user
+        self.password: str = password
+        self.max_connection_pool_size: Any = max_connection_pool_size
         self._driver: AsyncDriver | None = None
 
     # ── Factory ────────────────────────────────────────────────────────────────

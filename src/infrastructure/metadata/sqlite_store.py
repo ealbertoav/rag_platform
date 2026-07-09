@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, override
 
 from src.core.constants import METADATA_DB_PATH
 from src.domain.repositories.metadata_repository import (
@@ -59,7 +60,7 @@ class SQLiteMetadataStore(MetadataRepository):
     """SQLite-backed metadata store for ingestion deduplication and auditing."""
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self._path = db_path or METADATA_DB_PATH
+        self._path: Any = db_path or METADATA_DB_PATH
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
@@ -69,11 +70,12 @@ class SQLiteMetadataStore(MetadataRepository):
 
         return cls(db_path=Path(settings.metadata.db_path))
 
+    @override
     def get_by_source(self, source_path: str) -> DocumentRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT id, source_path, content_hash, chunk_count, ingested_at, updated_at "
-                "FROM documents WHERE source_path = ?",
+                + "FROM documents WHERE source_path = ?",
                 (source_path,),
             ).fetchone()
         if row is None:
@@ -87,6 +89,7 @@ class SQLiteMetadataStore(MetadataRepository):
             updated_at=_parse_ts(row[5]),
         )
 
+    @override
     def get_chunk_ids(self, document_id: str) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -95,6 +98,7 @@ class SQLiteMetadataStore(MetadataRepository):
             ).fetchall()
         return [row[0] for row in rows]
 
+    @override
     def upsert_document(
         self,
         source_path: str,
@@ -119,35 +123,35 @@ class SQLiteMetadataStore(MetadataRepository):
 
             if existing is None:
                 doc_id = str(uuid.uuid4())
-                conn.execute(
+                _ = conn.execute(
                     "INSERT INTO documents "
-                    "(id, source_path, content_hash, chunk_count, ingested_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    + "(id, source_path, content_hash, chunk_count, ingested_at, updated_at) "
+                    + "VALUES (?, ?, ?, ?, ?, ?)",
                     (doc_id, source_path, content_hash, reported_chunk_count, now_iso, now_iso),
                 )
                 ingested_at = now
             else:
                 doc_id = existing[0]
                 ingested_at = _parse_ts(existing[1])
-                conn.execute(
+                _ = conn.execute(
                     "UPDATE documents SET content_hash = ?, chunk_count = ?, updated_at = ? "
-                    "WHERE id = ?",
+                    + "WHERE id = ?",
                     (content_hash, reported_chunk_count, now_iso, doc_id),
                 )
-                conn.execute("DELETE FROM document_chunks WHERE document_id = ?", (doc_id,))
+                _ = conn.execute("DELETE FROM document_chunks WHERE document_id = ?", (doc_id,))
 
             for chunk_id in chunk_ids:
-                conn.execute(
+                _ = conn.execute(
                     "INSERT INTO document_chunks (document_id, chunk_id) VALUES (?, ?)",
                     (doc_id, chunk_id),
                 )
 
             run_id = str(uuid.uuid4())
-            conn.execute(
+            _ = conn.execute(
                 "INSERT INTO ingestion_runs ("
-                "id, document_id, status, chunks_added, chunks_skipped, "
-                "duration_ms, error, created_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                + "id, document_id, status, chunks_added, chunks_skipped, "
+                + "duration_ms, error, created_at"
+                + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     doc_id,
@@ -169,11 +173,12 @@ class SQLiteMetadataStore(MetadataRepository):
             updated_at=now,
         )
 
+    @override
     def list_documents(self) -> list[DocumentRecord]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT id, source_path, content_hash, chunk_count, ingested_at, updated_at "
-                "FROM documents ORDER BY updated_at DESC"
+                + "FROM documents ORDER BY updated_at DESC"
             ).fetchall()
         return [
             DocumentRecord(
@@ -188,7 +193,7 @@ class SQLiteMetadataStore(MetadataRepository):
         ]
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         """Open a SQLite connection and always close it on exit.
 
         Note: ``with sqlite3.Connection`` only commits/rolls back — it does
@@ -196,7 +201,7 @@ class SQLiteMetadataStore(MetadataRepository):
         """
         conn = sqlite3.connect(self._path)
         try:
-            conn.execute("PRAGMA foreign_keys = ON")
+            _ = conn.execute("PRAGMA foreign_keys = ON")
             yield conn
             conn.commit()
         except Exception:
@@ -207,5 +212,5 @@ class SQLiteMetadataStore(MetadataRepository):
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
-            conn.executescript(_SCHEMA)
+            _ = conn.executescript(_SCHEMA)
         logger.debug("SQLite metadata schema ready at %s", self._path)

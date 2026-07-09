@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +14,7 @@ class Chunk(BaseModel):
     instances — the model is frozen to prevent accidental mutation.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     document_id: str

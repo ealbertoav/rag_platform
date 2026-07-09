@@ -86,7 +86,7 @@ class RagasMetric(ABC):
     _metric_name: str
 
     def __init__(self, threshold: float) -> None:
-        self.threshold = threshold
+        self.threshold: float = threshold
 
     def score(self, sample: EvalSample) -> EvalResult:
         for early_exit in self._pre_checks(sample):
@@ -98,7 +98,7 @@ class RagasMetric(ABC):
             logger.warning("%s scoring failed: %s", type(self).__name__, exc)
             return EvalResult.make(self._metric_name, 0.0, self.threshold, details=str(exc))
 
-    def _pre_checks(self, sample: EvalSample) -> list[EvalResult]:
+    def _pre_checks(self, _sample: EvalSample) -> list[EvalResult]:
         return []
 
     def _guard(self, details: str) -> EvalResult:

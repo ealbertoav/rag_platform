@@ -18,8 +18,8 @@ class IngestionService:
     """
 
     def __init__(self, chunker: Chunker, embedder: EmbeddingRepository) -> None:
-        self._chunker = chunker
-        self._embedder = embedder
+        self._chunker: Chunker = chunker
+        self._embedder: EmbeddingRepository = embedder
 
     def prepare(self, document: Document) -> list[Chunk]:
         """Chunk *document* and embed each chunk.

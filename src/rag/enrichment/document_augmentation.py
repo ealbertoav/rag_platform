@@ -116,10 +116,10 @@ class DocumentAugmentor:
         n_questions: int = 3,
         template: Template | None = None,
     ) -> None:
-        self._llm = llm
-        self._embedder = embedder
-        self._n_questions = n_questions
-        self._template = template
+        self._llm: LLMRepository = llm
+        self._embedder: EmbeddingRepository = embedder
+        self._n_questions: int = n_questions
+        self._template: Template | None = template
 
     def augment(self, source_chunks: list[Chunk]) -> list[Chunk]:
         """Return embedded synthetic question chunks for *source_chunks*."""

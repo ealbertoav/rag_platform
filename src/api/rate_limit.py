@@ -8,7 +8,7 @@ import uuid
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, ClassVar, Protocol, cast, override
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
@@ -78,10 +78,10 @@ class InMemoryRateLimiter:
     """Sliding-window limiter keyed by client identity."""
 
     def __init__(self, requests_per_minute: int, burst: int) -> None:
-        self._rpm = requests_per_minute
-        self._burst = burst
-        self._window_seconds = 60.0
-        self._lock = threading.Lock()
+        self._rpm: int = requests_per_minute
+        self._burst: int = burst
+        self._window_seconds: float = 60.0
+        self._lock: threading.Lock = threading.Lock()
         self._events: dict[str, deque[float]] = defaultdict(deque)
 
     def allow(self, key: str) -> tuple[bool, int]:
@@ -90,7 +90,7 @@ class InMemoryRateLimiter:
         with self._lock:
             events = self._events[key]
             while events and events[0] <= cutoff:
-                events.popleft()
+                _ = events.popleft()
             limit = self._rpm + self._burst
             if len(events) >= limit:
                 retry_after = max(1, math.ceil(self._window_seconds - (now - events[0])))
@@ -102,13 +102,13 @@ class InMemoryRateLimiter:
 class RedisRateLimiter:
     """Shared sliding-window limiter backed by Redis sorted sets."""
 
-    KEY_PREFIX = "rag:rate_limit:"
+    KEY_PREFIX: ClassVar[str] = "rag:rate_limit:"
 
     def __init__(self, client: Any, requests_per_minute: int, burst: int) -> None:
-        self._window_ms = 60_000
-        self._limit = requests_per_minute + burst
-        self._client = client
-        self._script = client.register_script(SLIDING_WINDOW_LUA)
+        self._window_ms: Any = 60_000
+        self._limit: Any = requests_per_minute + burst
+        self._client: Any = client
+        self._script: Any = client.register_script(SLIDING_WINDOW_LUA)
 
     def allow(self, key: str) -> tuple[bool, int]:
         now_ms = int(time.time() * 1000)
@@ -182,6 +182,7 @@ async def rate_limit_middleware(
 
 
 class RateLimitHTTPMiddleware(BaseHTTPMiddleware):
+    @override
     async def dispatch(
         self,
         request: Request,
@@ -200,7 +201,7 @@ def try_build_redis_rate_limiter(
             settings.redis.url,
             settings.redis.password.get_secret_value(),
         )
-        client.ping()
+        _ = client.ping()
     except Exception as exc:
         logger.warning("Redis unavailable for rate limiting; using in-memory limiter: %s", exc)
         return None

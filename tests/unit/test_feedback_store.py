@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -154,6 +155,11 @@ class TestSqlFeedbackStore:
     def test_get_scores_empty(self, tmp_path: Path):
         store = SqlFeedbackStore(tmp_path / "feedback.db")
         assert store.get_scores([]) == {}
+
+    def test_connect_rolls_back_on_sql_error(self, tmp_path: Path):
+        store = SqlFeedbackStore(tmp_path / "feedback.db")
+        with pytest.raises(sqlite3.OperationalError), store._connect() as conn:
+            conn.execute("NOT VALID SQL")
 
 
 class TestFeedbackDelegatingVectorStore:

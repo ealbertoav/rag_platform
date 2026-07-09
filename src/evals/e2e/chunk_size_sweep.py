@@ -127,7 +127,7 @@ class ChunkSizeSweepReport:
             for entry in self.plan:
                 lines.append(
                     f"  size={entry.chunk_size} collection={entry.collection} "
-                    f"cache={entry.cache_path} action={entry.action}"
+                    + f"cache={entry.cache_path} action={entry.action}"
                 )
             return "\n".join(lines)
         if self.skipped:
@@ -147,7 +147,7 @@ class ChunkSizeSweepReport:
             for entry in self.plan:
                 out.print(
                     f"  [bold]{entry.chunk_size}[/bold] → {entry.collection} "
-                    f"({entry.action}, cache: {entry.cache_path})"
+                    + f"({entry.action}, cache: {entry.cache_path})"
                 )
             return
         if self.skipped:
@@ -499,10 +499,10 @@ class ChunkSizeSweep:
         relevance_threshold: float = 0.75,
         weights: SweepWeights | None = None,
     ) -> None:
-        self._faith = faithfulness or FaithfulnessMetric(threshold=faithfulness_threshold)
-        self._relev = relevance or RelevanceMetric(threshold=relevance_threshold)
-        self._k = recall_k
-        self._weights = weights or load_sweep_weights()
+        self._faith: Any = faithfulness or FaithfulnessMetric(threshold=faithfulness_threshold)
+        self._relev: Any = relevance or RelevanceMetric(threshold=relevance_threshold)
+        self._k: Any = recall_k
+        self._weights: Any = weights or load_sweep_weights()
 
     async def run(
         self,
@@ -609,7 +609,7 @@ class ChunkSizeSweep:
         chunks = chunk_documents_from_source(ingest_source, chunk_size)
         if not chunks:
             raise ValueError(f"Chunking produced no chunks for size {chunk_size}")
-        save_chunk_cache(chunks, chunk_size, cache_dir)
+        _ = save_chunk_cache(chunks, chunk_size, cache_dir)
         return chunks
 
     async def _evaluate_size(

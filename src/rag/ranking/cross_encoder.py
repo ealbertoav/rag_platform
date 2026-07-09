@@ -21,8 +21,8 @@ class CrossEncoder:
     """
 
     def __init__(self, reranker: RerankerRepository, top_k: int = 10) -> None:
-        self._reranker = reranker
-        self._top_k = top_k
+        self._reranker: RerankerRepository = reranker
+        self._top_k: int = top_k
 
     def rerank(
         self,

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, override
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 from src.infrastructure.embeddings.sentence_transformer_base import (
     SentenceTransformerEmbeddingProvider,
@@ -26,13 +29,14 @@ class NomicEmbeddingProvider(SentenceTransformerEmbeddingProvider):
         normalize: bool = True,
         matryoshka_dim: int | None = None,
     ) -> None:
-        self.model_path = model_path
-        self.device = device
-        self.batch_size = batch_size
-        self.normalize = normalize
-        self.matryoshka_dim = matryoshka_dim
-        self._model = None
+        self.model_path: str = model_path
+        self.device: str = device
+        self.batch_size: int = batch_size
+        self.normalize: bool = normalize
+        self.matryoshka_dim: int | None = matryoshka_dim
+        self._model: SentenceTransformer | None = None
 
+    @override
     def _encode_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
         if self.matryoshka_dim is not None:

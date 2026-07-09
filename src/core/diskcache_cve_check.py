@@ -54,7 +54,7 @@ def fetch_pypi_latest_version(
     """Return the latest "diskcache" version published on PyPI."""
     if client is not None:
         response = client.get(url)
-        response.raise_for_status()
+        _ = response.raise_for_status()
         payload: Any = response.json()
         info = payload.get("info") if isinstance(payload, dict) else None
         version = info.get("version") if isinstance(info, dict) else None
@@ -80,7 +80,7 @@ def exceeds_vulnerable_version_line(
     *,
     vulnerable_max: str = VULNERABLE_MAX_VERSION,
 ) -> bool:
-    """Return True when *version* is strictly newer than the known-vulnerable ceiling."""
+    """Return True when a *version* is strictly newer than the known-vulnerable ceiling."""
     if version is None:
         return False
     parsed = parse_version(version)
@@ -126,8 +126,8 @@ def check_diskcache_cve(
         return DiskcacheCveCheckResult(
             exit_code=CheckExitCode.OK,
             message=(
-                f"No patched upstream diskcache release on PyPI yet "
-                f"(latest={pypi_latest or 'unknown'}). Continue quarterly review."
+                "No patched upstream diskcache release on PyPI yet "
+                + f"(latest={pypi_latest or 'unknown'}). Continue quarterly review."
             ),
             pypi_latest=pypi_latest,
             installed_version=installed[1] if installed else None,
@@ -139,7 +139,7 @@ def check_diskcache_cve(
             exit_code=CheckExitCode.FIX_AVAILABLE_NOT_APPLIED,
             message=(
                 f"Upstream diskcache {pypi_latest} fixes {CVE_ID}, "
-                "but no diskcache distribution is installed."
+                + "but no diskcache distribution is installed."
             ),
             pypi_latest=pypi_latest,
         )
@@ -150,7 +150,7 @@ def check_diskcache_cve(
             exit_code=CheckExitCode.OK,
             message=(
                 f"Installed {distribution} {version} mitigates {CVE_ID} "
-                f"(upstream fix available: diskcache {pypi_latest})."
+                + f"(upstream fix available: diskcache {pypi_latest})."
             ),
             pypi_latest=pypi_latest,
             installed_version=version,
@@ -161,7 +161,7 @@ def check_diskcache_cve(
         exit_code=CheckExitCode.FIX_AVAILABLE_NOT_APPLIED,
         message=(
             f"Upstream diskcache {pypi_latest} fixes {CVE_ID}, "
-            f"but installed {distribution} {version} is still vulnerable."
+            + f"but installed {distribution} {version} is still vulnerable."
         ),
         pypi_latest=pypi_latest,
         installed_version=version,
@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=f"Monitor PyPI for an upstream fix to {CVE_ID} in diskcache.",
     )
-    parser.parse_args(argv)
+    _ = parser.parse_args(argv)
     result = run_diskcache_cve_check()
     print(result.message)
     return int(result.exit_code)

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal, override
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -18,10 +18,12 @@ class YamlConfigSource(PydanticBaseSettingsSource):
     vars and .env file always win.
     """
 
+    @override
     def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
         # Not used — we override __call__ directly.
         return None, field_name, False
 
+    @override
     def __call__(self) -> dict[str, Any]:
         configs_dir = ROOT / "configs"
         if not configs_dir.exists():
@@ -175,8 +177,8 @@ class DiversitySettings(BaseModel):
 class BM25Settings(BaseModel):
     """Lexical BM25 backend selection (T-165).
 
-    ``memory`` (default) keeps the full Okapi model in RAM — fine for typical
-    corpora.  ``disk`` stores postings + chunk payloads as memmapped segments
+    "memory" (default) keeps the full Okapi model in RAM — fine for typical
+    corpora.  "disk" stores postings and chunk payloads as memmapped segments
     so search memory stays bounded for 100K–1M+ chunk corpora.
     """
 
@@ -254,7 +256,7 @@ class RetrievalSettings(BaseModel):
     parent_context: ParentContextSettings = Field(default_factory=ParentContextSettings)
     diversity: DiversitySettings = Field(default_factory=DiversitySettings)
 
-    model_config = {"populate_by_name": True}
+    model_config: ClassVar[ConfigDict] = {"populate_by_name": True}
 
 
 class Neo4jSettings(BaseModel):
@@ -366,7 +368,7 @@ class Settings(BaseSettings):
       4. configs/*.yaml files
     """
 
-    model_config = SettingsConfigDict(
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=str(ROOT / ".env"),
         env_nested_delimiter="__",
         extra="ignore",
@@ -389,6 +391,7 @@ class Settings(BaseSettings):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     @classmethod
+    @override
     def settings_customise_sources(
         cls,
         settings_cls: type[BaseSettings],

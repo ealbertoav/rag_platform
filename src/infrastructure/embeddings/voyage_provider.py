@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, override
 
 from tenacity import (
     before_sleep_log,
@@ -44,19 +44,22 @@ class VoyageEmbeddingProvider(EmbeddingRepository):
     """
 
     def __init__(self, api_key: str, model: str = "voyage-large-2") -> None:
-        self.api_key = api_key
-        self.model = model
+        self.api_key: str = api_key
+        self.model: str = model
         self._client: Any | None = None
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
+    @override
     def embed(self, texts: list[str]) -> list[DenseVector]:
         """Embed texts for document storage (input_type=document)."""
         return self._embed_with_type(texts, "document")
 
+    @override
     def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         return [{} for _ in texts]
 
+    @override
     def embed_query(self, texts: list[str]) -> list[DenseVector]:
         """Embed query texts (input_type=query). Use during retrieval."""
         return self._embed_with_type(texts, "query")

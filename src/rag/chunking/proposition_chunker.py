@@ -98,10 +98,10 @@ class PropositionChunker:
     ) -> None:
         if not 1 <= quality_threshold <= 10:
             raise ValueError("quality_threshold must be between 1 and 10")
-        self._llm = llm
-        self._quality_threshold = quality_threshold
-        self._template = template
-        self._segmenter = RecursiveChunker(chunk_size=chunk_size, overlap=overlap)
+        self._llm: LLMRepository = llm
+        self._quality_threshold: int = quality_threshold
+        self._template: Template | None = template
+        self._segmenter: Any = RecursiveChunker(chunk_size=chunk_size, overlap=overlap)
 
     def chunk(self, document: Document) -> list[Chunk]:
         segments = self._segmenter.chunk(document)

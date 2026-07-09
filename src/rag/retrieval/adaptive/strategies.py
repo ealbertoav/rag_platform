@@ -29,8 +29,8 @@ class BaseRetrievalStrategy:
     """Category-specific retrieval parameters."""
 
     def __init__(self, category: QueryCategory, params: RetrievalStrategyParams) -> None:
-        self.category = category
-        self.params = params
+        self.category: QueryCategory = category
+        self.params: RetrievalStrategyParams = params
 
 
 class FactualRetrievalStrategy(BaseRetrievalStrategy):
@@ -111,7 +111,7 @@ class AdaptiveStrategyRegistry:
                 self._strategies[category.value] = configured[category.value]
             else:
                 self._strategies[category.value] = _params_for_category(category)
-        self._fallback = self._strategies[QueryCategory.FACTUAL.value]
+        self._fallback: RetrievalStrategyParams = self._strategies[QueryCategory.FACTUAL.value]
 
     def get_strategy(self, category: str | None) -> BaseRetrievalStrategy:
         """Return a strategy for *category*; unknown values use the factual fallback."""

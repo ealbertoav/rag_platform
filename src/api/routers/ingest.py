@@ -77,7 +77,7 @@ async def ingest_upload(
     try:
         payload = await read_upload_bounded(file)
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(payload)
+            _ = tmp.write(payload)
             upload_path = Path(tmp.name)
         tmp_path = upload_path
         result = pipeline.ingest_file(upload_path)

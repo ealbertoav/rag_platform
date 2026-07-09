@@ -4,7 +4,7 @@ import dataclasses
 import json
 import logging
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from src.domain.entities.evaluation import EvalSample
 from src.evals.e2e.benchmark_samples import BenchmarkPipeline, pair_str, pair_str_list
@@ -72,11 +72,11 @@ class BenchmarkReport:
         status = "PASSED ✓" if self.passed else "FAILED ✗"
         return (
             f"Benchmark {status}  [{self.total_samples} samples]\n"
-            f"  Recall@5           {self.mean_recall_at_5:.3f}  (threshold {self.recall_threshold})\n"  # noqa: E501
-            f"  Faithfulness       {self.mean_faithfulness:.3f}  (threshold {self.faithfulness_threshold})\n"  # noqa: E501
-            f"  Relevance          {self.mean_relevance:.3f}  (threshold {self.relevance_threshold})\n"  # noqa: E501
-            f"  Context Precision  {self.mean_context_precision:.3f}  (threshold {self.context_precision_threshold})\n"  # noqa: E501
-            f"  Hallucination      {self.mean_hallucination:.3f}  (threshold {self.hallucination_threshold}, lower is better)"  # noqa: E501
+            + f"  Recall@5           {self.mean_recall_at_5:.3f}  (threshold {self.recall_threshold})\n"  # noqa: E501
+            + f"  Faithfulness       {self.mean_faithfulness:.3f}  (threshold {self.faithfulness_threshold})\n"  # noqa: E501
+            + f"  Relevance          {self.mean_relevance:.3f}  (threshold {self.relevance_threshold})\n"  # noqa: E501
+            + f"  Context Precision  {self.mean_context_precision:.3f}  (threshold {self.context_precision_threshold})\n"  # noqa: E501
+            + f"  Hallucination      {self.mean_hallucination:.3f}  (threshold {self.hallucination_threshold}, lower is better)"  # noqa: E501
         )
 
 
@@ -102,18 +102,18 @@ class RAGBenchmark:
         context_precision_threshold: float = 0.7,
         hallucination_threshold: float = 0.1,
     ) -> None:
-        self._faith = faithfulness or FaithfulnessMetric(threshold=faithfulness_threshold)
-        self._relev = relevance or RelevanceMetric(threshold=relevance_threshold)
-        self._ctx = context_precision or ContextPrecisionMetric(
+        self._faith: Any = faithfulness or FaithfulnessMetric(threshold=faithfulness_threshold)
+        self._relev: Any = relevance or RelevanceMetric(threshold=relevance_threshold)
+        self._ctx: Any = context_precision or ContextPrecisionMetric(
             threshold=context_precision_threshold
         )
-        self._halluc = hallucination or HallucinationMetric(threshold=hallucination_threshold)
-        self._k = recall_k
-        self._recall_threshold = recall_threshold
-        self._faith_threshold = faithfulness_threshold
-        self._relev_threshold = relevance_threshold
-        self._ctx_threshold = context_precision_threshold
-        self._halluc_threshold = hallucination_threshold
+        self._halluc: Any = hallucination or HallucinationMetric(threshold=hallucination_threshold)
+        self._k: int = recall_k
+        self._recall_threshold: float = recall_threshold
+        self._faith_threshold: float = faithfulness_threshold
+        self._relev_threshold: float = relevance_threshold
+        self._ctx_threshold: float = context_precision_threshold
+        self._halluc_threshold: float = hallucination_threshold
 
     async def run(
         self,

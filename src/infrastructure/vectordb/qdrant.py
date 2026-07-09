@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from types import TracebackType
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Any, ClassVar, Protocol, TypeAlias, cast, override
 from uuid import UUID
 
 from qdrant_client import QdrantClient
@@ -82,11 +82,11 @@ class _SynchronizedLock(Protocol):
 class ThreadSafeQdrantClient:
     """Serialize Qdrant HTTP calls — the underlying httpx client is not thread-safe."""
 
-    __slots__ = ("_client", "_lock")
+    __slots__: tuple[str, ...] = ("_client", "_lock")
 
     def __init__(self, client: QdrantClient, lock: _SynchronizedLock) -> None:
-        self._client = client
-        self._lock = lock
+        self._client: QdrantClient = client
+        self._lock: _SynchronizedLock = lock
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._client, name)
@@ -119,7 +119,7 @@ def rrf_fuse(
 
     for rank, (chunk, _) in enumerate(sparse):
         scores[chunk.id] = scores.get(chunk.id, 0.0) + 1.0 / (k + rank + 1)
-        chunks.setdefault(chunk.id, chunk)
+        _ = chunks.setdefault(chunk.id, chunk)
 
     return [
         (chunks[cid], scores[cid])
@@ -139,7 +139,7 @@ class QdrantVectorStore(VectorStoreRepository):
     """
 
     _feedback_chunk_locks: dict[str, threading.Lock] = {}
-    _feedback_locks_mutex = threading.Lock()
+    _feedback_locks_mutex: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
     def _chunk_feedback_lock(cls, chunk_id: str) -> threading.Lock:
@@ -159,14 +159,15 @@ class QdrantVectorStore(VectorStoreRepository):
         dense_dim: int = 1024,
         embedding_model_name: str = "",
     ) -> None:
-        self.collection = collection
-        self.dense_dim = dense_dim
-        self.embedding_model_name = embedding_model_name
-        self._client_lock = threading.RLock()
+        self.collection: str = collection
+        self.dense_dim: int = dense_dim
+        self.embedding_model_name: str = embedding_model_name
+        self._client_lock: Any = threading.RLock()
         raw_client = QdrantClient(url=url, api_key=api_key or None, check_compatibility=False)
-        self._client = ThreadSafeQdrantClient(raw_client, self._client_lock)
-        self._collection_ready = False
-        self._model_validated = False  # set True after first successful _validate_embedding_model
+        self._client: Any = ThreadSafeQdrantClient(raw_client, self._client_lock)
+        self._collection_ready: bool = False
+        # set True after first successful _validate_embedding_model
+        self._model_validated: bool = False
 
     # ── Factory ────────────────────────────────────────────────────────────────
 
@@ -200,7 +201,7 @@ class QdrantVectorStore(VectorStoreRepository):
     def recreate_collection(self) -> None:
         """Clear the collection so the next upsert replaces the full index.
 
-        Drops the collection when possible. When drop fails but the collection
+        Drops the collection when possible. When a drop fails but the collection
         still exists, purges all points and verifies the index is empty before
         returning so callers never upsert into a partially stale collection.
         """
@@ -237,7 +238,7 @@ class QdrantVectorStore(VectorStoreRepository):
                 if remaining > 0:
                     raise VectorStoreError(
                         f"Qdrant collection {self.collection!r} still has "
-                        f"{remaining} point(s) after purge",
+                        + f"{remaining} point(s) after purge",
                         cause=drop_exc,
                     ) from drop_exc
                 # Collection still exists but is empty — refresh model metadata so the
@@ -253,6 +254,7 @@ class QdrantVectorStore(VectorStoreRepository):
 
     # ── VectorStoreRepository interface ────────────────────────────────────────
 
+    @override
     def upsert(self, chunks: list[Chunk]) -> None:
         self._ensure_collection()
         if not chunks:
@@ -284,6 +286,7 @@ class QdrantVectorStore(VectorStoreRepository):
                 self._rollback_points(snapshots, context="upsert")
             raise VectorStoreError("Qdrant upsert failed", cause=exc) from exc
 
+    @override
     def search_dense(
         self,
         query_vector: DenseVector,
@@ -314,6 +317,7 @@ class QdrantVectorStore(VectorStoreRepository):
             raise VectorStoreError("Qdrant dense search failed", cause=exc) from exc
         return [self._to_result(h) for h in response.points]
 
+    @override
     def search_sparse(self, query_sparse: SparseVector, top_k: int) -> list[SearchResult]:
         self._ensure_collection()
         try:
@@ -334,6 +338,7 @@ class QdrantVectorStore(VectorStoreRepository):
             raise VectorStoreError("Qdrant sparse search failed", cause=exc) from exc
         return [self._to_result(h) for h in response.points]
 
+    @override
     def search_hybrid(
         self,
         query_vector: DenseVector,
@@ -346,6 +351,7 @@ class QdrantVectorStore(VectorStoreRepository):
         sparse = self.search_sparse(query_sparse, top_k=expansion)
         return rrf_fuse(dense, sparse, top_k=top_k)
 
+    @override
     def delete(self, chunk_ids: list[str]) -> None:
         try:
             self._client.delete(
@@ -386,6 +392,7 @@ class QdrantVectorStore(VectorStoreRepository):
                 break
         return deleted
 
+    @override
     def count(self) -> int:
         try:
             return self._count_unlocked()
@@ -417,10 +424,12 @@ class QdrantVectorStore(VectorStoreRepository):
             if offset is None:
                 break
 
+    @override
     def chunk_exists(self, chunk_id: str) -> bool:
         """Return True when *chunk_id* is stored in the Qdrant collection."""
         return bool(self._retrieve_points([chunk_id]))
 
+    @override
     def get_feedback_score(self, chunk_id: str) -> float:
         """Return accumulated user feedback score stored in chunk metadata."""
         points = self._retrieve_points([chunk_id])
@@ -428,6 +437,7 @@ class QdrantVectorStore(VectorStoreRepository):
             return 0.0
         return self._feedback_score_from_metadata(self._metadata_from_point(points[0]))
 
+    @override
     def set_feedback_score(self, chunk_id: str, feedback_score: float) -> None:
         """Persist *feedback_score* under chunk metadata in the Qdrant payload."""
         metadata = self._require_chunk_metadata(chunk_id)
@@ -435,6 +445,7 @@ class QdrantVectorStore(VectorStoreRepository):
         metadata[FEEDBACK_REVISION_KEY] = self._feedback_revision_from_metadata(metadata) + 1
         self._set_chunk_metadata(chunk_id, metadata)
 
+    @override
     def accumulate_feedback_score(self, chunk_id: str, delta: float) -> float:
         """Add *delta* to the stored feedback score with compare-and-set retries."""
         with self._chunk_feedback_lock(chunk_id):
@@ -470,7 +481,7 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         raise VectorStoreError(
             "Failed to accumulate feedback for "
-            f"{chunk_id!r} after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
+            + f"{chunk_id!r} after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
         )
 
     def get_feedback_revision(self, chunk_id: str) -> int:
@@ -673,7 +684,7 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         raise VectorStoreError(
             f"Failed to initialize feedback fields for {chunk_id!r} "
-            f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
+            + f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
         )
 
     def _insert_new_chunks(self, chunks: list[Chunk]) -> None:
@@ -852,7 +863,7 @@ class QdrantVectorStore(VectorStoreRepository):
             )
         raise VectorStoreError(
             f"Failed to upsert existing chunk {chunk.id!r} "
-            f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
+            + f"after {_MAX_FEEDBACK_UPDATE_RETRIES} attempts"
         )
 
     def _try_batch_update_existing_chunk_if_feedback_current(
@@ -1051,6 +1062,7 @@ class QdrantVectorStore(VectorStoreRepository):
     def _feedback_scores_equal(left: float, right: float) -> bool:
         return abs(left - right) <= _FEEDBACK_SCORE_EPSILON
 
+    @override
     def get_feedback_scores(self, chunk_ids: list[str]) -> dict[str, float]:
         """Return feedback scores for *chunk_ids* in a single retrieve call."""
         unique_ids = list(dict.fromkeys(chunk_ids))
@@ -1210,15 +1222,15 @@ class QdrantVectorStore(VectorStoreRepository):
         if len(models) > 1:
             raise VectorStoreError(
                 f"Embedding model mismatch: collection '{self.collection}' contains "
-                f"vectors from multiple models: {sorted(models)}. "
-                f"Run: python scripts/rebuild_embeddings.py --recreate-collection"
+                + f"vectors from multiple models: {sorted(models)}. "
+                + "Run: python scripts/rebuild_embeddings.py --recreate-collection"
             )
         existing_model = next(iter(models)) if models else None
         if existing_model is not None and existing_model != self.embedding_model_name:
             raise VectorStoreError(
                 f"Embedding model mismatch: collection '{self.collection}' was built with "
-                f"'{existing_model}' but current config is '{self.embedding_model_name}'. "
-                f"Run: python scripts/rebuild_embeddings.py --recreate-collection"
+                + f"'{existing_model}' but current config is '{self.embedding_model_name}'. "
+                + "Run: python scripts/rebuild_embeddings.py --recreate-collection"
             )
         if metadata_model is None and existing_model == self.embedding_model_name:
             self._write_collection_metadata_model(self.embedding_model_name)

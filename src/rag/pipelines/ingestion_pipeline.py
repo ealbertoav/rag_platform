@@ -75,14 +75,14 @@ class IngestionPipeline:
         hype_indexer: HyPEIndexer | None = None,
         hierarchical_indexer: HierarchicalIndexer | None = None,
     ) -> None:
-        self._service = service
-        self._vector_store = vector_store
-        self._bm25 = bm25
-        self._metadata = metadata
-        self._graph_indexer = graph_indexer
-        self._augmentor = augmentor
-        self._hype_indexer = hype_indexer
-        self._hierarchical_indexer = hierarchical_indexer
+        self._service: IngestionService = service
+        self._vector_store: VectorStoreRepository = vector_store
+        self._bm25: BM25Index | DiskBM25Index = bm25
+        self._metadata: MetadataRepository | None = metadata
+        self._graph_indexer: GraphIndexer | None = graph_indexer
+        self._augmentor: DocumentAugmentor | None = augmentor
+        self._hype_indexer: HyPEIndexer | None = hype_indexer
+        self._hierarchical_indexer: HierarchicalIndexer | None = hierarchical_indexer
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -103,7 +103,7 @@ class IngestionPipeline:
             existing = self._metadata.get_by_source(source)
             if existing is not None and existing.content_hash == doc_hash:
                 elapsed_ms = (time.monotonic() - t0) * 1000
-                self._metadata.upsert_document(
+                _ = self._metadata.upsert_document(
                     source,
                     doc_hash,
                     self._metadata.get_chunk_ids(existing.id),
@@ -128,7 +128,7 @@ class IngestionPipeline:
                 self._purge_superseded_chunks(old_chunk_ids)
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 if self._metadata is not None:
-                    self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
+                    _ = self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
                 return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
 
             indexed_chunks = list(chunks)
@@ -150,7 +150,7 @@ class IngestionPipeline:
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
-            self._metadata.upsert_document(
+            _ = self._metadata.upsert_document(
                 source,
                 doc_hash,
                 [c.id for c in indexed_chunks],

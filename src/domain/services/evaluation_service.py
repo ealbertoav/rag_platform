@@ -32,14 +32,14 @@ class EvaluationService:
         hallucination_threshold: float = 0.1,
         qa_dataset_path: Path | None = None,
     ) -> None:
-        self._pipeline = chat_pipeline
-        self._qa_path = qa_dataset_path or _DEFAULT_QA_PATH
-        self._recall_threshold = recall_threshold
-        self._faithfulness_threshold = faithfulness_threshold
-        self._relevance_threshold = relevance_threshold
-        self._context_precision_threshold = context_precision_threshold
-        self._hallucination_threshold = hallucination_threshold
-        self._benchmark = RAGBenchmark(
+        self._pipeline: BenchmarkPipeline = chat_pipeline
+        self._qa_path: Path = qa_dataset_path or _DEFAULT_QA_PATH
+        self._recall_threshold: float = recall_threshold
+        self._faithfulness_threshold: float = faithfulness_threshold
+        self._relevance_threshold: float = relevance_threshold
+        self._context_precision_threshold: float = context_precision_threshold
+        self._hallucination_threshold: float = hallucination_threshold
+        self._benchmark: RAGBenchmark = RAGBenchmark(
             recall_threshold=recall_threshold,
             faithfulness_threshold=faithfulness_threshold,
             relevance_threshold=relevance_threshold,

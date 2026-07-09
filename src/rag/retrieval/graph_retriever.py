@@ -33,7 +33,7 @@ class EntityExtractor:
     """
 
     def __init__(self, llm: LLMRepository) -> None:
-        self._llm = llm
+        self._llm: LLMRepository = llm
         self._template: Template | None = None
 
     def extract_relations(self, text: str) -> list[GraphRelation]:
@@ -85,9 +85,9 @@ class GraphRetriever:
         graph: Neo4jGraphRepository,
         bm25: BM25Retriever,
     ) -> None:
-        self._extractor = extractor
-        self._graph = graph
-        self._bm25 = bm25
+        self._extractor: EntityExtractor = extractor
+        self._graph: Neo4jGraphRepository = graph
+        self._bm25: BM25Retriever = bm25
 
     async def search(
         self,

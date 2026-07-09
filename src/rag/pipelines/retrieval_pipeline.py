@@ -123,7 +123,7 @@ class RetrievalPipeline:
     """
 
     def __init__(self, service: RetrievalService) -> None:
-        self.service = service
+        self.service: RetrievalService = service
 
     # ── Public ─────────────────────────────────────────────────────────────────
 

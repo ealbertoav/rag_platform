@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,7 +20,7 @@ class BenchmarkRun:
 class EvalSample(BaseModel):
     """One evaluation data point produced by running the full RAG pipeline."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     question: str
     expected_answer: str

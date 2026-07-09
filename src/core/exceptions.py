@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import override
+
 
 class RAGPlatformError(Exception):
     """Base for all application exceptions.
@@ -10,9 +12,10 @@ class RAGPlatformError(Exception):
 
     def __init__(self, message: str, cause: BaseException | None = None) -> None:
         super().__init__(message)
-        self.message = message
-        self.cause = cause
+        self.message: str = message
+        self.cause: BaseException | None = cause
 
+    @override
     def __str__(self) -> str:
         if self.cause:
             return f"{self.message} (caused by: {self.cause})"

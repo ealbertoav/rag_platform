@@ -90,7 +90,7 @@ async def chat_full(
         False,
         description=(
             "Attach verbatim supporting spans per source chunk. Also enabled when "
-            "quality.source_highlighting.enabled is true in config."
+            + "quality.source_highlighting.enabled is true in config."
         ),
     ),
     pipeline: ChatPipeline = Depends(get_chat_pipeline),

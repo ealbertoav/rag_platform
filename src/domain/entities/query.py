@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,7 +11,7 @@ from src.domain.entities.retrieval_filter import RetrievalFilter
 class Query(BaseModel):
     """A user question, optionally expanded into multiple sub-queries."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     text: str

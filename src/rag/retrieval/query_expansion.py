@@ -53,10 +53,10 @@ class QueryExpander:
         enabled: bool = True,
         step_back: StepBackGenerator | None = None,
     ) -> None:
-        self._llm = llm
-        self._n_variants = n_variants
-        self._enabled = enabled
-        self._step_back = step_back
+        self._llm: LLMRepository = llm
+        self._n_variants: int = n_variants
+        self._enabled: bool = enabled
+        self._step_back: StepBackGenerator | None = step_back
         self._cache: dict[str, list[str]] = {}
         self._prompt_template: Template | None = None
 

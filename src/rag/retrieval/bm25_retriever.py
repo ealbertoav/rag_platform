@@ -20,7 +20,7 @@ class BM25Retriever:
     """
 
     def __init__(self, index: BM25Index | DiskBM25Index) -> None:
-        self._index = index
+        self._index: BM25Index | DiskBM25Index = index
 
     @property
     def bm25_index(self) -> BM25Index | DiskBM25Index:

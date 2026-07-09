@@ -89,7 +89,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    configure_rate_limit()
+    _ = configure_rate_limit()
     _app.add_middleware(RateLimitHTTPMiddleware)
     _app.add_middleware(
         _cors_middleware_factory,

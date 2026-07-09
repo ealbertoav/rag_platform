@@ -19,7 +19,7 @@ class HallucinationMetric:
     """
 
     def __init__(self, threshold: float = 0.1) -> None:
-        self.threshold = threshold
+        self.threshold: float = threshold
 
     def score(self, sample: EvalSample) -> EvalResult:
         if sample.parametric_answer:

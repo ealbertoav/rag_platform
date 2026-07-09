@@ -24,8 +24,8 @@ class RecursiveChunker:
     def __init__(self, chunk_size: int = 500, overlap: int = 50) -> None:
         if overlap >= chunk_size:
             raise ValueError("overlap must be smaller than chunk_size")
-        self.chunk_size = chunk_size
-        self.overlap = overlap
+        self.chunk_size: int = chunk_size
+        self.overlap: int = overlap
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ class RecursiveChunker:
                 chunks.append(_join(buf))
                 # Trim buffer to at most `overlap` tokens, keeping the tail.
                 while len(buf) > 1 and _tok(_join(buf)) > self.overlap:
-                    buf.pop(0)
+                    _ = buf.pop(0)
                 # If the single remaining item is still > overlap, discard it.
                 if buf and _tok(_join(buf)) > self.overlap:
                     buf.clear()

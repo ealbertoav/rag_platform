@@ -72,9 +72,9 @@ class HierarchicalIndexer:
         embedder: EmbeddingRepository,
         template: Template | None = None,
     ) -> None:
-        self._llm = llm
-        self._embedder = embedder
-        self._template = template
+        self._llm: LLMRepository = llm
+        self._embedder: EmbeddingRepository = embedder
+        self._template: Template | None = template
 
     def index(
         self,
