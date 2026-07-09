@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from src.core.constants import CHUNK_SECTION_KEY
 from src.core.exceptions import DocumentLoadError
 from src.domain.entities.document import Document
 
@@ -30,16 +31,20 @@ class MarkdownLoader:
 
             headings = _HEADING_RE.findall(content)
 
+            metadata: dict[str, object] = {
+                "filename": path.name,
+                "extension": path.suffix.lower(),
+                "loader": "markdown",
+                "heading_count": len(headings),
+                "headings": headings,
+            }
+            if headings:
+                metadata[CHUNK_SECTION_KEY] = headings[0]
+
             return Document(
                 source=str(path.resolve()),
                 content=content,
-                metadata={
-                    "filename": path.name,
-                    "extension": path.suffix.lower(),
-                    "loader": "markdown",
-                    "heading_count": len(headings),
-                    "headings": headings,
-                },
+                metadata=metadata,
             )
         except DocumentLoadError:
             raise

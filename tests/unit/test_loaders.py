@@ -185,6 +185,7 @@ class TestDocxLoader:
         doc = DocxLoader().load(docx_file)
         assert "Introduction" in doc.metadata["sections"]
         assert "Details" in doc.metadata["sections"]
+        assert doc.metadata["section"] == "Introduction"
 
     def test_source_is_absolute(self, docx_file: Path):
         doc = DocxLoader().load(docx_file)
@@ -254,6 +255,7 @@ class TestMarkdownLoader:
         assert "Title" in doc.metadata["headings"]
         assert "Section One" in doc.metadata["headings"]
         assert "Section Two" in doc.metadata["headings"]
+        assert doc.metadata["section"] == "Title"
 
     def test_metadata_keys(self, markdown_file: Path):
         doc = MarkdownLoader().load(markdown_file)

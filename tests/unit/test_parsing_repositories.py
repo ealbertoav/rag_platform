@@ -179,7 +179,9 @@ class TestMultimodalConstants:
         assert len(keys) == len(set(keys))
 
     def test_layout_document_metadata_keys(self) -> None:
-        assert frozenset({"tables", "figures", "sections"}) == LAYOUT_DOCUMENT_METADATA_KEYS
+        assert frozenset({"tables", "figures", "sections", "headings"}) == (
+            LAYOUT_DOCUMENT_METADATA_KEYS
+        )
 
     def test_multimodal_page_key_matches_chunk_metadata(self) -> None:
         """Layout parsers must populate metadata.page — not page_number."""

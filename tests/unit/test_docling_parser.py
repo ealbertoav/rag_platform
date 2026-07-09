@@ -524,6 +524,7 @@ class TestLayoutParserLoaderDelegation:
             assert "tables" not in chunk.metadata
             assert "figures" not in chunk.metadata
             assert "sections" not in chunk.metadata
+            assert chunk.metadata[CHUNK_SECTION_KEY] == "Introduction"
             assert chunk.metadata["loader"] == "docling"
         assert "tables" in document.metadata
 

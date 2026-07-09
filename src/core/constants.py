@@ -30,8 +30,11 @@ CHUNK_TYPE_PAGE = "page"
 TABLE_ID_KEY = "table_id"
 FIGURE_ID_KEY = "figure_id"
 BBOX_KEY = "bbox"
-# Document-level layout metadata from parsers; excluded from per-chunk spreads.
-LAYOUT_DOCUMENT_METADATA_KEYS: frozenset[str] = frozenset({"tables", "figures", "sections"})
+# Document-level layout/outline metadata; excluded from per-chunk spreads.
+# Per-chunk section labels use CHUNK_SECTION_KEY (promoted by chunk_metadata).
+LAYOUT_DOCUMENT_METADATA_KEYS: frozenset[str] = frozenset(
+    {"tables", "figures", "sections", "headings"}
+)
 # Multimodal parse/chunk metadata reuses CHUNK_PAGE_KEY and CHUNK_SECTION_KEY above.
 SOURCE_CHUNK_ID_KEY = "source_chunk_id"
 MERGED_CHUNK_IDS_KEY = "merged_chunk_ids"
