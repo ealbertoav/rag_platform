@@ -36,6 +36,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Disk-backed BM25 (T-165):** Lexical search stays `memory` by default (in-RAM `rank-bm25`). For corpora approaching 100K–1M+ chunks, set `retrieval.bm25.backend: disk` to use a segmented/mmap index under `retrieval.bm25.disk_path` so search RAM stays bounded. Ingestion wraps each document in `deferred_rebuild()` so re-ingest purges superseded chunk IDs from Qdrant and BM25 atomically; eval/rebuild scripts stream chunks via `iter_chunks()` without loading the full corpus into RAM. See [Disk-Backed BM25 (T-165)](#disk-backed-bm25-t-165).
 
+> **Mypy CI gate hardening (T-171):** CI, `make lint`, and the pre-commit mypy hook run identical static analysis — `ruff check` → `ruff format --check` → `mypy src` → `basedpyright --level error src` — with no CLI `--ignore-missing-imports` bypass. `scripts/check_lint_gate.py` validates config drift across CI, Makefile, and pre-commit, then re-runs mypy. Typed smoke modules under `src/type_regression/` exercise compression and contextual-header APIs so mypy catches return-type regressions at lint time. Builds on the T-170 type-ignore audit ([docs/type-safety.md](docs/type-safety.md)). See [Lint workflow for contributors](#lint-workflow-for-contributors).
+
 ---
 
 ## Table of Contents
@@ -82,6 +84,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
 - [Development](#development)
+  - [Lint workflow for contributors (T-171)](#lint-workflow-for-contributors)
 - [Testing](#testing)
 - [Evaluation Framework](#evaluation-framework)
 - [Observability](#observability)
@@ -179,7 +182,7 @@ flowchart LR
 | Knowledge graph | [Neo4j](https://neo4j.com) (optional, `uv sync --extra graph`) |
 | API framework | [FastAPI](https://fastapi.tiangolo.com) |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
-| Linting | [Ruff](https://docs.astral.sh/ruff/) + [mypy](https://mypy-lang.org/) |
+| Linting | [Ruff](https://docs.astral.sh/ruff/) + [mypy](https://mypy-lang.org/) + [basedpyright](https://docs.basedpyright.com/) |
 | Tracing | [OpenTelemetry](https://opentelemetry.io/) |
 | Metrics | [Prometheus](https://prometheus.io/) |
 | Evaluation | [Ragas](https://docs.ragas.io/) + [DeepEval](https://docs.confident-ai.com/) |
@@ -1876,6 +1879,7 @@ rag_implementation/
 ├── docs/
 │   ├── dependency-policy.md    # pip-audit severity gate + allowlist process (T-161)
 │   ├── security-advisories.md  # Formal CVE risk acceptance (T-162 diskcache)
+│   ├── type-safety.md          # Type-ignore audit + CI lint gate (T-170/T-171)
 │   └── operations/
 │       └── feedback-multi-replica.md  # T-146 deployment guide (HPA, backends, rate limits)
 ├── infra/
@@ -1892,6 +1896,7 @@ rag_implementation/
 │   ├── run_evals.py            # QA dataset generation CLI (iter_chunks · T-152/T-165)
 │   ├── sync_retrieval_golden.py # Sync retrieval goldens from QA without LLM (T-152)
 │   ├── check_regression_gate.py # CI regression gate entrypoint (T-152)
+│   ├── check_lint_gate.py      # Lint config alignment + mypy smoke (T-171)
 │   ├── check_dependencies.py   # pip-audit wrapper (T-161)
 │   ├── check_dependencies.sh   # CI/local dependency scan entrypoint (T-161)
 │   ├── check_diskcache_cve.py  # diskcache upstream monitor (T-162)
@@ -1904,7 +1909,7 @@ rag_implementation/
 │   └── TODO.md                 # Specification-driven task list (SDD format)
 ├── src/
 │   ├── api/                    # FastAPI routers + DI + rate_limit middleware (T-160)
-│   ├── core/                   # Settings, logging, exceptions, async_bridge (T-164), diskcache_cve_check (T-162)
+│   ├── core/                   # Settings, logging, exceptions, async_bridge (T-164), diskcache_cve_check (T-162), lint_gate (T-171)
 │   ├── domain/                 # Entities, repository ABCs, services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
@@ -1930,11 +1935,12 @@ rag_implementation/
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
 │   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
+│   ├── type_regression/        # Typed smoke modules for mypy regression detection (T-171)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 800+ unit tests (zero external deps)
+│   └── unit/                   # 2100+ unit tests (zero external deps)
 ├── .dockerignore
 ├── .env.example
 ├── .github/
@@ -1955,8 +1961,11 @@ rag_implementation/
 # Install dev dependencies
 uv sync --group dev
 
-# Lint (ruff check + mypy)
+# Lint (same commands as CI — ruff, mypy, basedpyright)
 make lint
+
+# Verify lint config alignment + mypy clean (T-171 gate)
+uv run python scripts/check_lint_gate.py
 
 # Auto-format
 make format
@@ -1964,6 +1973,42 @@ make format
 # Install pre-commit hooks (requires git repo)
 pre-commit install
 ```
+
+### Lint workflow for contributors
+
+CI blocks merges when static analysis regresses. Run the same checks locally before opening a PR:
+
+| Step | Command | Notes |
+|------|---------|-------|
+| Full lint suite | `make lint` | Matches `.github/workflows/ci.yml` lint job (ruff check → ruff format --check → mypy → basedpyright `--level error`) |
+| Config drift check | `uv run python scripts/check_lint_gate.py` | Ensures CI, Makefile, and pre-commit stay aligned; re-runs `mypy src` |
+| Pre-commit (optional) | `pre-commit run --all-files` | Catches ruff/mypy issues before commit |
+
+```mermaid
+flowchart LR
+    PR["PR / push to main"] --> LINT["Lint job"]
+    LINT --> R1["ruff check"]
+    R1 --> R2["ruff format --check"]
+    R2 --> M["mypy src"]
+    M --> B["basedpyright --level error"]
+    B -->|pass| U["Unit tests"]
+    B -->|fail| BLOCK["PR blocked"]
+
+    DEV["Local dev"] --> ML["make lint"]
+    DEV --> CG["check_lint_gate.py"]
+    CG --> PAR["CI · Makefile · pre-commit parity"]
+    CG --> MY["mypy src re-run"]
+
+    style BLOCK fill:#ffeeee,stroke:#cc0000
+```
+
+**Config alignment (`src/core/lint_gate.py`):** `check_lint_gate.py` verifies that CI (`.github/workflows/ci.yml`), `make lint`, and the pre-commit mypy hook use the same canonical commands, that the CI mypy step has no `continue-on-error`, and that no layer passes CLI `--ignore-missing-imports`.
+
+**Type regression modules (`src/type_regression/`):** mypy analyzes typed smoke functions for compression and contextual-header APIs at lint time; unit tests call the same functions to assert runtime behavior matches the typed contracts.
+
+Mypy reads `[tool.mypy]` from `pyproject.toml` (`strict = true`, `ignore_missing_imports` at project level). Do not pass `--ignore-missing-imports` on the CLI — that bypasses the audited T-170 configuration. basedpyright uses `[tool.basedpyright]` with `reportMissingImports = false` for optional runtime deps.
+
+See [docs/type-safety.md](docs/type-safety.md) for the type-ignore audit and module overrides.
 
 **Environment variables** use `__` as the nested delimiter:
 ```bash
@@ -2003,7 +2048,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |
 | `make audit-deps` | Audit dependencies for high/critical CVEs (T-161) |
-| `make lint` | `ruff check` + `mypy` |
+| `make lint` | `ruff check` + `ruff format --check` + `mypy` + `basedpyright` |
 | `make format` | `ruff format` + `ruff check --fix` |
 | `make test` | Unit + integration tests with coverage |
 | `make test-unit` | Unit tests only |
@@ -2034,9 +2079,12 @@ uv run pytest tests/integration/test_qdrant.py -v
 
 # Benchmark suite (E2E, technique matrix, chunk size sweep, feedback concurrency)
 uv run pytest tests/benchmarks/ -v -s
+
+# Lint gate + type regression (T-171)
+uv run pytest tests/unit/test_lint_gate.py tests/unit/test_type_regression.py -v
 ```
 
-**Test coverage:** 97+ source files · 80 test files · 1760 tests (32 skipped without models/services).
+**Test coverage:** 130+ source files · 94 test files · 2188 tests (32 skipped without models/services).
 
 Integration tests auto-skip when models or Qdrant are absent (CI runs them but does not start Docker services).
 
@@ -2831,7 +2879,7 @@ scrape_configs:
 ```mermaid
 flowchart LR
     PR["Pull Request<br/>or push to main"] --> D["1️⃣ Dependency Scan<br/>pip-audit · allowlist<br/>(T-161)"]
-    PR --> L["2️⃣ Lint<br/>ruff · mypy"]
+    PR --> L["2️⃣ Lint<br/>ruff · format · mypy · basedpyright<br/>(T-171 aligned)"]
     D --> U["3️⃣ Unit Tests<br/>coverage upload"]
     L --> U
     U --> I["4️⃣ Integration Tests<br/>auto-skip if models absent"]
@@ -2847,7 +2895,7 @@ flowchart LR
     style MERGE fill:#eeffee,stroke:#00aa00
 ```
 
-The `dependency-scan` job runs `./scripts/check_dependencies.sh` (same as `make audit-deps`). Operators can monitor upstream `diskcache` fixes locally with `./scripts/check_diskcache_cve.sh` (T-162); Dependabot opens weekly PRs for `llama-cpp-python` updates.
+The `dependency-scan` job runs `./scripts/check_dependencies.sh` (same as `make audit-deps`). The `lint` job runs the same four commands as `make lint` — no `continue-on-error` on mypy and no CLI `--ignore-missing-imports`. Run `uv run python scripts/check_lint_gate.py` locally to verify CI/Makefile/pre-commit parity before opening a PR (T-171). Operators can monitor upstream `diskcache` fixes locally with `./scripts/check_diskcache_cve.sh` (T-162); Dependabot opens weekly PRs for `llama-cpp-python` updates.
 
 ---
 

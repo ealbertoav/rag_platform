@@ -63,7 +63,10 @@ jobs:
         run: uv run ruff format --check src tests
 
       - name: mypy
-        run: uv run mypy src --ignore-missing-imports
+        run: uv run mypy src
+
+      - name: basedpyright
+        run: uv run basedpyright --level error src
 
   # ── 3. Unit tests ────────────────────────────────────────────────────────────
   unit-tests:

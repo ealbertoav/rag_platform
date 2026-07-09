@@ -13,6 +13,10 @@ from src.rag.compression.token_reducer import (
     total_tokens,
     truncate_to_tokens,
 )
+from src.type_regression.compression import (
+    check_compressor_returns_chunks,
+    check_token_reducer_types,
+)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -276,3 +280,16 @@ class TestFromSettings:
         llm = MagicMock()
         comp = ContextualCompressor.from_settings(llm)
         assert comp._max_tokens == settings.compression.max_tokens
+
+
+class TestTypeRegressionFixtures:
+    """Runtime checks for src/type_regression — mypy validates those modules at lint time."""
+
+    def test_token_reducer_api_types(self) -> None:
+        total, truncated, count = check_token_reducer_types(_chunks(2))
+        assert total > 0 and truncated and count > 0
+
+    def test_compressor_returns_typed_chunks(self) -> None:
+        result = check_compressor_returns_chunks(_compressor(), "query", _chunks(1))
+        assert len(result) == 1
+        assert isinstance(result[0].text, str)

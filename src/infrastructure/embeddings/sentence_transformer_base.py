@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from src.core.exceptions import EmbeddingError
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SentenceTransformerEmbeddingProvider(EmbeddingRepository):
+class SentenceTransformerEmbeddingProvider(EmbeddingRepository, ABC):
     """Base for dense-only embedding providers backed by sentence-transformers.
 
     Concrete subclasses implement "_encode_kwargs()" to pass model-specific

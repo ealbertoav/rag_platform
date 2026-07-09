@@ -68,12 +68,15 @@ class LlamaCppProvider(LLMRepository):
             try:
                 output = cast(
                     dict[str, Any],
-                    model.create_chat_completion(
-                        messages=[{"role": "user", "content": _join(prompt, context)}],
-                        max_tokens=kwargs.get("max_tokens", self.max_tokens),
-                        temperature=kwargs.get("temperature", self.temperature),
-                        stop=self.stop_tokens,
-                        stream=False,
+                    cast(
+                        object,
+                        model.create_chat_completion(
+                            messages=[{"role": "user", "content": _join(prompt, context)}],
+                            max_tokens=kwargs.get("max_tokens", self.max_tokens),
+                            temperature=kwargs.get("temperature", self.temperature),
+                            stop=self.stop_tokens,
+                            stream=False,
+                        ),
                     ),
                 )
                 return str(output["choices"][0]["message"]["content"])
@@ -169,7 +172,7 @@ class LlamaCppProvider(LLMRepository):
                     ):
                         if cancelled.is_set():
                             break
-                        chunk_data = cast(dict[str, Any], chunk)
+                        chunk_data = cast(dict[str, Any], cast(object, chunk))
                         choices = cast(list[dict[str, Any]], chunk_data["choices"])
                         delta = str(choices[0]["delta"].get("content", ""))
                         if delta:

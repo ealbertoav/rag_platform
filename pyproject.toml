@@ -160,6 +160,12 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["B008"]
 
 [tool.basedpyright]
+# Complement mypy strict — block CI on errors only, not recommended-mode warnings.
+typeCheckingMode = "basic"
+failOnWarnings = false
+pythonVersion = "3.12"
+# Optional runtime deps (ragas, cohere, neo4j, …) — align with mypy ignore_missing_imports.
+reportMissingImports = false
 # neo4j is an optional dependency — suppress all unresolved-import errors for it.
 reportMissingModuleSource = false
 # These rules fire on Any/Unknown that propagates from stdlib stubs
@@ -170,6 +176,7 @@ reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownParameterType = false
 reportUnknownMemberType = false
+reportUnannotatedClassAttribute = false
 
 [tool.pyrefly]
 search-path = ["src", "scripts"]

@@ -22,7 +22,11 @@ class DocxLoader:
             section_titles: list[str] = []
             for p in doc.paragraphs:
                 style = p.style
-                if style is not None and style.name.startswith("Heading") and p.text.strip():
+                if (
+                    style is not None
+                    and (style.name or "").startswith("Heading")
+                    and p.text.strip()
+                ):
                     section_titles.append(p.text)
 
             return Document(

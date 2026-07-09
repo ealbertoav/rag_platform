@@ -58,7 +58,7 @@ class BGERerankerProvider(RerankerRepository):
         cfg = settings.reranker
         return cls(
             model_path=cfg.model_path,
-            device=cfg.device if hasattr(cfg, "device") else "mps",
+            device=getattr(cfg, "device", "mps"),
             batch_size=cfg.batch_size,
         )
 
