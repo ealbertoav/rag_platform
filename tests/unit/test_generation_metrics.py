@@ -288,8 +288,11 @@ class TestRagasInfrastructure:
     def test_make_ragas_dataset(self):
         from src.evals.generation import _make_ragas_dataset
 
-        with patch("datasets.Dataset.from_dict") as mock_from_dict:
+        mock_from_dict = MagicMock()
+        mock_dataset = MagicMock(from_dict=mock_from_dict)
+        with patch.dict("sys.modules", {"datasets": MagicMock(Dataset=mock_dataset)}):
             _make_ragas_dataset(_sample())
+
         mock_from_dict.assert_called_once()
         call_kwargs = mock_from_dict.call_args[0][0]
         assert call_kwargs["question"] == [_sample().question]
