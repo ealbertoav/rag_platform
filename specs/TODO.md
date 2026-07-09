@@ -4,9 +4,9 @@
 > Fields: **Goal**, **Inputs**, **Outputs**, **Files**, **Acceptance Criteria**, **Notes**.
 > Status: `[ ]` pending · `[~]` in progress · `[x]` done
 
-> **Current focus:** Phase 17 complete — **T-172** ✅ (PR #41). **T-171** ✅ (PR #39). **T-173** ✅. **Phase 15** — T-150 ✅ (PR #29), T-151 ✅ (PR #30), T-152 ✅ (PR #31). **Phase 16** — T-160–T-165 complete (T-162 PR #34, T-164 PR #36, T-165 PR #37 disk-backed BM25).
+> **Current focus:** Phase 18 complete — **T-174–T-176** ✅ (CI performance). **Phase 17 complete** — T-170–T-173 ✅. **T-172** ✅ (PR #41).
 >
-> **All planned specification tasks complete.** Ongoing maintenance: refresh `data/exports/infra_baseline.json` on target hardware after Phase 16 changes; extend golden datasets as the corpus grows.
+> **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
 ---
 
@@ -2262,6 +2262,73 @@
 
 ---
 
+## Phase 18 — CI Performance (Priority 8)
+
+> **Motivation:** Run 29032428404 baseline was ~22 min wall clock with five jobs each paying ~3 min for `uv sync`. Target ~10–12 min via job consolidation, `.venv` cache, parallel quality+unit, and unit-test optimizations.
+
+---
+
+### T-174 · CI Workflow Restructure & venv Cache
+- **Status:** `[x]`
+- **Goal:** Reduce CI installs from 5 to 3, run Quality and Unit Tests in parallel, cache `.venv` across jobs.
+- **Inputs:** T-061 (CI pipeline), T-161 (dependency scan), T-171 (lint gate)
+- **Outputs:** 3-job workflow, composite setup action, branch-protection migration script.
+- **Files:**
+  - `.github/actions/setup-python-env/action.yml` — uv + `.venv` cache + `uv sync --frozen --group dev` _(done)_
+  - `.github/workflows/ci.yml` — `quality`, `unit-tests`, `extended-tests` jobs _(done)_
+  - `src/core/lint_gate.py` — accept `quality:` job (fallback `lint:`) _(done)_
+  - `tests/unit/test_lint_gate.py` — quality job coverage _(done)_
+  - `scripts/migrate_ci_checks.sh` — inspect/update required check contexts _(done)_
+  - `README.md` — CI/CD section _(done)_
+- **Acceptance Criteria:**
+  - [x] Five jobs merged to three (`Quality`, `Unit Tests`, `Extended Tests`)
+  - [x] Unit tests no longer `needs: [dependency-scan, lint]`
+  - [x] `.venv` cached keyed on `uv.lock`
+  - [x] `check_lint_gate.py` passes on committed workflow
+  - [x] `migrate_ci_checks.sh` documents `gh api` migration
+- **Notes:** After first green CI run, execute `./scripts/migrate_ci_checks.sh` and update branch protection contexts to Quality / Unit Tests / Extended Tests.
+
+---
+
+### T-175 · Unit Test Suite Performance
+- **Status:** `[x]`
+- **Goal:** Cut CI unit pytest time by fixing accidental slow tests and parallelizing the default suite.
+- **Inputs:** T-174 (CI unit command), T-165 (100K BM25 disk tests), T-172 (`test_benchmark_infra_cli.py`)
+- **Outputs:** `@pytest.mark.slow`, xdist, tenacity sleep mocks, faster CLI entrypoint test.
+- **Files:**
+  - `tests/unit/test_benchmark_infra_cli.py` — patch `asyncio.run` in `test_module_entrypoint` _(done)_
+  - `tests/unit/test_bm25_disk.py` — `@pytest.mark.slow` on 100K test _(done)_
+  - `tests/unit/test_api_embedding_providers.py` — autouse `no_tenacity_sleep` fixture _(done)_
+  - `pyproject.toml` — `pytest-xdist`, slow marker _(done)_
+  - `.github/workflows/ci.yml` — `-m "not slow" -n auto --cov-report=xml` _(done)_
+  - `Makefile` — `test-slow` target; `test-unit` excludes slow _(done)_
+- **Acceptance Criteria:**
+  - [x] `test_module_entrypoint` completes in under 5s locally
+  - [x] CI excludes `@pytest.mark.slow` by default
+  - [x] `make test-slow` runs scale tests locally
+  - [x] Tenacity retry tests do not sleep in CI
+- **Notes:** Default CI uses `-n auto` (2 workers on `ubuntu-latest`). Full slow suite runs in `ci-slow.yml`.
+
+---
+
+### T-176 · Path Filters & CI Policy
+- **Status:** `[x]`
+- **Goal:** Skip jobs when diffs cannot affect them; add manual and scheduled slow-test coverage.
+- **Inputs:** T-174 (3-job layout)
+- **Outputs:** `dorny/paths-filter`, expanded `paths-ignore`, `workflow_dispatch`, weekly slow workflow.
+- **Files:**
+  - `.github/workflows/ci.yml` — `changes` job, per-job `if:` conditions, `workflow_dispatch` + `run_slow` input _(done)_
+  - `.github/workflows/ci-slow.yml` — weekly `pytest -m slow` _(done)_
+  - `README.md` — skip behavior, slow-test docs _(done)_
+- **Acceptance Criteria:**
+  - [x] `changes` job gates quality/unit/extended via path filters
+  - [x] `specs/**` and `data/exports/**` in workflow `paths-ignore`
+  - [x] `workflow_dispatch` can run full suite with slow tests
+  - [x] Weekly `ci-slow.yml` runs `@pytest.mark.slow`
+- **Notes:** Extended tests skip when diff is narrowly scoped to `tests/unit/**` without touching `src/**` or golden datasets. Conservative `extended` filter avoids false skips on production code changes.
+
+---
+
 ## Dependency Graph
 
 ```
@@ -2316,6 +2383,8 @@ T-060 + T-061 ──► T-170 ──► T-171 ──► T-173
 T-043 + T-051 ──► T-172
 T-146 ──► T-172
 T-163 + T-164 + T-165 ──► T-172
+T-061 + T-171 ──► T-174 ──► T-175
+T-174 ──► T-176
 ```
 
 ## Quick Start Order for an Agent
@@ -2337,3 +2406,4 @@ T-163 + T-164 + T-165 ──► T-172
 15. **Phase 15 — Priority 5 (Evaluation Operationalization):** T-150 ✅ → T-151 ✅ → T-152 ✅ _(complete — PR #29, PR #30, PR #31)_
 16. **Phase 16 — Priority 6 (Production Hardening & Scalability):** T-160 ✅ → T-161 ✅ → T-162 ✅ (PR #34) → T-163 ✅ → T-164 ✅ (PR #36) → T-165 ✅ _(~2 sessions; Phase 16 complete)_
 17. **Phase 17 — Priority 7 (Code Quality & Type Safety):** T-170 ✅ → T-171 ✅ (PR #39) → T-172 ✅ (PR #41) → T-173 ✅ _(Phase 17 complete)_
+18. **Phase 18 — Priority 8 (CI Performance):** T-174 ✅ → T-175 ✅ → T-176 ✅

@@ -1,0 +1,24 @@
+name: Setup Python environment
+description: Install uv, restore .venv cache, and sync frozen dev dependencies
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+        enable-cache: true
+
+    - name: Restore .venv cache
+      uses: actions/cache@v4
+      id: venv-cache
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+        restore-keys: |
+          venv-${{ runner.os }}-
+
+    - name: Install dev dependencies
+      shell: bash
+      run: uv sync --frozen --group dev

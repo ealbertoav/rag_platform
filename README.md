@@ -30,7 +30,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Golden dataset & CI eval gates (T-152):** Populate and validate `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json` via `make evals` (requires `make ingest` first; filters placeholders, expands chunks until ≥ 20 evaluable QA pairs). Sync retrieval goldens without LLM regeneration via `make sync-retrieval-goldens`. CI runs `scripts/check_regression_gate.py` when real data is committed — enforces QA/retrieval sync, minimum sample counts, and per-row oracle Recall@5 floors from `retrieval_baseline.json`. Extend evals with human-in-the-loop feedback via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md). See [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152).
 
-> **Automated dependency scanning (T-161):** CI runs `pip-audit` on every PR via the `dependency-scan` job — blocks high/critical CVEs (CVSS ≥ 7.0) in direct and transitive dependencies. Known unfixable risks are allowlisted in `configs/cve-allowlist.yaml` with review dates. Run locally with `make audit-deps`. See [Automated Dependency Scanning (T-161)](#automated-dependency-scanning-t-161).
+> **Automated dependency scanning (T-161):** CI runs `pip-audit` on every PR via the **Quality** job — blocks high/critical CVEs (CVSS ≥ 7.0) in direct and transitive dependencies. Known unfixable risks are allowlisted in `configs/cve-allowlist.yaml` with review dates. Run locally with `make audit-deps`. See [Automated Dependency Scanning (T-161)](#automated-dependency-scanning-t-161).
 
 > **diskcache CVE mitigation (T-162):** Compensating controls for CVE-2025-69872 (`diskcache` transitive via `llama-cpp-python`): `diskcache-weave` fork override, RAM-only prompt cache by default, emergency kill switch (`LLM__DISABLE_DISK_CACHE=true`), upstream PyPI monitor (`./scripts/check_diskcache_cve.sh`), and weekly Dependabot PRs for `llama-cpp-python`. Formal risk acceptance in [docs/security-advisories.md](docs/security-advisories.md). See [diskcache CVE Mitigation (T-162)](#diskcache-cve-mitigation-t-162).
 
@@ -1473,7 +1473,7 @@ Covers all protected routes, burst allowance, per-`X-API-Key` isolation, exempt/
 
 ### Automated Dependency Scanning (T-161)
 
-Every pull request runs a `dependency-scan` CI job that audits the resolved dependency graph from `uv.lock` with [pip-audit](https://pypi.org/project/pip-audit/). High and critical findings (CVSS v3 base score ≥ 7.0) fail the build; medium and low findings are reported only.
+Every pull request runs pip-audit inside the **Quality** CI job (merged from the former `dependency-scan` job) that audits the resolved dependency graph from `uv.lock` with [pip-audit](https://pypi.org/project/pip-audit/). High and critical findings (CVSS v3 base score ≥ 7.0) fail the build; medium and low findings are reported only.
 
 Known unfixable or accepted risks are recorded in `configs/cve-allowlist.yaml` with a mandatory `review_date`. Expired entries are ignored automatically — the scan fails until the CVE is fixed or the entry is renewed.
 
@@ -2032,8 +2032,11 @@ rag_implementation/
 ├── .dockerignore
 ├── .env.example
 ├── .github/
+│   ├── actions/setup-python-env/  # uv + .venv cache composite (T-174)
 │   ├── dependabot.yml          # Weekly llama-cpp-python updates (T-162)
-│   └── workflows/ci.yml        # dependency-scan · lint · unit · integration · regression
+│   └── workflows/
+│       ├── ci.yml              # Quality · Unit Tests · Extended Tests (T-174–T-176)
+│       └── ci-slow.yml         # Weekly slow unit tests (T-176)
 ├── .pre-commit-config.yaml
 ├── docker-compose.yml          # Full local stack
 ├── docker-compose.override.yml # Dev overrides — hot-reload + Ollama LLM
@@ -2068,7 +2071,7 @@ CI blocks merges when static analysis regresses. Run the same checks locally bef
 
 | Step | Command | Notes |
 |------|---------|-------|
-| Full lint suite | `make lint` | Matches `.github/workflows/ci.yml` lint job (ruff check → ruff format --check → mypy → basedpyright `--level error`) |
+| Full lint suite | `make lint` | Matches `.github/workflows/ci.yml` Quality job (ruff check → ruff format --check → mypy → basedpyright `--level error`) |
 | Config drift check | `uv run python scripts/check_lint_gate.py` | Ensures CI, Makefile, and pre-commit stay aligned; re-runs `mypy src` |
 | Pre-commit (optional) | `pre-commit run --all-files` | Catches ruff/mypy issues before commit |
 
@@ -2138,7 +2141,8 @@ EMBEDDINGS__DEVICE=cpu
 | `make lint` | `ruff check` + `ruff format --check` + `mypy` + `basedpyright` |
 | `make format` | `ruff format` + `ruff check --fix` |
 | `make test` | Unit + integration tests with coverage |
-| `make test-unit` | Unit tests only |
+| `make test-unit` | Unit tests only (excludes `@pytest.mark.slow`) |
+| `make test-slow` | Slow scale unit tests only (T-175) |
 | `make test-e2e` | End-to-end tests |
 | `make docker-build` | Build `api` and `worker` images |
 | `make docker-up` | Start full Docker Compose stack |
@@ -2154,8 +2158,11 @@ EMBEDDINGS__DEVICE=cpu
 ## Testing
 
 ```bash
-# Unit tests (fast, no external services needed)
+# Unit tests (fast, no external services needed; excludes slow scale tests)
 make test-unit
+
+# Slow scale tests (100K BM25); also runs weekly in ci-slow.yml
+make test-slow
 
 # All tests including integration
 make test
@@ -2978,24 +2985,34 @@ scrape_configs:
 
 ```mermaid
 flowchart LR
-    PR["Pull Request<br/>or push to main"] --> D["1️⃣ Dependency Scan<br/>pip-audit · allowlist<br/>(T-161)"]
-    PR --> L["2️⃣ Lint<br/>ruff · format · mypy · basedpyright<br/>(T-171 aligned)"]
-    D --> U["3️⃣ Unit Tests<br/>coverage upload"]
-    L --> U
-    U --> I["4️⃣ Integration Tests<br/>auto-skip if models absent"]
-    U --> R["5️⃣ Retrieval Regression<br/>check_regression_gate.py<br/>auto-skip if placeholder-only"]
-
-    D -->|CVE fail| BLOCK["🚫 PR blocked"]
-    L -->|fail| BLOCK
+    PR["Pull Request<br/>or push to main"] --> CH["Detect Changes<br/>paths-filter"]
+    CH --> Q["Quality<br/>parallel with unit"]
+    CH --> U["Unit Tests<br/>-m 'not slow' · xdist · cov"]
+    Q -->|audit + lint fail| BLOCK["PR blocked"]
     U -->|fail| BLOCK
-    R -->|regression| BLOCK
-    I & R -->|pass| MERGE["✅ Ready to merge"]
+    U --> E["Extended Tests<br/>integration + retrieval gate"]
+    E -->|regression| BLOCK
+    E -->|pass| MERGE["Ready to merge"]
 
     style BLOCK fill:#ffeeee,stroke:#cc0000
     style MERGE fill:#eeffee,stroke:#00aa00
 ```
 
-The `dependency-scan` job runs `./scripts/check_dependencies.sh` (same as `make audit-deps`). The `lint` job runs the same four commands as `make lint` — no `continue-on-error` on mypy and no CLI `--ignore-missing-imports`. Run `uv run python scripts/check_lint_gate.py` locally to verify CI/Makefile/pre-commit parity before opening a PR (T-171). Operators can monitor upstream `diskcache` fixes locally with `./scripts/check_diskcache_cve.sh` (T-162); Dependabot opens weekly PRs for `llama-cpp-python` updates.
+Three jobs share [`.github/actions/setup-python-env`](.github/actions/setup-python-env/action.yml) (uv cache + `.venv` cache + `uv sync --frozen --group dev`):
+
+| Job | What it runs | When skipped |
+|---|---|---|
+| **Quality** | `check_dependencies.sh` + same four commands as `make lint` (T-171) | No matching paths in `changes` filter |
+| **Unit Tests** | `pytest tests/unit -m "not slow" -n auto --cov=src --cov-report=xml` | No matching paths in `changes` filter |
+| **Extended Tests** | `pytest tests/integration` + retrieval benchmark + `check_regression_gate.py` | After unit tests; skipped when diff is unit-test-only |
+
+**Path filters:** edits under `specs/**`, `docs/**`, or `data/exports/**` alone do not trigger CI (`paths-ignore`). Narrow unit-test-only diffs skip Extended Tests.
+
+**Slow tests:** 100K-chunk BM25 scale tests are marked `@pytest.mark.slow`. Run locally with `make test-slow`. Weekly coverage via [`.github/workflows/ci-slow.yml`](.github/workflows/ci-slow.yml). Manual full suite: Actions → CI → Run workflow → enable **Include slow unit tests**.
+
+**Branch protection migration (T-174):** after the first green run, update required checks from `Dependency Scan` + `Lint` + `Integration Tests` + `Retrieval Eval Regression` to **Quality**, **Unit Tests**, **Extended Tests**. Use `./scripts/migrate_ci_checks.sh` to inspect current contexts and print a `gh api` patch template.
+
+Run `uv run python scripts/check_lint_gate.py` locally to verify CI/Makefile/pre-commit parity before opening a PR (T-171). Operators can monitor upstream `diskcache` fixes locally with `./scripts/check_diskcache_cve.sh` (T-162); Dependabot opens weekly PRs for `llama-cpp-python` updates.
 
 ---
 

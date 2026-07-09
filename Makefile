@@ -1,4 +1,4 @@
-.PHONY: install sync serve ingest evals sync-retrieval-goldens benchmark lint format test test-unit test-e2e clean qdrant-up \
+.PHONY: install sync serve ingest evals sync-retrieval-goldens benchmark lint format test test-unit test-slow test-e2e clean qdrant-up \
         docker-build docker-up docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
         benchmark-chunk-sizes benchmark-infra audit-deps
 
@@ -51,7 +51,10 @@ test:
 	uv run pytest tests/unit tests/integration -v --cov=src --cov-report=term-missing
 
 test-unit:
-	uv run pytest tests/unit -v
+	uv run pytest tests/unit -m "not slow" -v
+
+test-slow:
+	uv run pytest tests/unit -m slow -v
 
 test-e2e:
 	uv run pytest tests/e2e -v

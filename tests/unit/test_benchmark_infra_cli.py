@@ -328,13 +328,20 @@ class TestBenchmarkInfraMain:
         apply_cfg.assert_called_once_with("cfg.yaml")
 
     def test_module_entrypoint(self, monkeypatch: pytest.MonkeyPatch):
+        import asyncio
         import runpy
         from pathlib import Path
 
+        def _mock_asyncio_run(coro: object) -> int:
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            return 0
+
         monkeypatch.setattr(sys, "argv", ["benchmark_infra.py", "--scenarios", "bm25_100k"])
         with (
-            patch.object(cli, "run", new=AsyncMock(return_value=0)),
+            patch("asyncio.run", side_effect=_mock_asyncio_run) as mock_run,
             pytest.raises(SystemExit) as exc,
         ):
             runpy.run_path(str(Path(cli.__file__)), run_name="__main__")
         assert exc.value.code == 0
+        mock_run.assert_called_once()
