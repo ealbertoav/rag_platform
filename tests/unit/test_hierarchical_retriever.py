@@ -78,6 +78,22 @@ class TestChunkMetadata:
         assert summary.document_id == "doc-1"
         assert is_summary_chunk(summary)
 
+    def test_make_summary_chunk_excludes_layout_metadata(self) -> None:
+        document = Document(
+            id="doc-1",
+            source="/data/raw/report.pdf",
+            content="Revenue grew 12%.",
+            metadata={
+                "tables": [{"table_id": "table-1"}],
+                "figures": [{"figure_id": "figure-1"}],
+                "sections": ["Revenue"],
+            },
+        )
+        summary = make_summary_chunk(document, "Revenue overview.")
+        assert "tables" not in summary.metadata
+        assert "figures" not in summary.metadata
+        assert "sections" not in summary.metadata
+
 
 class TestHierarchicalIndexer:
     def test_indexes_tagged_details_and_embedded_summary(self):

@@ -9,6 +9,7 @@ import numpy as np
 from src.core.constants import CHUNK_INDEX_KEY, CHUNK_SOURCE_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
+from src.rag.chunking.metadata import chunk_metadata
 from src.rag.chunking.recursive_chunker import RecursiveChunker
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
@@ -73,7 +74,7 @@ class SemanticChunker:
                         document_id=document.id,
                         text=text_part,
                         metadata={
-                            **document.metadata,
+                            **chunk_metadata(document.metadata),
                             CHUNK_SOURCE_KEY: document.source,
                             CHUNK_INDEX_KEY: len(chunks),
                         },

@@ -27,8 +27,13 @@ from src.domain.entities.document import Document
 from src.domain.entities.parsed_document import ParsedDocument
 from src.domain.repositories.layout_parser_repository import LayoutParserRepository
 from src.infrastructure.loaders import load_document
-from src.infrastructure.parsers import get_layout_parser, parsed_to_document
+from src.infrastructure.parsers import (
+    clear_layout_parser_cache,
+    get_layout_parser,
+    parsed_to_document,
+)
 from src.infrastructure.parsers.docling_parser import DoclingLayoutParser, build_docling_metadata
+from src.rag.chunking.recursive_chunker import RecursiveChunker
 
 _DOCLING_PARSER = "src.infrastructure.parsers.docling_parser"
 
@@ -39,6 +44,10 @@ def _internal(name: str) -> object:
 
 docling_page_no = cast(Callable[[object], int | None], _internal("_page_no"))
 docling_bbox = cast(Callable[[object], list[float] | None], _internal("_bbox"))
+docling_provenance_metadata = cast(
+    Callable[[object], dict[str, Any]],
+    _internal("_provenance_metadata"),
+)
 docling_extract_sections = cast(Callable[[object], list[str]], _internal("_extract_sections"))
 docling_extract_tables = cast(
     Callable[[object], list[dict[str, Any]]],
@@ -53,6 +62,11 @@ docling_create_converter = cast(Callable[[], object], _internal("_create_convert
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 _LAYOUT_PARSER_ENABLED = "src.infrastructure.loaders.settings.parsing.layout_parser.enabled"
+
+
+@pytest.fixture(autouse=True)
+def _reset_layout_parser_cache() -> None:
+    clear_layout_parser_cache()
 
 
 def _enable_layout_parser(monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True) -> None:
@@ -139,6 +153,16 @@ class TestDoclingMetadataHelpers:
         item = SimpleNamespace(prov=_prov(bbox=(1.0, 2.0, 3.0, 4.0)))
         assert docling_bbox(item) == [1.0, 2.0, 3.0, 4.0]
 
+    def test_provenance_metadata_returns_empty_without_provenance(self) -> None:
+        assert docling_provenance_metadata(SimpleNamespace()) == {}
+
+    def test_provenance_metadata_includes_page_and_bbox(self) -> None:
+        item = SimpleNamespace(prov=_prov(page_no=2, bbox=(1.0, 2.0, 3.0, 4.0)))
+        assert docling_provenance_metadata(item) == {
+            CHUNK_PAGE_KEY: 2,
+            BBOX_KEY: [1.0, 2.0, 3.0, 4.0],
+        }
+
     def test_extract_sections_skips_non_headers(self) -> None:
         doc = MagicMock()
         doc.iterate_items.return_value = iter(
@@ -163,7 +187,8 @@ class TestDoclingMetadataHelpers:
         doc = MagicMock()
         doc.tables = [table]
         result = docling_extract_tables(doc)
-        assert result == [{TABLE_ID_KEY: "table-1", "markdown": "table-md"}]
+        assert result == [{TABLE_ID_KEY: "table-1"}]
+        table.export_to_markdown.assert_not_called()
 
     def test_extract_figures_without_caption(self) -> None:
         picture = MagicMock()
@@ -300,6 +325,30 @@ class TestDoclingLayoutParser:
         ):
             docling_create_converter()
 
+    def test_parse_wraps_configuration_error_from_converter(self, tmp_path: Path) -> None:
+        path = tmp_path / "cfg.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        with (
+            patch(
+                f"{_DOCLING_PARSER}._create_converter", side_effect=ConfigurationError("missing")
+            ),
+            pytest.raises(DocumentLoadError, match="not configured") as exc_info,
+        ):
+            DoclingLayoutParser().parse(path)
+        assert isinstance(exc_info.value.cause, ConfigurationError)
+
+    def test_lazy_converter_reused_across_parse_calls(self, tmp_path: Path) -> None:
+        path = tmp_path / "reuse.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        doc = _make_docling_doc(markdown="once")
+        converter = _make_converter(doc)
+        with patch(f"{_DOCLING_PARSER}._create_converter", return_value=converter) as create:
+            parser = DoclingLayoutParser()
+            parser.parse(path)
+            parser.parse(path)
+        create.assert_called_once()
+        assert converter.convert.call_count == 2
+
 
 # ── Factory ────────────────────────────────────────────────────────────────────
 
@@ -318,6 +367,19 @@ class TestGetLayoutParser:
         settings = Settings(parsing={"layout_parser": {"enabled": True, "provider": "docling"}})
         parser = get_layout_parser(settings)
         assert isinstance(parser, DoclingLayoutParser)
+
+    def test_returns_cached_parser_for_same_settings(self) -> None:
+        settings = Settings(parsing={"layout_parser": {"enabled": True, "provider": "docling"}})
+        first = get_layout_parser(settings)
+        second = get_layout_parser(settings)
+        assert first is second
+
+    def test_clear_layout_parser_cache_invalidates_instance(self) -> None:
+        settings = Settings(parsing={"layout_parser": {"enabled": True, "provider": "docling"}})
+        first = get_layout_parser(settings)
+        clear_layout_parser_cache()
+        second = get_layout_parser(settings)
+        assert first is not second
 
     def test_unknown_provider_raises_configuration_error(self) -> None:
         settings = Settings(parsing={"layout_parser": {"enabled": True, "provider": "unknown"}})
@@ -434,6 +496,36 @@ class TestLayoutParserLoaderDelegation:
         _enable_layout_parser(monkeypatch)
         doc = load_document(html_file)
         assert doc.metadata["loader"] == "html"
+
+    def test_unknown_provider_raises_document_load_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _enable_layout_parser(monkeypatch)
+        monkeypatch.setattr(
+            "src.infrastructure.loaders.settings.parsing.layout_parser.provider",
+            "unknown",
+        )
+        path = tmp_path / "report.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        with pytest.raises(DocumentLoadError, match="misconfigured") as exc_info:
+            load_document(path)
+        assert isinstance(exc_info.value.cause, ConfigurationError)
+
+    def test_layout_metadata_not_spread_to_text_chunks(self, tmp_path: Path) -> None:
+        path = tmp_path / "report.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        doc = _make_docling_doc(markdown="# Title\n\nBody.", sections=["Introduction"])
+        parser = DoclingLayoutParser(converter=_make_converter(doc))
+        parsed = parser.parse(path)
+        document = parsed_to_document(parsed)
+        chunks = RecursiveChunker(chunk_size=50, overlap=10).chunk(document)
+        assert chunks
+        for chunk in chunks:
+            assert "tables" not in chunk.metadata
+            assert "figures" not in chunk.metadata
+            assert "sections" not in chunk.metadata
+            assert chunk.metadata["loader"] == "docling"
+        assert "tables" in document.metadata
 
 
 @pytest.fixture

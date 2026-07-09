@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Protocol
 
 from src.core.constants import SUPPORTED_EXTENSIONS
-from src.core.exceptions import DocumentLoadError
+from src.core.exceptions import ConfigurationError, DocumentLoadError
 from src.core.settings import settings
 from src.domain.entities.document import Document
 from src.infrastructure.loaders.docx_loader import DocxLoader
@@ -33,7 +33,13 @@ _LOADERS: dict[str, DocumentLoader] = {
 def _load_with_layout_parser(path: Path) -> Document:
     from src.infrastructure.parsers import get_layout_parser, parsed_to_document
 
-    parser = get_layout_parser()
+    try:
+        parser = get_layout_parser()
+    except ConfigurationError as exc:
+        raise DocumentLoadError(
+            f"Layout parser misconfigured for {path.name}",
+            cause=exc,
+        ) from exc
     if parser is None:
         raise DocumentLoadError(
             f"Layout parser requested for {path.name} but parsing.layout_parser.enabled is false"

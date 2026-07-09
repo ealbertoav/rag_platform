@@ -11,8 +11,10 @@ Verifies that:
 
 from __future__ import annotations
 
+import importlib
 from abc import ABC
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from pydantic import ValidationError
@@ -26,6 +28,7 @@ from src.core.constants import (
     CHUNK_TYPE_PAGE,
     CHUNK_TYPE_TABLE,
     FIGURE_ID_KEY,
+    LAYOUT_DOCUMENT_METADATA_KEYS,
     TABLE_ID_KEY,
 )
 from src.domain.entities.parsed_document import ParsedDocument
@@ -35,6 +38,20 @@ from src.domain.repositories import LayoutParserRepository, OcrRepository
 def _assert_abstract_instantiation_fails(cls: type) -> None:
     with pytest.raises(TypeError):
         cls()  # pyright: ignore[reportAbstractUsage]
+
+
+def _assert_module_has_no_infra_imports(module: ModuleType) -> None:
+    module_file = module.__file__
+    if module_file is None:
+        pytest.fail(f"module has no source file: {module.__name__}")
+    source_path = Path(module_file)
+    text = source_path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("from src.infrastructure") or stripped.startswith(
+            "import src.infrastructure"
+        ):
+            pytest.fail(f"infrastructure import in domain layer: {stripped}")
 
 
 class _LayoutParser(LayoutParserRepository):
@@ -75,9 +92,9 @@ class TestParsedDocument:
             doc.content = "mutated"  # type: ignore[misc]
 
     def test_importable_from_entities_package(self) -> None:
-        from src.domain.entities import ParsedDocument as PD  # noqa: F401
+        import src.domain.entities as entities
 
-        assert PD is ParsedDocument
+        assert entities.ParsedDocument is ParsedDocument
 
 
 # ── LayoutParserRepository ─────────────────────────────────────────────────────
@@ -161,6 +178,9 @@ class TestMultimodalConstants:
         ]
         assert len(keys) == len(set(keys))
 
+    def test_layout_document_metadata_keys(self) -> None:
+        assert frozenset({"tables", "figures", "sections"}) == LAYOUT_DOCUMENT_METADATA_KEYS
+
     def test_multimodal_page_key_matches_chunk_metadata(self) -> None:
         """Layout parsers must populate metadata.page — not page_number."""
         assert CHUNK_PAGE_KEY == "page"
@@ -180,41 +200,16 @@ class TestNoDomainInfraLeak:
             OcrRepository,
         )
 
-    def test_layout_parser_module_has_no_infra_imports(self) -> None:
-        import src.domain.repositories.layout_parser_repository as mod
-
-        source_path = Path(mod.__file__)
-        text = source_path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("from src.infrastructure") or stripped.startswith(
-                "import src.infrastructure"
-            ):
-                pytest.fail(f"infrastructure import in domain layer: {stripped}")
-
-    def test_ocr_module_has_no_infra_imports(self) -> None:
-        import src.domain.repositories.ocr_repository as mod
-
-        source_path = Path(mod.__file__)
-        text = source_path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("from src.infrastructure") or stripped.startswith(
-                "import src.infrastructure"
-            ):
-                pytest.fail(f"infrastructure import in domain layer: {stripped}")
-
-    def test_parsed_document_module_has_no_infra_imports(self) -> None:
-        import src.domain.entities.parsed_document as mod
-
-        source_path = Path(mod.__file__)
-        text = source_path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("from src.infrastructure") or stripped.startswith(
-                "import src.infrastructure"
-            ):
-                pytest.fail(f"infrastructure import in domain layer: {stripped}")
+    @pytest.mark.parametrize(
+        "module_name",
+        [
+            "src.domain.repositories.layout_parser_repository",
+            "src.domain.repositories.ocr_repository",
+            "src.domain.entities.parsed_document",
+        ],
+    )
+    def test_domain_module_has_no_infra_imports(self, module_name: str) -> None:
+        _assert_module_has_no_infra_imports(importlib.import_module(module_name))
 
 
 # ── CI migration script (T-180) ──────────────────────────────────────────────

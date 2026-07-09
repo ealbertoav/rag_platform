@@ -12,25 +12,48 @@ from src.infrastructure.parsers.docling_parser import DoclingLayoutParser
 
 __all__ = [
     "DoclingLayoutParser",
+    "clear_layout_parser_cache",
     "get_layout_parser",
     "parsed_to_document",
 ]
 
+_cached_parser_key: tuple[bool, str] | None = None
+_cached_parser: LayoutParserRepository | None = None
+
+
+def clear_layout_parser_cache() -> None:
+    """Reset the cached layout parser instance (for tests and settings reloads)."""
+    global _cached_parser_key, _cached_parser
+    _cached_parser_key = None
+    _cached_parser = None
+
 
 def get_layout_parser(app_settings: Settings | None = None) -> LayoutParserRepository | None:
     """Return the configured layout parser, or None when disabled."""
+    global _cached_parser_key, _cached_parser
+
     if app_settings is None:
         app_settings = default_settings
 
     cfg = app_settings.parsing.layout_parser
+    cache_key = (cfg.enabled, cfg.provider)
+    if _cached_parser_key == cache_key:
+        return _cached_parser
+
     if not cfg.enabled:
+        _cached_parser_key = cache_key
+        _cached_parser = None
         return None
 
     match cfg.provider:
         case "docling":
-            return DoclingLayoutParser()
+            parser: LayoutParserRepository = DoclingLayoutParser()
         case _:
             raise ConfigurationError(f"Unknown layout parser provider: {cfg.provider!r}")
+
+    _cached_parser_key = cache_key
+    _cached_parser = parser
+    return parser
 
 
 def parsed_to_document(parsed: ParsedDocument) -> Document:

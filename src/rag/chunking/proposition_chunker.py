@@ -16,6 +16,7 @@ from src.core.constants import (
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.repositories.llm_repository import LLMRepository
+from src.rag.chunking.metadata import chunk_metadata
 from src.rag.chunking.recursive_chunker import RecursiveChunker
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ class PropositionChunker:
                 seen_propositions.add(normalized)
 
                 metadata = {
-                    **document.metadata,
+                    **chunk_metadata(document.metadata),
                     CHUNK_SOURCE_KEY: document.source,
                     CHUNK_TYPE_KEY: CHUNK_TYPE_PROPOSITION,
                     PROPOSITION_INDEX_KEY: proposition_index,

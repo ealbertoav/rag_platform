@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.core.constants import CHUNK_INDEX_KEY, CHUNK_SOURCE_KEY
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
+from src.rag.chunking.metadata import chunk_metadata
 
 
 # 1 token ≈ 4 characters for English. Fast approximation used to keep chunkers
@@ -36,7 +37,7 @@ class RecursiveChunker:
                 document_id=document.id,
                 text=text,
                 metadata={
-                    **document.metadata,
+                    **chunk_metadata(document.metadata),
                     CHUNK_SOURCE_KEY: document.source,
                     CHUNK_INDEX_KEY: i,
                 },

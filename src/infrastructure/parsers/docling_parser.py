@@ -101,19 +101,24 @@ def _extract_sections(doc: _DoclingDocument) -> list[str]:
     return sections
 
 
+def _provenance_metadata(item: _ProvItem) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    page = _page_no(item)
+    if page is not None:
+        metadata[CHUNK_PAGE_KEY] = page
+    bbox = _bbox(item)
+    if bbox is not None:
+        metadata[BBOX_KEY] = bbox
+    return metadata
+
+
 def _extract_tables(doc: _DoclingDocument) -> list[dict[str, Any]]:
     tables: list[dict[str, Any]] = []
     for index, table in enumerate(doc.tables, start=1):
         entry: dict[str, Any] = {
             TABLE_ID_KEY: f"table-{index}",
-            "markdown": table.export_to_markdown(),
+            **_provenance_metadata(table),
         }
-        page = _page_no(table)
-        if page is not None:
-            entry[CHUNK_PAGE_KEY] = page
-        bbox = _bbox(table)
-        if bbox is not None:
-            entry[BBOX_KEY] = bbox
         tables.append(entry)
     return tables
 
@@ -121,13 +126,10 @@ def _extract_tables(doc: _DoclingDocument) -> list[dict[str, Any]]:
 def _extract_figures(doc: _DoclingDocument) -> list[dict[str, Any]]:
     figures: list[dict[str, Any]] = []
     for index, picture in enumerate(doc.pictures, start=1):
-        entry: dict[str, Any] = {FIGURE_ID_KEY: f"figure-{index}"}
-        page = _page_no(picture)
-        if page is not None:
-            entry[CHUNK_PAGE_KEY] = page
-        bbox = _bbox(picture)
-        if bbox is not None:
-            entry[BBOX_KEY] = bbox
+        entry: dict[str, Any] = {
+            FIGURE_ID_KEY: f"figure-{index}",
+            **_provenance_metadata(picture),
+        }
         caption = picture.caption_text(doc)
         if caption:
             entry["caption"] = caption
@@ -170,8 +172,9 @@ class DoclingLayoutParser(LayoutParserRepository):
             )
 
         try:
-            converter = self._converter or _create_converter()
-            result = converter.convert(str(path))
+            if self._converter is None:
+                self._converter = _create_converter()
+            result = self._converter.convert(str(path))
             status = getattr(result, "status", None)
             if status is not None and getattr(status, "name", str(status)) == "FAILURE":
                 raise DocumentLoadError(f"Docling conversion failed for {path}")
@@ -188,6 +191,11 @@ class DoclingLayoutParser(LayoutParserRepository):
             )
         except DocumentLoadError:
             raise
+        except ConfigurationError as exc:
+            raise DocumentLoadError(
+                f"Docling layout parser is not configured for {path.name}",
+                cause=exc,
+            ) from exc
         except Exception as exc:
             raise DocumentLoadError(f"Cannot parse with Docling: {path}", cause=exc) from exc
 
