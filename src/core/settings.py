@@ -365,9 +365,14 @@ class OcrSettings(BaseModel):
     provider: str = "tesseract"
 
 
+class TableChunkSettings(BaseModel):
+    enabled: bool = False
+
+
 class ParsingSettings(BaseModel):
     layout_parser: LayoutParserSettings = Field(default_factory=LayoutParserSettings)
     ocr: OcrSettings = Field(default_factory=OcrSettings)
+    table_chunks: TableChunkSettings = Field(default_factory=TableChunkSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────

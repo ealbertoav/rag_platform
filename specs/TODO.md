@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 20 in progress — **T-200** ✅ (DoclingLayoutParser), **T-201** ✅ (PptxLoader). **Next:** T-202. Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 21 pending — **T-210** (Multimodal Domain Model). Phase 20 complete — **T-200** ✅ · **T-201** ✅ · **T-202** ✅. Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2338,7 +2338,7 @@
 > | Phase | Priority | Tasks | Depends on | Status |
 > |-------|----------|-------|------------|--------|
 > | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
-> | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 pending |
+> | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | pending |
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | pending |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
@@ -2390,7 +2390,7 @@
 >
 > **Preconditions:** Phase 19 (T-190)
 >
-> **Status:** in progress — T-200 ✅ · T-201 ✅ · T-202 pending
+> **Status:** complete — T-200 ✅ · T-201 ✅ · T-202 ✅
 
 ---
 
@@ -2437,15 +2437,26 @@
 
 
 ### T-202 · Structured Table Chunks at Ingest
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Emit `type=table` chunks with `table_id`.
 - **Inputs:** T-200, T-190, T-015
-- **Outputs:** Table chunks in Qdrant+BM25
-- **Files:** `src/rag/ingestion/table_chunker.py`, tests
+- **Outputs:** Table chunks in Qdrant+BM25; skip-path backfill/purge for unchanged documents; embed-failure retention
+- **Files:**
+  - `src/rag/ingestion/table_chunker.py` — `TableChunker`, `build_table_chunks()`, `table_chunk_id()` (UUIDv5 on `source:table_id`), `is_table_chunk()`, sync helpers (`table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge`, `existing_table_chunk_ids`) _(done)_
+  - `src/infrastructure/parsers/docling_parser.py` — table `text` in metadata via `export_to_markdown()` _(done)_
+  - `src/rag/pipelines/ingestion_pipeline.py` — `_build_table_chunker()`, full-path index, `_backfill_table_chunks_on_skip()`, retention on purge _(done)_
+  - `src/core/settings.py` — `TableChunkSettings` _(done)_
+  - `configs/parsing.yaml` — `table_chunks.enabled` flag _(done)_
+  - `tests/unit/test_table_chunker.py` — chunker, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline, settings _(done)_
+  - `README.md` — enablement, mermaid flows, skip-path / retention notes _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (`enabled: false`)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Stable chunk IDs keyed on `source` (not ephemeral `document.id`) for idempotent reindex
+  - [x] Unchanged documents backfill missing/updated table chunks and purge stale ones when sync succeeds
+  - [x] Failed table embed/build retains previously indexed table points
+- **Notes:** Disabled by default. Best results with T-200 layout `tables[]` (markdown pipe-table fallback when layout text is missing). Table chunks go to Qdrant **and** BM25 (unlike HyPE/summary extras). Skip-path sync is skipped when LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex via `_requires_full_reindex_on_skip()`. Stale purge only runs after successful build+embed (`table_sync_succeeded`).
 
 ---
 
@@ -3009,7 +3020,7 @@ T-150 + T-281 ──► T-282
 18. **Phase 18 — Priority 8 (CI Performance):** T-180 ✅ → T-181 ✅ → T-182 ✅
 
 19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190 ✅ _(complete)_
-20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 → T-202
+20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 ✅ → T-202 ✅ _(complete)_
 21. **Phase 21 — Priority 11 (Domain Model):** T-210
 22. **Phase 22 — Priority 12 (OCR):** T-220 → T-221 → T-222 → T-223
 23. **Phase 23 — Priority 13 (VLM):** T-230 → T-231 → T-232

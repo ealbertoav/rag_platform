@@ -15,6 +15,7 @@ from tests.unit.ingestion_helpers import (
     embedded_chunk,
     mock_ingestion_pipeline,
     mock_reingest_metadata,
+    unchanged_skip_setup,
     write_reingest_doc,
 )
 
@@ -144,6 +145,30 @@ class TestGraphIndexing:
         vector_store.delete.assert_called_once_with(["old-chunk-1", "old-chunk-2"])
         bm25.remove_by_ids.assert_called_once_with(["old-chunk-1", "old-chunk-2"])
 
+    def test_purge_superseded_chunks_skips_retained_ids(self):
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline()
+        pipeline._purge_superseded_chunks(  # noqa: SLF001
+            ["keep-me", "remove-me"],
+            retained_chunk_ids={"keep-me"},
+        )
+        vector_store.delete.assert_called_once_with(["remove-me"])
+        bm25.remove_by_ids.assert_called_once_with(["remove-me"])
+
+    def test_purge_superseded_chunks_noop_when_all_retained(self):
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline()
+        pipeline._purge_superseded_chunks(  # noqa: SLF001
+            ["stable-table-id"],
+            retained_chunk_ids={"stable-table-id"},
+        )
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
+
+    def test_purge_superseded_chunks_noop_for_empty_input(self):
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline()
+        pipeline._purge_superseded_chunks([])  # noqa: SLF001
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
+
     def test_index_graph_failure_does_not_abort_ingest(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")
@@ -154,6 +179,29 @@ class TestGraphIndexing:
         assert result.chunk_count == 1
         vector_store.upsert.assert_called_once()
         bm25.add.assert_called_once()
+
+    def test_unchanged_hash_with_graph_indexer_skips_reindex(self, tmp_path: Path):
+        path, metadata = unchanged_skip_setup(tmp_path)
+        graph = MagicMock()
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
+            metadata=metadata,
+            graph_indexer=graph,
+        )
+        result = pipeline.ingest_file(path)
+        assert result.skipped is True
+        service.prepare.assert_not_called()
+        graph.index_chunks.assert_not_called()
+        vector_store.upsert.assert_not_called()
+        bm25.add.assert_not_called()
+
+    def test_requires_full_reindex_on_skip_excludes_graph_indexer(self):
+        graph = MagicMock()
+        pipeline, _, _, _ = mock_ingestion_pipeline(graph_indexer=graph)
+        assert pipeline._requires_full_reindex_on_skip() is False  # noqa: SLF001
+
+    def test_requires_full_reindex_on_skip_includes_llm_indexers(self):
+        pipeline, _, _, _ = mock_ingestion_pipeline(augmentor=MagicMock())
+        assert pipeline._requires_full_reindex_on_skip() is True  # noqa: SLF001
 
 
 class TestBuildGraphIndexerViaFromSettings:

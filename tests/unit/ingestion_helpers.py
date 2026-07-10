@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from src.domain.entities.chunk import Chunk
-from src.rag.pipelines.ingestion_pipeline import IngestionPipeline
+from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, content_hash
 
 if TYPE_CHECKING:
     from src.infrastructure.vectordb.bm25 import BM25Index
@@ -27,6 +27,26 @@ def write_reingest_doc(tmp_path: Path, *, content: str = "version two") -> Path:
     path = tmp_path / "doc.md"
     path.write_text(content)
     return path
+
+
+def unchanged_skip_setup(
+    tmp_path: Path,
+    *,
+    content: str = "stable content",
+    chunk_count: int = 1,
+    chunk_ids: list[str] | None = None,
+) -> tuple[Path, MagicMock]:
+    """Return an on-disk doc and metadata that matches its content hash."""
+    path = tmp_path / "doc.md"
+    path.write_text(content)
+    metadata = MagicMock()
+    metadata.get_by_source.return_value = MagicMock(
+        id="doc-1",
+        content_hash=content_hash(str(path.resolve()), content),
+        chunk_count=chunk_count,
+    )
+    metadata.get_chunk_ids.return_value = chunk_ids or ["c1"]
+    return path, metadata
 
 
 def reingest_corpus_chunks() -> tuple[Chunk, Chunk, Chunk]:

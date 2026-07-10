@@ -12,12 +12,21 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from src.core.constants import SUPPORTED_EXTENSIONS
 from src.core.exceptions import DocumentLoadError, IngestionError
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.document import Document
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.metadata_repository import DocumentRecord, MetadataRepository
 from src.domain.repositories.vector_store_repository import VectorStoreRepository
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.rag.ingestion.table_chunker import (
+    build_table_chunks,
+    existing_table_chunk_ids,
+    merged_table_chunk_ids,
+    retained_table_chunk_ids_on_embed_failure,
+    stale_table_ids_safe_to_purge,
+    table_chunks_needing_upsert,
+)
 
 if TYPE_CHECKING:
     from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
@@ -25,6 +34,7 @@ if TYPE_CHECKING:
     from src.rag.enrichment.hierarchical_indexer import HierarchicalIndexer
     from src.rag.enrichment.hype_indexer import HyPEIndexer
     from src.rag.ingestion.graph_indexer import GraphIndexer
+    from src.rag.ingestion.table_chunker import TableChunker
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +84,7 @@ class IngestionPipeline:
         augmentor: DocumentAugmentor | None = None,
         hype_indexer: HyPEIndexer | None = None,
         hierarchical_indexer: HierarchicalIndexer | None = None,
+        table_chunker: TableChunker | None = None,
     ) -> None:
         self._service: IngestionService = service
         self._vector_store: VectorStoreRepository = vector_store
@@ -83,6 +94,7 @@ class IngestionPipeline:
         self._augmentor: DocumentAugmentor | None = augmentor
         self._hype_indexer: HyPEIndexer | None = hype_indexer
         self._hierarchical_indexer: HierarchicalIndexer | None = hierarchical_indexer
+        self._table_chunker: TableChunker | None = table_chunker
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -101,59 +113,116 @@ class IngestionPipeline:
 
         if self._metadata is not None:
             existing = self._metadata.get_by_source(source)
+            if existing is not None:
+                document = document.model_copy(update={"id": existing.id})
             if existing is not None and existing.content_hash == doc_hash:
-                elapsed_ms = (time.monotonic() - t0) * 1000
-                _ = self._metadata.upsert_document(
-                    source,
-                    doc_hash,
-                    self._metadata.get_chunk_ids(existing.id),
-                    chunk_count=existing.chunk_count,
-                    duration_ms=elapsed_ms,
-                    skipped=True,
-                )
-                logger.info("Skipped %s (unchanged)", path.name)
-                return IngestionResult(
-                    source=source,
-                    chunk_count=existing.chunk_count,
-                    content_hash=doc_hash,
-                    skipped=True,
-                )
+                if self._requires_full_reindex_on_skip():
+                    old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
+                else:
+                    backfill = self._backfill_table_chunks_on_skip(
+                        document,
+                        source,
+                        doc_hash,
+                        existing,
+                        t0,
+                    )
+                    if backfill is not None:
+                        return backfill
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    _ = self._metadata.upsert_document(
+                        source,
+                        doc_hash,
+                        self._metadata.get_chunk_ids(existing.id),
+                        chunk_count=existing.chunk_count,
+                        duration_ms=elapsed_ms,
+                        skipped=True,
+                    )
+                    logger.info("Skipped %s (unchanged)", path.name)
+                    return IngestionResult(
+                        source=source,
+                        chunk_count=existing.chunk_count,
+                        content_hash=doc_hash,
+                        skipped=True,
+                    )
             if existing is not None:
                 old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
 
         with self._bm25.deferred_rebuild():
             chunks = self._service.prepare(document)
+            indexed_chunks = list(chunks)
 
-            if not chunks:
-                self._purge_superseded_chunks(old_chunk_ids)
+            if chunks:
+                if self._hierarchical_indexer is not None:
+                    chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)
+                    indexed_chunks = list(chunks)
+                    indexed_chunks.extend(summary_chunks)
+                if self._augmentor is not None:
+                    augmented = self._augmentor.augment(chunks)
+                    indexed_chunks.extend(augmented)
+                if self._hype_indexer is not None:
+                    hype_chunks = self._hype_indexer.index(chunks)
+                    indexed_chunks.extend(hype_chunks)
+
+            built_table_chunks: list[Chunk] = []
+            embedded_table_chunks: list[Chunk] = []
+            if self._table_chunker is not None:
+                built_table_chunks = build_table_chunks(document)
+                embedded_table_chunks = self._table_chunker.index(document)
+                indexed_chunks.extend(embedded_table_chunks)
+
+            if not indexed_chunks:
+                retained = self._retained_table_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_table_chunks,
+                    embedded_table_chunks,
+                )
+                self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 if self._metadata is not None:
-                    _ = self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
+                    merged_ids = list(retained) if retained else []
+                    _ = self._metadata.upsert_document(
+                        source,
+                        doc_hash,
+                        merged_ids,
+                        duration_ms=elapsed_ms,
+                    )
                 return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
-
-            indexed_chunks = list(chunks)
-            if self._hierarchical_indexer is not None:
-                chunks, summary_chunks = self._hierarchical_indexer.index(document, chunks)
-                indexed_chunks = list(chunks)
-                indexed_chunks.extend(summary_chunks)
-            if self._augmentor is not None:
-                augmented = self._augmentor.augment(chunks)
-                indexed_chunks.extend(augmented)
-            if self._hype_indexer is not None:
-                hype_chunks = self._hype_indexer.index(chunks)
-                indexed_chunks.extend(hype_chunks)
 
             self._index_graph(chunks, document.id)
             self._vector_store.upsert(indexed_chunks)
-            self._purge_superseded_chunks(old_chunk_ids)
+            retained = {chunk.id for chunk in indexed_chunks}
+            retained.update(
+                self._retained_table_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_table_chunks,
+                    embedded_table_chunks,
+                )
+            )
+            self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
             self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
+            stored_chunk_ids = [c.id for c in indexed_chunks]
+            stored_chunk_ids.extend(
+                chunk_id
+                for chunk_id in self._retained_table_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_table_chunks,
+                    embedded_table_chunks,
+                )
+                if chunk_id not in stored_chunk_ids
+            )
             _ = self._metadata.upsert_document(
                 source,
                 doc_hash,
-                [c.id for c in indexed_chunks],
+                list(dict.fromkeys(stored_chunk_ids)),
                 chunk_count=len(chunks),
                 duration_ms=elapsed_ms,
             )
@@ -223,11 +292,137 @@ class IngestionPipeline:
         if indexable:
             self._bm25.add(indexable)
 
-    def _purge_superseded_chunks(self, chunk_ids: list[str]) -> None:
-        """Remove superseded chunk IDs from dense and lexical indexes together."""
-        if chunk_ids:
-            self._vector_store.delete(chunk_ids)
-            self._bm25.remove_by_ids(chunk_ids)
+    def _requires_full_reindex_on_skip(self) -> bool:
+        """LLM-based supplemental indexers need to prepare() and cannot be backfilled cheaply."""
+        return any(
+            (
+                self._augmentor is not None,
+                self._hype_indexer is not None,
+                self._hierarchical_indexer is not None,
+            )
+        )
+
+    def _backfill_table_chunks_on_skip(
+        self,
+        document: Document,
+        source: str,
+        doc_hash: str,
+        existing: DocumentRecord,
+        t0: float,
+    ) -> IngestionResult | None:
+        """Sync table chunks when base content is unchanged."""
+        if self._table_chunker is None or self._metadata is None:
+            return None
+
+        built_chunks = build_table_chunks(document)
+        table_chunks = self._table_chunker.index(document) if built_chunks else []
+
+        existing_ids = list(self._metadata.get_chunk_ids(existing.id))
+        desired_table_ids = {chunk.id for chunk in built_chunks}
+        known_table_ids = existing_table_chunk_ids(
+            source,
+            existing_ids,
+            document=document,
+            bm25=self._bm25,
+        )
+        stale_table_ids = [
+            chunk_id
+            for chunk_id in existing_ids
+            if chunk_id in known_table_ids and chunk_id not in desired_table_ids
+        ]
+        chunks_to_upsert = table_chunks_needing_upsert(
+            table_chunks,
+            existing_ids,
+            bm25=self._bm25,
+        )
+        stale_to_purge = stale_table_ids_safe_to_purge(
+            document,
+            built_chunks,
+            table_chunks,
+            stale_table_ids,
+        )
+        if not chunks_to_upsert and not stale_to_purge:
+            return None
+
+        with self._bm25.deferred_rebuild():
+            if chunks_to_upsert:
+                self._vector_store.upsert(chunks_to_upsert)
+                self._bm25_add(chunks_to_upsert)
+            if stale_to_purge:
+                self._purge_superseded_chunks(stale_to_purge)
+
+        non_table_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in known_table_ids]
+        merged_table_ids_list = merged_table_chunk_ids(
+            existing_ids,
+            known_table_ids,
+            document,
+            built_chunks,
+            table_chunks,
+        )
+        merged_ids = list(dict.fromkeys(non_table_ids + merged_table_ids_list))
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        _ = self._metadata.upsert_document(
+            source,
+            doc_hash,
+            merged_ids,
+            chunk_count=existing.chunk_count,
+            duration_ms=elapsed_ms,
+        )
+        if chunks_to_upsert:
+            logger.info(
+                "Backfilled %d table chunk(s) for %s (unchanged content)",
+                len(chunks_to_upsert),
+                Path(source).name,
+            )
+        if stale_to_purge:
+            logger.info(
+                "Purged %d stale table chunk(s) for %s (unchanged content)",
+                len(stale_to_purge),
+                Path(source).name,
+            )
+        return IngestionResult(
+            source=source,
+            chunk_count=existing.chunk_count,
+            content_hash=doc_hash,
+        )
+
+    def _retained_table_ids_on_embed_failure(
+        self,
+        source: str,
+        document: Document,
+        old_chunk_ids: list[str],
+        built_table_chunks: list[Chunk],
+        embedded_table_chunks: list[Chunk],
+    ) -> set[str]:
+        if self._table_chunker is None or not old_chunk_ids:
+            return set()
+        return retained_table_chunk_ids_on_embed_failure(
+            source,
+            document,
+            old_chunk_ids,
+            built_table_chunks,
+            embedded_table_chunks,
+            bm25=self._bm25,
+        )
+
+    def _purge_superseded_chunks(
+        self,
+        chunk_ids: list[str],
+        *,
+        retained_chunk_ids: set[str] | None = None,
+    ) -> None:
+        """Remove superseded chunk IDs from dense and lexical indexes together.
+
+        *retained_chunk_ids* excludes IDs present in the new indexed batch so
+        stable table chunk IDs are not deleted immediately after upsert.
+        """
+        if not chunk_ids:
+            return
+        retained = retained_chunk_ids or set()
+        superseded = [chunk_id for chunk_id in chunk_ids if chunk_id not in retained]
+        if superseded:
+            self._vector_store.delete(superseded)
+            self._bm25.remove_by_ids(superseded)
 
     def _remove_document_chunks(self, metadata_doc_id: str) -> None:
         if self._metadata is None:
@@ -284,6 +479,7 @@ class IngestionPipeline:
         augmentor = _build_augmentor(embedder, cfg.augmentation)
         hype_indexer = _build_hype_indexer(embedder, settings.retrieval.hype)
         hierarchical_indexer = _build_hierarchical_indexer(embedder, cfg.hierarchical)
+        table_chunker = _build_table_chunker(embedder, settings.parsing.table_chunks)
 
         return cls(
             service=service,
@@ -294,6 +490,7 @@ class IngestionPipeline:
             augmentor=augmentor,
             hype_indexer=hype_indexer,
             hierarchical_indexer=hierarchical_indexer,
+            table_chunker=table_chunker,
         )
 
 
@@ -373,6 +570,15 @@ def _build_hierarchical_indexer(
     except Exception as exc:
         logger.warning("Hierarchical indexer unavailable: %s", exc)
         return None
+
+
+def _build_table_chunker(embedder: EmbeddingRepository, cfg: object) -> TableChunker | None:
+    """Build a structured table chunker when table chunking is enabled."""
+    if not getattr(cfg, "enabled", False):
+        return None
+    from src.rag.ingestion.table_chunker import TableChunker
+
+    return TableChunker(embedder=embedder)
 
 
 def _bm25_indexable(chunks: list[Chunk]) -> list[Chunk]:

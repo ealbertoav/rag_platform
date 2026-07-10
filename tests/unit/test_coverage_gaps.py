@@ -71,6 +71,10 @@ build_hierarchical_indexer = cast(
     Callable[..., object | None],
     _internal("src.rag.pipelines.ingestion_pipeline", "_build_hierarchical_indexer"),
 )
+build_table_chunker = cast(
+    Callable[..., object | None],
+    _internal("src.rag.pipelines.ingestion_pipeline", "_build_table_chunker"),
+)
 build_hype_indexer = cast(
     Callable[..., object | None],
     _internal("src.rag.pipelines.ingestion_pipeline", "_build_hype_indexer"),
@@ -720,6 +724,9 @@ class TestIngestionPipelineGaps:
 
     def test_build_hierarchical_indexer_disabled(self):
         assert build_hierarchical_indexer(MagicMock(), SimpleNamespace(enabled=False)) is None
+
+    def test_build_table_chunker_disabled(self):
+        assert build_table_chunker(MagicMock(), SimpleNamespace(enabled=False)) is None
 
 
 class TestDiversityGaps:

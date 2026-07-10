@@ -44,6 +44,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Layout-aware parsing (T-200):** Optional Docling-backed layout parser for PDF/DOCX — `DoclingLayoutParser` implements `LayoutParserRepository` and routes through `load_document()` when `parsing.layout_parser.enabled=true` (off by default). Exports markdown plus layout metadata (sections, tables, figures with `table_id`/`figure_id`/`bbox`/`page`); `chunk_metadata()` filters document-level structures from per-chunk payloads and promotes `CHUNK_SECTION_KEY` for contextual headers. Install Docling separately: `uv pip install docling`. See [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200).
 
+> **Structured table chunks (T-202):** Optional `type=table` index points at ingest — `TableChunker` reads layout `tables[]` metadata (with markdown fallback) and indexes embedded table chunks in Qdrant and BM25 when `parsing.table_chunks.enabled=true` (off by default). Stable UUIDv5 IDs (`source:table_id`) enable skip-path backfill and stale purge on unchanged re-ingests; failed embeds retain prior table points. Requires T-200 layout metadata for best results. See [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202).
+
 ---
 
 ## Table of Contents
@@ -59,6 +61,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Optional Chunk Enrichment](#optional-chunk-enrichment)
     - [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190)
     - [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200)
+    - [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202)
   - [Start the API Server](#start-the-api-server)
   - [Chat](#chat)
     - [Scoped retrieval filters (T-134)](#scoped-retrieval-filters-t-134)
@@ -349,6 +352,7 @@ METADATA__DB_PATH=data/processed/metadata.db
 # Multimodal parsing (layout parser off by default; OCR contracts only until T-220+)
 PARSING__LAYOUT_PARSER__ENABLED=false   # Docling layout parser for .pdf/.docx (T-200)
 PARSING__LAYOUT_PARSER__PROVIDER=docling
+PARSING__TABLE_CHUNKS__ENABLED=false    # structured type=table chunks at ingest (T-202)
 PARSING__OCR__ENABLED=false             # OCR pipeline (T-220+)
 PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
 
@@ -370,7 +374,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
-| `configs/parsing.yaml` | Layout parser feature flag + Docling provider (T-200; disabled by default) and OCR flags (T-190/T-220+) |
+| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), and OCR flags (T-190/T-220+) — all disabled by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -396,7 +400,7 @@ uv run python scripts/ingest.py --list
 # Supported formats: .pdf, .docx, .html, .htm, .md, .markdown
 ```
 
-Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a content hash stored in the SQLite metadata store (`data/processed/metadata.db` by default). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled.
+Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a content hash stored in the SQLite metadata store (`data/processed/metadata.db` by default). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync table chunks on the skip path — backfilling missing/updated tables and purging stale ones (T-202).
 
 With `chunking.strategy: parent_child`, both parent and child chunks are indexed in Qdrant and BM25. At query time, retrieval matches on child embeddings; enable `retrieval.parent_context` to substitute parent text into the LLM context (see [Parent Context on Retrieve (T-124)](#parent-context-on-retrieve-t-124)).
 
@@ -428,16 +432,19 @@ flowchart LR
     EM --> AUG{"Synthetic<br/>Questions?<br/>(T-121)"}
     EM --> HYPE{"HyPE<br/>Questions?<br/>(T-122)"}
     EM --> HIER{"Hierarchical<br/>Summaries?<br/>(T-125)"}
+    EM --> TBL{"Table chunks?<br/>(T-202)"}
     AUG -->|enabled| SQ["LLM → N questions/chunk<br/>embed · Qdrant + BM25"]
     HYPE -->|enabled| HY["LLM → N questions/chunk<br/>embed · Qdrant only"]
     HIER -->|enabled| HS["LLM → doc summary<br/>tag details · Qdrant only"]
+    TBL -->|enabled| TC["TableChunker<br/>layout tables → type=table<br/>stable UUIDv5 IDs"]
     AUG -->|disabled| IDX
     EM --> IDX
     SQ --> IDX
     HY --> IDX
     HS --> IDX
+    TC --> IDX
     IDX["Upsert indexes"] --> QD[("Qdrant<br/>HNSW + Sparse")]
-    IDX --> BM[("BM25<br/>memory | disk<br/>excludes HyPE + summaries")]
+    IDX --> BM[("BM25<br/>memory | disk<br/>excludes HyPE + summaries<br/>includes table chunks")]
     IDX --> META[("SQLite<br/>metadata.db")]
     EM -->|neo4j.enabled| GR["Entity Extractor<br/>→ Neo4j"]
     QD & BM & META --> DONE["✅ Indexed"]
@@ -457,6 +464,7 @@ Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptiv
 | Document augmentation (T-121) | `chunking.augmentation` | Qdrant + BM25 (`type=synthetic_question`) | Standard dense/BM25 → resolve to source |
 | HyPE (T-122) | `retrieval.hype` | Qdrant only (`type=hype_question`) | Dedicated question→question dense search → RRF source |
 | Hierarchical summaries (T-125) | `chunking.hierarchical` | Qdrant only (`type=summary` + `type=detail`) | Two-stage summary→detail dense search → RRF source |
+| Structured table chunks (T-202) | `parsing.table_chunks` | Qdrant + BM25 (`type=table`) | Standard dense/BM25 (same as passage chunks) |
 
 ##### Contextual Chunk Headers (T-120)
 
@@ -566,7 +574,7 @@ CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 #### Multimodal Parsing Contracts (T-190)
 
-Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing is implemented in T-200; OCR remains contracts-only until T-220+.
+Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), and structured table chunks (T-202) are implemented; OCR remains contracts-only until T-220+.
 
 ```mermaid
 flowchart TB
@@ -579,18 +587,20 @@ flowchart TB
 
     subgraph CONFIG["configs/parsing.yaml"]
         LPSET["layout_parser.enabled=false<br/>provider=docling"]
+        TCSET["table_chunks.enabled=false"]
         OCRSET["ocr.enabled=false<br/>provider=tesseract"]
     end
 
     subgraph IMPL["Implementations"]
         T200["T-200 DoclingLayoutParser ✅"]
-        T201["T-201 PPTX loader"]
+        T201["T-201 PPTX loader ✅"]
+        T202["T-202 table chunks at ingest ✅"]
         T220["T-220 OCR provider factory"]
-        T202["T-202 table chunks at ingest"]
     end
 
     LPR --> PD
     CONFIG -.->|gates| T200
+    CONFIG -.->|gates| T202
     CONFIG -.->|gates| T220
     T200 -.->|implements| LPR
     T220 -.->|implements| OCR
@@ -613,6 +623,8 @@ parsing:
   layout_parser:
     enabled: false              # T-200 Docling parser (off by default)
     provider: docling
+  table_chunks:
+    enabled: false              # T-202 structured type=table chunks (off by default)
   ocr:
     enabled: false              # T-220+ OCR pipeline
     provider: tesseract         # tesseract | easyocr | docling | azure_di
@@ -646,7 +658,7 @@ flowchart LR
 |---|---|
 | `sections` | Ordered section headers from the document outline |
 | `section` (`CHUNK_SECTION_KEY`) | First section title — promoted onto each chunk via `chunk_metadata()` |
-| `tables` | List of `{table_id, page?, bbox?}` entries for downstream table chunking (T-202) |
+| `tables` | List of `{table_id, text?, page?, bbox?}` entries for downstream table chunking (T-202) |
 | `figures` | List of `{figure_id, caption?, page?, bbox?}` entries |
 | `page_count` | Total pages detected by Docling |
 
@@ -677,7 +689,58 @@ make ingest SOURCE=data/raw/
 
 **Tests:** `tests/unit/test_docling_parser.py` (parser, metadata extraction, factory cache, settings reload), `tests/unit/test_chunk_metadata.py` (filtering and section promotion), plus routing coverage in `tests/unit/test_loaders.py` and `tests/unit/test_ingestion.py`.
 
-**Next steps:** **T-201** (PPTX loader), **T-202** (structured `type=table` chunks at ingest). Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
+#### Structured Table Chunks at Ingest (T-202)
+
+When `parsing.table_chunks.enabled=true`, the ingestion pipeline emits dedicated `type=table` chunks (with `table_id`, optional `page`/`bbox`) alongside regular text chunks. Table text comes from Docling layout metadata (`tables[].text`) or, as a fallback, markdown tables parsed from document content. Table chunks are indexed in **both** Qdrant and BM25 (unlike HyPE/summary extras).
+
+Chunk IDs are **stable UUIDv5** values derived from `source:table_id` (resolved file path), so re-ingests and skip-path backfills upsert the same points instead of creating duplicates.
+
+```mermaid
+flowchart TD
+    DOC["Document<br/>layout tables[] + content"] --> BUILD["build_table_chunks()<br/>layout text or markdown fallback"]
+    BUILD --> EMB["TableChunker.index()<br/>embed_both()"]
+    EMB -->|full ingest| UPSERT["Upsert Qdrant + BM25<br/>retain prior tables on embed failure"]
+    EMB -->|unchanged content<br/>skip path| SYNC{"table_chunks_needing_upsert<br/>+ stale_table_ids_safe_to_purge"}
+    SYNC -->|new / updated text| BF["Backfill upsert"]
+    SYNC -->|stale + sync OK| PURGE["Purge stale table IDs"]
+    SYNC -->|embed/build failed| KEEP["Keep existing table IDs<br/>merged_table_chunk_ids()"]
+    UPSERT --> META[("SQLite chunk_ids")]
+    BF --> META
+    PURGE --> META
+    KEEP --> META
+```
+
+```bash
+# Requires layout metadata from T-200 (enable layout parser first)
+PARSING__LAYOUT_PARSER__ENABLED=true
+PARSING__TABLE_CHUNKS__ENABLED=true
+
+# Re-ingest to pick up table chunks (unchanged docs backfill missing tables)
+make ingest SOURCE=data/raw/
+```
+
+```yaml
+# configs/parsing.yaml
+parsing:
+  table_chunks:
+    enabled: false              # T-202 structured type=table chunks at ingest
+```
+
+| Component | Location | Role |
+|---|---|---|
+| `TableChunker` / `build_table_chunks()` | `src/rag/ingestion/table_chunker.py` | Builds and embeds `CHUNK_TYPE_TABLE` index points; stable `table_chunk_id()` |
+| Sync helpers | `src/rag/ingestion/table_chunker.py` | `table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge` |
+| Pipeline wiring | `src/rag/pipelines/ingestion_pipeline.py` | `_build_table_chunker()`, full-path index + `_backfill_table_chunks_on_skip()` |
+| Docling table text | `src/infrastructure/parsers/docling_parser.py` | `tables[].text` via `export_to_markdown()` |
+| Config | `configs/parsing.yaml` + `TableChunkSettings` | `parsing.table_chunks.enabled` — off by default |
+
+**Skip-path behavior:** When content hash is unchanged and no LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex, the pipeline still builds/embeds table chunks, upserts only new or text-changed tables, and purges stale table IDs only after a successful build+embed sync. Failed embeds retain previously indexed table points so a transient embedding error does not wipe tables.
+
+**Trade-offs:** Needs T-200 layout `tables[]` (or markdown tables in content as fallback). Extra embed calls proportional to table count. Skip-path backfill is skipped when LLM enrichers are enabled (those require a full `prepare()`). Re-ingest after enabling — unchanged documents backfill missing table chunks automatically.
+
+**Tests:** `tests/unit/test_table_chunker.py` (chunk building, markdown fallback, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline integration).
+
+**Next steps:** Phase 21 (**T-210** multimodal domain model). Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
 
 ### Start the API Server
 
@@ -2062,7 +2125,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
-│   ├── parsing.yaml            # Layout parser (T-200 Docling) + OCR flags (T-190/T-220+)
+│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR flags (T-190/T-220+)
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
@@ -2258,6 +2321,7 @@ CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__AUGMENTATION__ENABLED=false
 CHUNKING__HIERARCHICAL__ENABLED=false
 PARSING__LAYOUT_PARSER__ENABLED=false
+PARSING__TABLE_CHUNKS__ENABLED=false
 PARSING__OCR__ENABLED=false
 NEO4J__ENABLED=true
 EMBEDDINGS__DEVICE=cpu
