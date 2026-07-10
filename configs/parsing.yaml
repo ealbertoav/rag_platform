@@ -7,6 +7,8 @@ parsing:
     # (figure_id, bbox, page) for downstream multimodal chunking (T-202+).
   # .pptx uses PptxLoader (T-201) — plain text from slide titles and shapes;
   # not routed through the layout parser unless extended in a future phase.
+  # T-210 multimodal domain model (no feature flag): Chunk.modality / image_embedding /
+  # asset_path, Answer.source_references, and SourceReference — see README.
   ocr:
     enabled: false              # OCR pipeline (T-220+); off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

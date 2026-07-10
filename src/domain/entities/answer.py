@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.domain.entities.source_reference import SourceReference
 from src.rag.quality.explainable_retrieval import ChunkExplanation
 
 
@@ -16,6 +17,9 @@ class Answer(BaseModel):
     text: str
     # IDs of the Chunks whose text was included in the LLM context window.
     sources: list[str] = Field(default_factory=list)
+    # Structured multimodal citations (T-210). Empty by default; callers may
+    # populate alongside "sources". T-272 wires these into API responses.
+    source_references: list[SourceReference] = Field(default_factory=list)
     latency_ms: float = 0.0
     token_count: int = 0
     explanations: list[ChunkExplanation] | None = None

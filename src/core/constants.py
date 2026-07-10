@@ -30,6 +30,31 @@ CHUNK_TYPE_PAGE = "page"
 TABLE_ID_KEY = "table_id"
 FIGURE_ID_KEY = "figure_id"
 BBOX_KEY = "bbox"
+ASSET_PATH_KEY = "asset_path"
+# First-class modality labels (T-210). Align with CHUNK_TYPE_* where applicable;
+# MODALITY_IMAGE covers raw figure assets / CLIP paths without a text chunk type.
+MODALITY_TEXT = "text"
+MODALITY_TABLE = "table"
+MODALITY_FIGURE = "figure"
+MODALITY_CAPTION = "caption"
+MODALITY_PAGE = "page"
+MODALITY_IMAGE = "image"
+KNOWN_MODALITIES: frozenset[str] = frozenset(
+    {
+        MODALITY_TEXT,
+        MODALITY_TABLE,
+        MODALITY_FIGURE,
+        MODALITY_CAPTION,
+        MODALITY_PAGE,
+        MODALITY_IMAGE,
+    }
+)
+CHUNK_TYPE_TO_MODALITY: dict[str, str] = {
+    CHUNK_TYPE_TABLE: MODALITY_TABLE,
+    CHUNK_TYPE_FIGURE: MODALITY_FIGURE,
+    CHUNK_TYPE_CAPTION: MODALITY_CAPTION,
+    CHUNK_TYPE_PAGE: MODALITY_PAGE,
+}
 # Document-level layout/outline metadata; excluded from per-chunk spreads.
 # Per-chunk section labels use CHUNK_SECTION_KEY (promoted by chunk_metadata).
 LAYOUT_DOCUMENT_METADATA_KEYS: frozenset[str] = frozenset(

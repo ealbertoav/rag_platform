@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.domain.entities import Answer, Chunk, Document, EvalSample, Query
+from src.domain.entities import Answer, Chunk, Document, EvalSample, Query, SourceReference
 
 # ── Document ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +98,12 @@ class TestChunk:
         b = Chunk(document_id="d", text="t")
         assert a.id != b.id
 
+    def test_modality_defaults_to_text(self):
+        chunk = Chunk(document_id="doc-1", text="text")
+        assert chunk.modality == "text"
+        assert chunk.image_embedding is None
+        assert chunk.asset_path is None
+
 
 # ── Query ──────────────────────────────────────────────────────────────────────
 
@@ -144,6 +150,7 @@ class TestAnswer:
     def test_sources_defaults_to_empty(self):
         a = Answer(query_id="q-1", text="answer")
         assert a.sources == []
+        assert a.source_references == []
 
     def test_latency_and_token_defaults(self):
         a = Answer(query_id="q-1", text="answer")
@@ -151,14 +158,17 @@ class TestAnswer:
         assert a.token_count == 0
 
     def test_full_construction(self):
+        refs = [SourceReference(chunk_id="chunk-1", modality="table", table_id="t1")]
         a = Answer(
             query_id="q-1",
             text="answer",
             sources=["chunk-1", "chunk-2"],
+            source_references=refs,
             latency_ms=123.4,
             token_count=512,
         )
         assert a.sources == ["chunk-1", "chunk-2"]
+        assert a.source_references == refs
         assert a.latency_ms == pytest.approx(123.4)
         assert a.token_count == 512
 
@@ -206,7 +216,14 @@ class TestEvalSample:
 
 class TestNoCircularImports:
     def test_all_importable_from_package(self):
-        from src.domain.entities import Answer, Chunk, Document, EvalSample, Query  # noqa: F401
+        from src.domain.entities import (  # noqa: F401
+            Answer,
+            Chunk,
+            Document,
+            EvalSample,
+            Query,
+            SourceReference,
+        )
 
     def test_importable_individually(self):
         from src.domain.entities.answer import Answer  # noqa: F401
@@ -214,3 +231,4 @@ class TestNoCircularImports:
         from src.domain.entities.document import Document  # noqa: F401
         from src.domain.entities.evaluation import EvalSample  # noqa: F401
         from src.domain.entities.query import Query  # noqa: F401
+        from src.domain.entities.source_reference import SourceReference  # noqa: F401
