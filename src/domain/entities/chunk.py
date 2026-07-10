@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.core.constants import MODALITY_TEXT
+
 
 class Chunk(BaseModel):
     """A contiguous slice of a Document, paired with its vector representations.
@@ -12,6 +14,10 @@ class Chunk(BaseModel):
     `embedding` and `sparse_vector` start as None and are populated after
     the embedding step. Use `model_copy(update={...})` to produce updated
     instances — the model is frozen to prevent accidental mutation.
+
+    Multimodal fields (T-210): `modality` defaults to text, so existing
+    callers stay unchanged; `image_embedding` / `asset_path` are filled by
+    later phases (T-230 figure assets, T-250+ image embeddings).
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
@@ -25,3 +31,9 @@ class Chunk(BaseModel):
     sparse_vector: dict[int, float] | None = None
     # Provenance: source file, page, section, parent_id, content_hash, etc.
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Content modality for retrieval/generation routing (T-210).
+    modality: str = MODALITY_TEXT
+    # Dense image vector (CLIP / Voyage-Multimodal). None until T-250+.
+    image_embedding: list[float] | None = None
+    # Path to an extracted figure/page image asset (T-230+). None for text/table.
+    asset_path: str | None = None

@@ -46,6 +46,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Structured table chunks (T-202):** Optional `type=table` index points at ingest — `TableChunker` reads layout `tables[]` metadata (with markdown fallback) and indexes embedded table chunks in Qdrant and BM25 when `parsing.table_chunks.enabled=true` (off by default). Stable UUIDv5 IDs (`source:table_id`) enable skip-path backfill and stale purge on unchanged re-ingests; failed embeds retain prior table points. Requires T-200 layout metadata for best results. See [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202).
 
+> **Multimodal domain model (T-210):** First-class modality fields on `Chunk` (`modality`, `image_embedding`, `asset_path`), structured `SourceReference` citations, and `Answer.source_references` — all with backward-compatible defaults (`modality=text`, empty references). Legacy `metadata.type` table/figure chunks still resolve via `resolve_modality` / `SourceReference.from_chunk`. Domain-only; API wiring is T-272. See [Multimodal Domain Model (T-210)](#multimodal-domain-model-t-210).
+
 ---
 
 ## Table of Contents
@@ -62,6 +64,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190)
     - [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200)
     - [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202)
+    - [Multimodal Domain Model (T-210)](#multimodal-domain-model-t-210)
   - [Start the API Server](#start-the-api-server)
   - [Chat](#chat)
     - [Scoped retrieval filters (T-134)](#scoped-retrieval-filters-t-134)
@@ -374,7 +377,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
-| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), and OCR flags (T-190/T-220+) — all disabled by default |
+| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), OCR flags (T-190/T-220+), and T-210 domain-model notes — feature flags disabled by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -574,7 +577,7 @@ CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 #### Multimodal Parsing Contracts (T-190)
 
-Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), and structured table chunks (T-202) are implemented; OCR remains contracts-only until T-220+.
+Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented; OCR remains contracts-only until T-220+.
 
 ```mermaid
 flowchart TB
@@ -595,6 +598,7 @@ flowchart TB
         T200["T-200 DoclingLayoutParser ✅"]
         T201["T-201 PPTX loader ✅"]
         T202["T-202 table chunks at ingest ✅"]
+        T210["T-210 multimodal domain model ✅"]
         T220["T-220 OCR provider factory"]
     end
 
@@ -606,7 +610,9 @@ flowchart TB
     T220 -.->|implements| OCR
     T200 --> T201
     T200 --> T202
+    T202 --> T210
     CONST -.->|metadata keys for| T202
+    CONST -.->|modality labels for| T210
 ```
 
 | Artifact | Location | Role |
@@ -614,8 +620,9 @@ flowchart TB
 | `LayoutParserRepository` | `src/domain/repositories/layout_parser_repository.py` | ABC for layout-aware PDF/DOCX/PPTX parsing |
 | `OcrRepository` | `src/domain/repositories/ocr_repository.py` | ABC for scanned-page / image OCR |
 | `ParsedDocument` | `src/domain/entities/parsed_document.py` | Immutable parse result before chunking (`source`, `content`, optional `metadata`) |
+| `SourceReference` | `src/domain/entities/source_reference.py` | Structured multimodal citation (T-210) |
 | `ParsingSettings` | `src/core/settings.py` + `configs/parsing.yaml` | Feature flags and provider selection |
-| Multimodal chunk constants | `src/core/constants.py` | `CHUNK_TYPE_TABLE`, `CHUNK_TYPE_CAPTION`, `CHUNK_TYPE_FIGURE`, `CHUNK_TYPE_PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY`, `LAYOUT_DOCUMENT_METADATA_KEYS`; reuses `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata |
+| Multimodal chunk constants | `src/core/constants.py` | `CHUNK_TYPE_TABLE`, `CHUNK_TYPE_CAPTION`, `CHUNK_TYPE_FIGURE`, `CHUNK_TYPE_PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY`, `ASSET_PATH_KEY`, `MODALITY_*`, `LAYOUT_DOCUMENT_METADATA_KEYS`; reuses `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata |
 
 ```yaml
 # configs/parsing.yaml
@@ -740,7 +747,35 @@ parsing:
 
 **Tests:** `tests/unit/test_table_chunker.py` (chunk building, markdown fallback, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline integration).
 
-**Next steps:** Phase 21 (**T-210** multimodal domain model). Phase 22 (**T-220–T-223**) adds OCR providers and scanned-PDF fallback.
+#### Multimodal Domain Model (T-210)
+
+Phase 21 extends domain entities for multimodal retrieval and attribution. No feature flag — defaults preserve text-only behavior. Ingestion and API wiring land in later phases (T-230+, T-272).
+
+```mermaid
+flowchart LR
+    CHUNK["Chunk<br/>modality · image_embedding · asset_path"]
+    REF["SourceReference<br/>chunk_id · modality · page · table_id · figure_id · bbox"]
+    ANS["Answer<br/>sources: list[str]<br/>source_references: list[SourceReference]"]
+    HELPERS["resolve_modality()<br/>SourceReference.from_chunk()<br/>source_references_for_chunks()"]
+
+    CHUNK --> HELPERS
+    HELPERS --> REF
+    REF --> ANS
+```
+
+| Artifact | Location | Role |
+|---|---|---|
+| `SourceReference` | `src/domain/entities/source_reference.py` | Frozen citation with modality + layout provenance |
+| `resolve_modality` | same | Maps explicit modality / `metadata.type` → modality label |
+| `Chunk` multimodal fields | `src/domain/entities/chunk.py` | `modality` (default `text`), `image_embedding`, `asset_path` |
+| `Answer.source_references` | `src/domain/entities/answer.py` | Optional structured citations alongside `sources` |
+| Modality constants | `src/core/constants.py` | `MODALITY_*`, `KNOWN_MODALITIES`, `CHUNK_TYPE_TO_MODALITY`, `ASSET_PATH_KEY` |
+
+**Backward compatibility:** Existing `Answer(sources=[...])` callers need no changes. Table chunks that only set `metadata.type=table` still resolve to `modality=table` via `SourceReference.from_chunk`. `image_embedding` / `asset_path` stay `None` until figure extraction (T-230) and multimodal embeddings (T-250+).
+
+**Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
+
+**Next steps:** Phase 22 (**T-220–T-223**) OCR providers and scanned-PDF fallback. Phase 23 (**T-230–T-232**) figure assets and caption chunks.
 
 ### Start the API Server
 
@@ -2125,7 +2160,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
-│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR flags (T-190/T-220+)
+│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR flags (T-190/T-220+); T-210 domain note
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
@@ -2196,7 +2231,7 @@ rag_implementation/
 ├── src/
 │   ├── api/                    # FastAPI routers + DI + rate_limit middleware (T-160)
 │   ├── core/                   # Settings (+ ParsingSettings T-190), logging, exceptions, async_bridge (T-164), diskcache_cve_check (T-162), lint_gate (T-171)
-│   ├── domain/                 # Entities (+ ParsedDocument T-190), repository ABCs (+ LayoutParser/Ocr T-190), services
+│   ├── domain/                 # Entities (+ ParsedDocument T-190, SourceReference T-210), repository ABCs (+ LayoutParser/Ocr T-190), services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
 │   │   ├── regression_gate.py  # CI regression gate logic (T-152)
@@ -2228,7 +2263,7 @@ rag_implementation/
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
+│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
 ├── .dockerignore
 ├── .env.example
 ├── .github/

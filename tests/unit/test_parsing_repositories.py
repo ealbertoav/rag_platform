@@ -20,6 +20,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.core.constants import (
+    ASSET_PATH_KEY,
     BBOX_KEY,
     CHUNK_PAGE_KEY,
     CHUNK_SECTION_KEY,
@@ -27,8 +28,16 @@ from src.core.constants import (
     CHUNK_TYPE_FIGURE,
     CHUNK_TYPE_PAGE,
     CHUNK_TYPE_TABLE,
+    CHUNK_TYPE_TO_MODALITY,
     FIGURE_ID_KEY,
+    KNOWN_MODALITIES,
     LAYOUT_DOCUMENT_METADATA_KEYS,
+    MODALITY_CAPTION,
+    MODALITY_FIGURE,
+    MODALITY_IMAGE,
+    MODALITY_PAGE,
+    MODALITY_TABLE,
+    MODALITY_TEXT,
     TABLE_ID_KEY,
 )
 from src.domain.entities.parsed_document import ParsedDocument
@@ -156,8 +165,15 @@ class TestMultimodalConstants:
             ("TABLE_ID_KEY", TABLE_ID_KEY),
             ("FIGURE_ID_KEY", FIGURE_ID_KEY),
             ("BBOX_KEY", BBOX_KEY),
+            ("ASSET_PATH_KEY", ASSET_PATH_KEY),
             ("CHUNK_PAGE_KEY", CHUNK_PAGE_KEY),
             ("CHUNK_SECTION_KEY", CHUNK_SECTION_KEY),
+            ("MODALITY_TEXT", MODALITY_TEXT),
+            ("MODALITY_TABLE", MODALITY_TABLE),
+            ("MODALITY_FIGURE", MODALITY_FIGURE),
+            ("MODALITY_CAPTION", MODALITY_CAPTION),
+            ("MODALITY_PAGE", MODALITY_PAGE),
+            ("MODALITY_IMAGE", MODALITY_IMAGE),
         ],
     )
     def test_constant_is_non_empty_str(self, name: str, value: str) -> None:
@@ -168,11 +184,23 @@ class TestMultimodalConstants:
         values = [CHUNK_TYPE_TABLE, CHUNK_TYPE_CAPTION, CHUNK_TYPE_FIGURE, CHUNK_TYPE_PAGE]
         assert len(values) == len(set(values))
 
+    def test_modality_constants_match_known_set(self) -> None:
+        assert {
+            MODALITY_TEXT,
+            MODALITY_TABLE,
+            MODALITY_FIGURE,
+            MODALITY_CAPTION,
+            MODALITY_PAGE,
+            MODALITY_IMAGE,
+        } == KNOWN_MODALITIES
+        assert CHUNK_TYPE_TO_MODALITY[CHUNK_TYPE_TABLE] == MODALITY_TABLE
+
     def test_metadata_keys_are_unique(self) -> None:
         keys = [
             TABLE_ID_KEY,
             FIGURE_ID_KEY,
             BBOX_KEY,
+            ASSET_PATH_KEY,
             CHUNK_PAGE_KEY,
             CHUNK_SECTION_KEY,
         ]
@@ -208,6 +236,7 @@ class TestNoDomainInfraLeak:
             "src.domain.repositories.layout_parser_repository",
             "src.domain.repositories.ocr_repository",
             "src.domain.entities.parsed_document",
+            "src.domain.entities.source_reference",
         ],
     )
     def test_domain_module_has_no_infra_imports(self, module_name: str) -> None:
