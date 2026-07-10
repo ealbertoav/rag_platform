@@ -63,6 +63,28 @@ def collect_table_ids(document: Document, existing_chunk_ids: Iterable[str]) -> 
     return table_ids
 
 
+def table_chunks_needing_upsert(
+    table_chunks: Iterable[Chunk],
+    existing_chunk_ids: Iterable[str],
+    *,
+    bm25: object | None = None,
+) -> list[Chunk]:
+    """Return embedded table chunks that are new or have updated text in the index."""
+    existing_id_set = set(existing_chunk_ids)
+    get_by_id = getattr(bm25, "get_by_id", None) if bm25 is not None else None
+    needing: list[Chunk] = []
+    for chunk in table_chunks:
+        if chunk.id not in existing_id_set:
+            needing.append(chunk)
+            continue
+        if get_by_id is None:
+            continue
+        indexed = get_by_id(chunk.id)
+        if indexed is None or indexed.text != chunk.text:
+            needing.append(chunk)
+    return needing
+
+
 def existing_table_chunk_ids(
     source: str,
     existing_chunk_ids: Iterable[str],
