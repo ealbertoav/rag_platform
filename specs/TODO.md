@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 22 in progress — **T-220** ✅ (OCR provider factory). **Next:** T-221–T-223 (self-hosted OCR, Azure DI, scanned-PDF fallback). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 22 in progress — **T-220** ✅ · **T-221** ✅ (self-hosted OCR). **Next:** T-222–T-223 (Azure DI, scanned-PDF fallback). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2340,7 +2340,7 @@
 > | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
 > | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | T-210 ✅ |
-> | **22** | 12 | T-220 → T-223 | Phases 19–20 | pending |
+> | **22** | 12 | T-220 → T-223 | Phases 19–20 | T-220 ✅ · T-221 ✅ |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
@@ -2512,21 +2512,22 @@
   - [x] Feature-flagged or backward-compatible defaults preserved
   - [x] Unit tests pass for new modules
   - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Factory mirrors `get_layout_parser` (cache by `(enabled, provider)`, `None` when disabled). Known providers raise `ConfigurationError` until T-221 (tesseract/easyocr/docling, Docling-backed) or T-222 (`azure_di`).
+- **Notes:** Factory mirrors `get_layout_parser` (cache by `(enabled, provider)`, `None` when disabled). Self-hosted providers implemented in T-221; `azure_di` raises `ConfigurationError` until T-222.
 
 ---
 
 
 ### T-221 · Self-Hosted OCR Providers
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Tesseract, EasyOCR, Docling OCR.
 - **Inputs:** T-220
 - **Outputs:** Self-hosted providers
 - **Files:** `src/infrastructure/ocr/*_provider.py`, tests
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Docling-backed `OcrRepository` implementations — `TesseractOcrProvider` (Tesseract CLI), `EasyOcrProvider`, `DoclingOcrProvider` (auto engine). Shared logic in `docling_backed.py`. Optional dep: `uv pip install docling`. Factory returns providers when `parsing.ocr.enabled=true`; still `None` when disabled. `azure_di` remains T-222.
 
 ---
 

@@ -13,8 +13,9 @@ parsing:
     enabled: false              # T-220 get_ocr_provider(); off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di
     # Factory returns None when disabled. Self-hosted engines (tesseract /
-    # easyocr / docling) are Docling-backed in T-221; azure_di is T-222.
-    # Enabling a provider before T-221/T-222 raises ConfigurationError.
+    # easyocr / docling) are Docling-backed (T-221; requires: uv pip install docling).
+    # tesseract → Tesseract CLI; easyocr → EasyOCR; docling → auto engine pick.
+    # azure_di is T-222. Enabling azure_di before T-222 raises ConfigurationError.
   table_chunks:
     enabled: false              # T-202 structured type=table chunks at ingest; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.
