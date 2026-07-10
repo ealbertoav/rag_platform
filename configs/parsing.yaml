@@ -10,8 +10,11 @@ parsing:
   # T-210 multimodal domain model (no feature flag): Chunk.modality / image_embedding /
   # asset_path, Answer.source_references, and SourceReference — see README.
   ocr:
-    enabled: false              # OCR pipeline (T-220+); off by default
+    enabled: false              # T-220 get_ocr_provider(); off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di
+    # Factory returns None when disabled. Self-hosted engines (tesseract /
+    # easyocr / docling) are Docling-backed in T-221; azure_di is T-222.
+    # Enabling a provider before T-221/T-222 raises ConfigurationError.
   table_chunks:
     enabled: false              # T-202 structured type=table chunks at ingest; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.

@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 21 complete — **T-210** ✅ (Multimodal Domain Model). **Next:** Phase 22 (T-220–T-223 OCR). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 22 in progress — **T-220** ✅ (OCR provider factory). **Next:** T-221–T-223 (self-hosted OCR, Azure DI, scanned-PDF fallback). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2503,15 +2503,16 @@
 ---
 
 ### T-220 · OCR Provider Abstraction & Settings
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** `get_ocr_provider()` factory.
 - **Inputs:** T-190
 - **Outputs:** OCR factory
 - **Files:** `src/infrastructure/ocr/__init__.py`, tests
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Factory mirrors `get_layout_parser` (cache by `(enabled, provider)`, `None` when disabled). Known providers raise `ConfigurationError` until T-221 (tesseract/easyocr/docling, Docling-backed) or T-222 (`azure_di`).
 
 ---
 

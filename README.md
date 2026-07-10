@@ -352,11 +352,11 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
 
-# Multimodal parsing (layout parser off by default; OCR contracts only until T-220+)
+# Multimodal parsing (layout parser off by default; OCR factory T-220, providers T-221+)
 PARSING__LAYOUT_PARSER__ENABLED=false   # Docling layout parser for .pdf/.docx (T-200)
 PARSING__LAYOUT_PARSER__PROVIDER=docling
 PARSING__TABLE_CHUNKS__ENABLED=false    # structured type=table chunks at ingest (T-202)
-PARSING__OCR__ENABLED=false             # OCR pipeline (T-220+)
+PARSING__OCR__ENABLED=false             # OCR factory (T-220); providers land in T-221/T-222
 PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
 
 # API security (optional — local dev leaves API key empty)
@@ -377,7 +377,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
-| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), OCR flags (T-190/T-220+), and T-210 domain-model notes — feature flags disabled by default |
+| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), OCR factory (T-220; providers T-221+), and T-210 domain-model notes — feature flags disabled by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -577,7 +577,7 @@ CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 #### Multimodal Parsing Contracts (T-190)
 
-Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented; OCR remains contracts-only until T-220+.
+Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented. The OCR factory (`get_ocr_provider()`, T-220) is in place and returns `None` when disabled; concrete providers land in T-221/T-222.
 
 ```mermaid
 flowchart TB
@@ -599,7 +599,7 @@ flowchart TB
         T201["T-201 PPTX loader ✅"]
         T202["T-202 table chunks at ingest ✅"]
         T210["T-210 multimodal domain model ✅"]
-        T220["T-220 OCR provider factory"]
+        T220["T-220 OCR provider factory ✅"]
     end
 
     LPR --> PD
@@ -633,13 +633,15 @@ parsing:
   table_chunks:
     enabled: false              # T-202 structured type=table chunks (off by default)
   ocr:
-    enabled: false              # T-220+ OCR pipeline
+    enabled: false              # T-220 get_ocr_provider(); providers in T-221/T-222
     provider: tesseract         # tesseract | easyocr | docling | azure_di
 ```
 
+**OCR factory (T-220):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Enabling a known provider before T-221/T-222 raises `ConfigurationError`. Self-hosted engines will be Docling-backed (T-221); Azure DI is T-222.
+
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
-**Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`.
+**Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`. OCR factory coverage is in `tests/unit/test_ocr_provider.py`.
 
 #### Layout-Aware Parsing (T-200)
 
@@ -775,7 +777,7 @@ flowchart LR
 
 **Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
 
-**Next steps:** Phase 22 (**T-220–T-223**) OCR providers and scanned-PDF fallback. Phase 23 (**T-230–T-232**) figure assets and caption chunks.
+**Next steps:** Phase 22 (**T-221–T-223**) self-hosted OCR providers, Azure DI, and scanned-PDF fallback. Phase 23 (**T-230–T-232**) figure assets and caption chunks.
 
 ### Start the API Server
 
@@ -2160,7 +2162,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
-│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR flags (T-190/T-220+); T-210 domain note
+│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR factory (T-220); T-210 domain note
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
