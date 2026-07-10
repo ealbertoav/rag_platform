@@ -34,6 +34,7 @@ from tests.unit.ingestion_helpers import (
     embedded_chunk,
     mock_ingestion_pipeline,
     mock_reingest_metadata,
+    real_bm25_reingest_pipeline,
 )
 
 _TABLE_CHUNKER = "src.rag.ingestion.table_chunker"
@@ -114,6 +115,31 @@ def _unchanged_hash_metadata(
     return metadata
 
 
+def _run_table_chunker_ingest(
+    path: Path,
+    document: Document,
+    *,
+    table_chunker: MagicMock,
+    pipeline: IngestionPipeline,
+) -> IngestionResult:
+    pipeline._table_chunker = table_chunker  # noqa: SLF001
+    with patch(
+        "src.rag.pipelines.ingestion_pipeline.load_document",
+        return_value=document,
+    ):
+        return pipeline.ingest_file(path)
+
+
+def _assert_purges_only_stale_text_chunk(
+    vector_store: MagicMock,
+    bm25: MagicMock,
+    *,
+    stale_text_chunk_id: str = "old-text-chunk-1",
+) -> None:
+    vector_store.delete.assert_called_once_with([stale_text_chunk_id])
+    bm25.remove_by_ids.assert_called_once_with([stale_text_chunk_id])
+
+
 def _run_skip_table_chunker_ingest(
     path: Path,
     document: Document,
@@ -123,12 +149,12 @@ def _run_skip_table_chunker_ingest(
 ) -> tuple[IngestionResult, MagicMock, MagicMock, MagicMock, MagicMock]:
     metadata = _unchanged_hash_metadata(path, document, chunk_ids=chunk_ids)
     pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
-    pipeline._table_chunker = table_chunker  # noqa: SLF001
-    with patch(
-        "src.rag.pipelines.ingestion_pipeline.load_document",
-        return_value=document,
-    ):
-        result = pipeline.ingest_file(path)
+    result = _run_table_chunker_ingest(
+        path,
+        document,
+        table_chunker=table_chunker,
+        pipeline=pipeline,
+    )
     return result, service, vector_store, bm25, metadata
 
 
@@ -430,6 +456,127 @@ class TestIngestionPipelineTableChunks:
         vector_store.delete.assert_called_once_with(["old-chunk-1"])
         bm25.remove_by_ids.assert_called_once_with(["old-chunk-1"])
         metadata.upsert_document.assert_called_once()
+
+    def test_reingest_preserves_stable_table_chunk_ids(self, tmp_path: Path) -> None:
+        path = _report_pdf_path(tmp_path)
+        document = _doc_with_sample_table(str(path.resolve()))
+        table = _embedded_table_chunk(document)
+        stable_id = table.id
+        metadata = mock_reingest_metadata(chunk_ids=["old-text-chunk-1", stable_id])
+        base = embedded_chunk(0).model_copy(update={"id": "new-text-chunk-1"})
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = [table]
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(
+            prepared_chunks=[base],
+            metadata=metadata,
+        )
+        result = _run_table_chunker_ingest(
+            path,
+            document,
+            table_chunker=table_chunker,
+            pipeline=pipeline,
+        )
+
+        assert result.skipped is False
+        vector_store.upsert.assert_called_once()
+        _assert_purges_only_stale_text_chunk(vector_store, bm25)
+        upserted_ids = [chunk.id for chunk in vector_store.upsert.call_args.args[0]]
+        assert stable_id in upserted_ids
+
+    def test_reingest_purges_removed_table_chunk_ids(self, tmp_path: Path) -> None:
+        path = _report_pdf_path(tmp_path)
+        document = _doc(source=str(path.resolve()), tables=[])
+        removed_table_id = table_chunk_id(document.source, "table-1")
+        metadata = mock_reingest_metadata(chunk_ids=["text-chunk-1", removed_table_id])
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = []
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(
+            prepared_chunks=[embedded_chunk(0)],
+            metadata=metadata,
+        )
+        pipeline._table_chunker = table_chunker  # noqa: SLF001
+
+        with patch(
+            "src.rag.pipelines.ingestion_pipeline.load_document",
+            return_value=document,
+        ):
+            pipeline.ingest_file(path)
+
+        vector_store.delete.assert_called_once_with(["text-chunk-1", removed_table_id])
+        bm25.remove_by_ids.assert_called_once_with(["text-chunk-1", removed_table_id])
+
+    def test_reingest_preserves_stable_table_chunks_in_real_bm25(self, tmp_path: Path) -> None:
+        from src.infrastructure.vectordb.bm25 import BM25Index
+
+        path = _report_pdf_path(tmp_path)
+        document = _doc_with_sample_table(str(path.resolve()))
+        table = _embedded_table_chunk(document)
+        stable_id = table.id
+        stale_text = Chunk(
+            id="old-text-chunk-1",
+            document_id="doc-1",
+            text="stale paragraph about kubernetes",
+            embedding=[0.1] * 4,
+        )
+        stale_table = table.model_copy(
+            update={"text": "stale table content", "embedding": [0.2] * 4}
+        )
+        fresh_text = embedded_chunk(0).model_copy(
+            update={"id": "new-text-chunk-1", "text": "fresh paragraph about databases"}
+        )
+
+        bm25 = BM25Index()
+        bm25.index([stale_text, stale_table])
+        metadata = mock_reingest_metadata(chunk_ids=[stale_text.id, stable_id])
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = [table]
+        pipeline, _, vector_store, _ = real_bm25_reingest_pipeline(
+            bm25,
+            prepared_chunks=[fresh_text],
+            metadata=metadata,
+        )
+        pipeline._table_chunker = table_chunker  # noqa: SLF001
+
+        with patch(
+            "src.rag.pipelines.ingestion_pipeline.load_document",
+            return_value=document,
+        ):
+            pipeline.ingest_file(path)
+
+        vector_store.delete.assert_called_once_with([stale_text.id])
+        assert bm25.get_by_id(stale_text.id) is None
+        assert bm25.get_by_id(stable_id) is not None
+        assert bm25.get_by_id(fresh_text.id) is not None
+
+    def test_full_reindex_on_skip_preserves_stable_table_chunk_ids(self, tmp_path: Path) -> None:
+        path = _report_pdf_path(tmp_path)
+        document = _doc_with_sample_table(str(path.resolve()))
+        table = _embedded_table_chunk(document)
+        stable_id = table.id
+        metadata = _unchanged_hash_metadata(
+            path,
+            document,
+            chunk_ids=["old-text-chunk-1", stable_id],
+        )
+        augmentor = MagicMock()
+        augmentor.augment.return_value = []
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = [table]
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
+            prepared_chunks=[embedded_chunk(0).model_copy(update={"id": "new-text-chunk-1"})],
+            metadata=metadata,
+            augmentor=augmentor,
+        )
+        result = _run_table_chunker_ingest(
+            path,
+            document,
+            table_chunker=table_chunker,
+            pipeline=pipeline,
+        )
+
+        assert result.skipped is False
+        service.prepare.assert_called_once()
+        _assert_purges_only_stale_text_chunk(vector_store, bm25)
 
     def test_table_chunker_none_skips_indexing(self, tmp_path: Path) -> None:
         path = tmp_path / "doc.md"

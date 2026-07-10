@@ -144,6 +144,30 @@ class TestGraphIndexing:
         vector_store.delete.assert_called_once_with(["old-chunk-1", "old-chunk-2"])
         bm25.remove_by_ids.assert_called_once_with(["old-chunk-1", "old-chunk-2"])
 
+    def test_purge_superseded_chunks_skips_retained_ids(self):
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline()
+        pipeline._purge_superseded_chunks(  # noqa: SLF001
+            ["keep-me", "remove-me"],
+            retained_chunk_ids={"keep-me"},
+        )
+        vector_store.delete.assert_called_once_with(["remove-me"])
+        bm25.remove_by_ids.assert_called_once_with(["remove-me"])
+
+    def test_purge_superseded_chunks_noop_when_all_retained(self):
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline()
+        pipeline._purge_superseded_chunks(  # noqa: SLF001
+            ["stable-table-id"],
+            retained_chunk_ids={"stable-table-id"},
+        )
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
+
+    def test_purge_superseded_chunks_noop_for_empty_input(self):
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline()
+        pipeline._purge_superseded_chunks([])  # noqa: SLF001
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
+
     def test_index_graph_failure_does_not_abort_ingest(self, tmp_path: Path):
         path = tmp_path / "doc.md"
         path.write_text("content")

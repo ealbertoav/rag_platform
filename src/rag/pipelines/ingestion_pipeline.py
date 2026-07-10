@@ -168,7 +168,10 @@ class IngestionPipeline:
 
             self._index_graph(chunks, document.id)
             self._vector_store.upsert(indexed_chunks)
-            self._purge_superseded_chunks(old_chunk_ids)
+            self._purge_superseded_chunks(
+                old_chunk_ids,
+                retained_chunk_ids={chunk.id for chunk in indexed_chunks},
+            )
             self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -304,11 +307,24 @@ class IngestionPipeline:
             content_hash=doc_hash,
         )
 
-    def _purge_superseded_chunks(self, chunk_ids: list[str]) -> None:
-        """Remove superseded chunk IDs from dense and lexical indexes together."""
-        if chunk_ids:
-            self._vector_store.delete(chunk_ids)
-            self._bm25.remove_by_ids(chunk_ids)
+    def _purge_superseded_chunks(
+        self,
+        chunk_ids: list[str],
+        *,
+        retained_chunk_ids: set[str] | None = None,
+    ) -> None:
+        """Remove superseded chunk IDs from dense and lexical indexes together.
+
+        *retained_chunk_ids* excludes IDs present in the new indexed batch so
+        stable table chunk IDs are not deleted immediately after upsert.
+        """
+        if not chunk_ids:
+            return
+        retained = retained_chunk_ids or set()
+        superseded = [chunk_id for chunk_id in chunk_ids if chunk_id not in retained]
+        if superseded:
+            self._vector_store.delete(superseded)
+            self._bm25.remove_by_ids(superseded)
 
     def _remove_document_chunks(self, metadata_doc_id: str) -> None:
         if self._metadata is None:
