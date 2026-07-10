@@ -305,6 +305,24 @@ class TestBM25IndexErrors:
         assert json_path.exists()
         assert json_path.read_text(encoding="utf-8").startswith("{")
 
+    def test_migrate_legacy_loads_json_when_created_under_lock(self, tmp_path: Path):
+        """Cover the race where another process writes JSON before we migrate."""
+        import pickle
+
+        legacy = tmp_path / "bm25.pkl"
+        json_path = tmp_path / "bm25.json"
+        legacy.write_bytes(pickle.dumps({"chunks": _CORPUS}))
+
+        winner = BM25Index(index_path=json_path)
+        winner.index(_CORPUS[:2])
+        winner.save()
+
+        idx = BM25Index(index_path=json_path)
+        idx._migrate_legacy_pickle(legacy)
+
+        assert idx.size == 2
+        assert {c.id for c in idx.chunks} == {c.id for c in _CORPUS[:2]}
+
     def test_concurrent_pickle_migration_is_safe(self, tmp_path: Path):
         import json
         import pickle
