@@ -22,6 +22,9 @@ from src.infrastructure.vectordb.bm25 import BM25Index
 from src.rag.ingestion.table_chunker import (
     build_table_chunks,
     existing_table_chunk_ids,
+    merged_table_chunk_ids,
+    retained_table_chunk_ids_on_embed_failure,
+    stale_table_ids_safe_to_purge,
     table_chunks_needing_upsert,
 )
 
@@ -160,31 +163,66 @@ class IngestionPipeline:
                     hype_chunks = self._hype_indexer.index(chunks)
                     indexed_chunks.extend(hype_chunks)
 
+            built_table_chunks: list[Chunk] = []
+            embedded_table_chunks: list[Chunk] = []
             if self._table_chunker is not None:
-                table_chunks = self._table_chunker.index(document)
-                indexed_chunks.extend(table_chunks)
+                built_table_chunks = build_table_chunks(document)
+                embedded_table_chunks = self._table_chunker.index(document)
+                indexed_chunks.extend(embedded_table_chunks)
 
             if not indexed_chunks:
-                self._purge_superseded_chunks(old_chunk_ids)
+                retained = self._retained_table_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_table_chunks,
+                    embedded_table_chunks,
+                )
+                self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 if self._metadata is not None:
-                    _ = self._metadata.upsert_document(source, doc_hash, [], duration_ms=elapsed_ms)
+                    merged_ids = list(retained) if retained else []
+                    _ = self._metadata.upsert_document(
+                        source,
+                        doc_hash,
+                        merged_ids,
+                        duration_ms=elapsed_ms,
+                    )
                 return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
 
             self._index_graph(chunks, document.id)
             self._vector_store.upsert(indexed_chunks)
-            self._purge_superseded_chunks(
-                old_chunk_ids,
-                retained_chunk_ids={chunk.id for chunk in indexed_chunks},
+            retained = {chunk.id for chunk in indexed_chunks}
+            retained.update(
+                self._retained_table_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_table_chunks,
+                    embedded_table_chunks,
+                )
             )
+            self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
             self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
+            stored_chunk_ids = [c.id for c in indexed_chunks]
+            stored_chunk_ids.extend(
+                chunk_id
+                for chunk_id in self._retained_table_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_table_chunks,
+                    embedded_table_chunks,
+                )
+                if chunk_id not in stored_chunk_ids
+            )
             _ = self._metadata.upsert_document(
                 source,
                 doc_hash,
-                [c.id for c in indexed_chunks],
+                list(dict.fromkeys(stored_chunk_ids)),
                 chunk_count=len(chunks),
                 duration_ms=elapsed_ms,
             )
@@ -297,26 +335,29 @@ class IngestionPipeline:
             existing_ids,
             bm25=self._bm25,
         )
-        if not chunks_to_upsert and not stale_table_ids:
+        stale_to_purge = stale_table_ids_safe_to_purge(
+            built_chunks,
+            table_chunks,
+            stale_table_ids,
+        )
+        if not chunks_to_upsert and not stale_to_purge:
             return None
 
         with self._bm25.deferred_rebuild():
             if chunks_to_upsert:
                 self._vector_store.upsert(chunks_to_upsert)
                 self._bm25_add(chunks_to_upsert)
-            if stale_table_ids:
-                self._purge_superseded_chunks(stale_table_ids)
+            if stale_to_purge:
+                self._purge_superseded_chunks(stale_to_purge)
 
         non_table_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in known_table_ids]
-        if table_chunks:
-            merged_table_ids = [chunk.id for chunk in table_chunks]
-        else:
-            merged_table_ids = [
-                chunk_id
-                for chunk_id in existing_ids
-                if chunk_id in known_table_ids and chunk_id in desired_table_ids
-            ]
-        merged_ids = list(dict.fromkeys(non_table_ids + merged_table_ids))
+        merged_table_ids_list = merged_table_chunk_ids(
+            existing_ids,
+            known_table_ids,
+            built_chunks,
+            table_chunks,
+        )
+        merged_ids = list(dict.fromkeys(non_table_ids + merged_table_ids_list))
         elapsed_ms = (time.monotonic() - t0) * 1000
         _ = self._metadata.upsert_document(
             source,
@@ -331,16 +372,35 @@ class IngestionPipeline:
                 len(chunks_to_upsert),
                 Path(source).name,
             )
-        if stale_table_ids:
+        if stale_to_purge:
             logger.info(
                 "Purged %d stale table chunk(s) for %s (unchanged content)",
-                len(stale_table_ids),
+                len(stale_to_purge),
                 Path(source).name,
             )
         return IngestionResult(
             source=source,
             chunk_count=existing.chunk_count,
             content_hash=doc_hash,
+        )
+
+    def _retained_table_ids_on_embed_failure(
+        self,
+        source: str,
+        document: Document,
+        old_chunk_ids: list[str],
+        built_table_chunks: list[Chunk],
+        embedded_table_chunks: list[Chunk],
+    ) -> set[str]:
+        if self._table_chunker is None or not old_chunk_ids:
+            return set()
+        return retained_table_chunk_ids_on_embed_failure(
+            source,
+            document,
+            old_chunk_ids,
+            built_table_chunks,
+            embedded_table_chunks,
+            bm25=self._bm25,
         )
 
     def _purge_superseded_chunks(

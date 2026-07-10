@@ -63,6 +63,64 @@ def collect_table_ids(document: Document, existing_chunk_ids: Iterable[str]) -> 
     return table_ids
 
 
+def table_embedding_succeeded(
+    built_chunks: Iterable[Chunk],
+    embedded_chunks: Iterable[Chunk],
+) -> bool:
+    """Return True when every built table chunk was embedded successfully."""
+    desired = {chunk.id for chunk in built_chunks}
+    if not desired:
+        return True
+    successful = {chunk.id for chunk in embedded_chunks}
+    return successful == desired
+
+
+def stale_table_ids_safe_to_purge(
+    built_chunks: Iterable[Chunk],
+    embedded_chunks: Iterable[Chunk],
+    stale_table_ids: Iterable[str],
+) -> list[str]:
+    """Return stale table IDs safe to remove after a table sync attempt."""
+    if table_embedding_succeeded(built_chunks, embedded_chunks):
+        return list(stale_table_ids)
+    return []
+
+
+def retained_table_chunk_ids_on_embed_failure(
+    source: str,
+    document: Document,
+    old_chunk_ids: Iterable[str],
+    built_chunks: Iterable[Chunk],
+    embedded_chunks: Iterable[Chunk],
+    *,
+    bm25: object | None = None,
+) -> set[str]:
+    """Return previously indexed table chunk IDs to keep when re-embed failed."""
+    if table_embedding_succeeded(built_chunks, embedded_chunks):
+        return set()
+    desired = {chunk.id for chunk in built_chunks}
+    known_old = existing_table_chunk_ids(
+        source,
+        old_chunk_ids,
+        document=document,
+        bm25=bm25,
+    )
+    return {chunk_id for chunk_id in old_chunk_ids if chunk_id in known_old and chunk_id in desired}
+
+
+def merged_table_chunk_ids(
+    existing_ids: Iterable[str],
+    known_table_ids: set[str],
+    built_chunks: Iterable[Chunk],
+    embedded_chunks: Iterable[Chunk],
+) -> list[str]:
+    """Compute table chunk IDs to store after a skip-path table sync."""
+    embedded = [chunk.id for chunk in embedded_chunks]
+    if table_embedding_succeeded(built_chunks, embedded_chunks):
+        return list(dict.fromkeys(embedded))
+    return [chunk_id for chunk_id in existing_ids if chunk_id in known_table_ids]
+
+
 def table_chunks_needing_upsert(
     table_chunks: Iterable[Chunk],
     existing_chunk_ids: Iterable[str],
