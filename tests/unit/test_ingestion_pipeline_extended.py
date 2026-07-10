@@ -15,6 +15,7 @@ from tests.unit.ingestion_helpers import (
     embedded_chunk,
     mock_ingestion_pipeline,
     mock_reingest_metadata,
+    unchanged_skip_setup,
     write_reingest_doc,
 )
 
@@ -178,6 +179,29 @@ class TestGraphIndexing:
         assert result.chunk_count == 1
         vector_store.upsert.assert_called_once()
         bm25.add.assert_called_once()
+
+    def test_unchanged_hash_with_graph_indexer_skips_reindex(self, tmp_path: Path):
+        path, metadata = unchanged_skip_setup(tmp_path)
+        graph = MagicMock()
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
+            metadata=metadata,
+            graph_indexer=graph,
+        )
+        result = pipeline.ingest_file(path)
+        assert result.skipped is True
+        service.prepare.assert_not_called()
+        graph.index_chunks.assert_not_called()
+        vector_store.upsert.assert_not_called()
+        bm25.add.assert_not_called()
+
+    def test_requires_full_reindex_on_skip_excludes_graph_indexer(self):
+        graph = MagicMock()
+        pipeline, _, _, _ = mock_ingestion_pipeline(graph_indexer=graph)
+        assert pipeline._requires_full_reindex_on_skip() is False  # noqa: SLF001
+
+    def test_requires_full_reindex_on_skip_includes_llm_indexers(self):
+        pipeline, _, _, _ = mock_ingestion_pipeline(augmentor=MagicMock())
+        assert pipeline._requires_full_reindex_on_skip() is True  # noqa: SLF001
 
 
 class TestBuildGraphIndexerViaFromSettings:

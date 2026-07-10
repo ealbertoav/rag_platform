@@ -19,6 +19,7 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.rag.ingestion.table_chunker import build_table_chunks, existing_table_chunk_ids
 
 if TYPE_CHECKING:
     from src.infrastructure.vectordb.bm25_disk import DiskBM25Index
@@ -256,7 +257,6 @@ class IngestionPipeline:
                 self._augmentor is not None,
                 self._hype_indexer is not None,
                 self._hierarchical_indexer is not None,
-                self._graph_indexer is not None,
             )
         )
 
@@ -268,26 +268,45 @@ class IngestionPipeline:
         existing: DocumentRecord,
         t0: float,
     ) -> IngestionResult | None:
-        """Index missing table chunks when base content is unchanged."""
+        """Sync table chunks when base content is unchanged."""
         if self._table_chunker is None or self._metadata is None:
             return None
 
-        table_chunks = self._table_chunker.index(document)
-        if not table_chunks:
-            return None
+        built_chunks = build_table_chunks(document)
+        if built_chunks:
+            table_chunks = self._table_chunker.index(document)
+            if not table_chunks:
+                return None
+        else:
+            table_chunks = []
 
-        existing_ids = set(self._metadata.get_chunk_ids(existing.id))
-        new_chunks = [chunk for chunk in table_chunks if chunk.id not in existing_ids]
-        if not new_chunks:
+        existing_ids = list(self._metadata.get_chunk_ids(existing.id))
+        existing_id_set = set(existing_ids)
+        desired_table_ids = {chunk.id for chunk in table_chunks}
+        known_table_ids = existing_table_chunk_ids(
+            source,
+            existing_ids,
+            document=document,
+            bm25=self._bm25,
+        )
+        stale_table_ids = [
+            chunk_id
+            for chunk_id in existing_ids
+            if chunk_id in known_table_ids and chunk_id not in desired_table_ids
+        ]
+        new_chunks = [chunk for chunk in table_chunks if chunk.id not in existing_id_set]
+        if not new_chunks and not stale_table_ids:
             return None
 
         with self._bm25.deferred_rebuild():
-            self._vector_store.upsert(new_chunks)
-            self._bm25_add(new_chunks)
+            if new_chunks:
+                self._vector_store.upsert(new_chunks)
+                self._bm25_add(new_chunks)
+            if stale_table_ids:
+                self._purge_superseded_chunks(stale_table_ids)
 
-        merged_ids = list(
-            dict.fromkeys(self._metadata.get_chunk_ids(existing.id) + [c.id for c in new_chunks])
-        )
+        non_table_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in known_table_ids]
+        merged_ids = list(dict.fromkeys(non_table_ids + [chunk.id for chunk in table_chunks]))
         elapsed_ms = (time.monotonic() - t0) * 1000
         _ = self._metadata.upsert_document(
             source,
@@ -296,11 +315,18 @@ class IngestionPipeline:
             chunk_count=existing.chunk_count,
             duration_ms=elapsed_ms,
         )
-        logger.info(
-            "Backfilled %d table chunk(s) for %s (unchanged content)",
-            len(new_chunks),
-            Path(source).name,
-        )
+        if new_chunks:
+            logger.info(
+                "Backfilled %d table chunk(s) for %s (unchanged content)",
+                len(new_chunks),
+                Path(source).name,
+            )
+        if stale_table_ids:
+            logger.info(
+                "Purged %d stale table chunk(s) for %s (unchanged content)",
+                len(stale_table_ids),
+                Path(source).name,
+            )
         return IngestionResult(
             source=source,
             chunk_count=existing.chunk_count,

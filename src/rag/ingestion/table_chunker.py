@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from src.core.constants import (
@@ -45,9 +46,64 @@ def is_table_chunk(chunk: Chunk) -> bool:
     return chunk.metadata.get(CHUNK_TYPE_KEY) == CHUNK_TYPE_TABLE
 
 
+def known_table_chunk_ids(source: str, table_ids: Iterable[str]) -> set[str]:
+    """Return stable table chunk IDs for *table_ids* at *source*."""
+    return {table_chunk_id(source, table_id) for table_id in table_ids}
+
+
+def collect_table_ids(document: Document, existing_chunk_ids: Iterable[str]) -> set[str]:
+    """Union table IDs from layout metadata and indexed stable chunk IDs."""
+    table_ids: set[str] = set()
+    tables = document.metadata.get("tables")
+    if isinstance(tables, list):
+        for entry in tables:
+            if isinstance(entry, dict) and entry.get(TABLE_ID_KEY):
+                table_ids.add(str(entry[TABLE_ID_KEY]))
+    table_ids.update(_discover_table_ids_from_chunk_ids(document.source, existing_chunk_ids))
+    return table_ids
+
+
+def existing_table_chunk_ids(
+    source: str,
+    existing_chunk_ids: Iterable[str],
+    *,
+    document: Document,
+    bm25: object | None = None,
+) -> set[str]:
+    """Identify indexed table chunk IDs for a *source* from metadata and BM25 payloads."""
+    existing = list(existing_chunk_ids)
+    table_ids = collect_table_ids(document, existing)
+    indexed = known_table_chunk_ids(source, table_ids)
+    if bm25 is None:
+        return indexed
+
+    get_by_id = getattr(bm25, "get_by_id", None)
+    if get_by_id is None:
+        return indexed
+
+    for chunk_id in existing:
+        chunk = get_by_id(chunk_id)
+        if chunk is not None and is_table_chunk(chunk):
+            indexed.add(chunk_id)
+    return indexed
+
+
 def extract_markdown_tables(content: str) -> list[str]:
     """Return Markdown table blocks in document order."""
     return [block.strip() for block in _MARKDOWN_TABLE_RE.findall(content) if block.strip()]
+
+
+def _discover_table_ids_from_chunk_ids(source: str, chunk_ids: Iterable[str]) -> set[str]:
+    """Infer Docling-style ``table-N`` ids from stable indexed chunk IDs."""
+    chunk_id_set = set(chunk_ids)
+    if not chunk_id_set:
+        return set()
+    discovered: set[str] = set()
+    for index in range(1, len(chunk_id_set) + 50):
+        table_id = f"table-{index}"
+        if table_chunk_id(source, table_id) in chunk_id_set:
+            discovered.add(table_id)
+    return discovered
 
 
 def _content_table_for_id(table_id: str, content_tables: list[str]) -> str | None:
