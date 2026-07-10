@@ -336,6 +336,7 @@ class IngestionPipeline:
             bm25=self._bm25,
         )
         stale_to_purge = stale_table_ids_safe_to_purge(
+            document,
             built_chunks,
             table_chunks,
             stale_table_ids,
@@ -354,6 +355,7 @@ class IngestionPipeline:
         merged_table_ids_list = merged_table_chunk_ids(
             existing_ids,
             known_table_ids,
+            document,
             built_chunks,
             table_chunks,
         )

@@ -63,6 +63,27 @@ def collect_table_ids(document: Document, existing_chunk_ids: Iterable[str]) -> 
     return table_ids
 
 
+def metadata_table_ids(document: Document) -> set[str]:
+    """Return table IDs declared in valid layout metadata entries."""
+    tables = document.metadata.get("tables")
+    if not isinstance(tables, list):
+        return set()
+    table_ids: set[str] = set()
+    for entry in tables:
+        if isinstance(entry, dict) and entry.get(TABLE_ID_KEY):
+            table_ids.add(str(entry[TABLE_ID_KEY]))
+    return table_ids
+
+
+def built_table_ids(built_chunks: Iterable[Chunk]) -> set[str]:
+    """Return layout table IDs represented by *built_chunks*."""
+    return {
+        str(chunk.metadata.get(TABLE_ID_KEY))
+        for chunk in built_chunks
+        if chunk.metadata.get(TABLE_ID_KEY)
+    }
+
+
 def table_embedding_succeeded(
     built_chunks: Iterable[Chunk],
     embedded_chunks: Iterable[Chunk],
@@ -75,13 +96,34 @@ def table_embedding_succeeded(
     return successful == desired
 
 
+def table_build_succeeded(document: Document, built_chunks: Iterable[Chunk]) -> bool:
+    """Return True when every metadata table entry produced a structured chunk."""
+    expected = metadata_table_ids(document)
+    if not expected:
+        return True
+    return built_table_ids(built_chunks) == expected
+
+
+def table_sync_succeeded(
+    document: Document,
+    built_chunks: Iterable[Chunk],
+    embedded_chunks: Iterable[Chunk],
+) -> bool:
+    """Return True when table build and embed both completed successfully."""
+    return table_build_succeeded(document, built_chunks) and table_embedding_succeeded(
+        built_chunks,
+        embedded_chunks,
+    )
+
+
 def stale_table_ids_safe_to_purge(
+    document: Document,
     built_chunks: Iterable[Chunk],
     embedded_chunks: Iterable[Chunk],
     stale_table_ids: Iterable[str],
 ) -> list[str]:
     """Return stale table IDs safe to remove after a table sync attempt."""
-    if table_embedding_succeeded(built_chunks, embedded_chunks):
+    if table_sync_succeeded(document, built_chunks, embedded_chunks):
         return list(stale_table_ids)
     return []
 
@@ -95,8 +137,8 @@ def retained_table_chunk_ids_on_embed_failure(
     *,
     bm25: object | None = None,
 ) -> set[str]:
-    """Return previously indexed table chunk IDs to keep when re-embed failed."""
-    if table_embedding_succeeded(built_chunks, embedded_chunks):
+    """Return previously indexed table chunk IDs to keep when table sync failed."""
+    if table_sync_succeeded(document, built_chunks, embedded_chunks):
         return set()
     desired = {chunk.id for chunk in built_chunks}
     known_old = existing_table_chunk_ids(
@@ -105,18 +147,25 @@ def retained_table_chunk_ids_on_embed_failure(
         document=document,
         bm25=bm25,
     )
-    return {chunk_id for chunk_id in old_chunk_ids if chunk_id in known_old and chunk_id in desired}
+    unbuildable = metadata_table_ids(document) - built_table_ids(built_chunks)
+    retain_unbuildable = known_table_chunk_ids(source, unbuildable)
+    return {
+        chunk_id
+        for chunk_id in old_chunk_ids
+        if chunk_id in known_old and (chunk_id in desired or chunk_id in retain_unbuildable)
+    }
 
 
 def merged_table_chunk_ids(
     existing_ids: Iterable[str],
     known_table_ids: set[str],
+    document: Document,
     built_chunks: Iterable[Chunk],
     embedded_chunks: Iterable[Chunk],
 ) -> list[str]:
     """Compute table chunk IDs to store after a skip-path table sync."""
     embedded = [chunk.id for chunk in embedded_chunks]
-    if table_embedding_succeeded(built_chunks, embedded_chunks):
+    if table_sync_succeeded(document, built_chunks, embedded_chunks):
         return list(dict.fromkeys(embedded))
     return [chunk_id for chunk_id in existing_ids if chunk_id in known_table_ids]
 

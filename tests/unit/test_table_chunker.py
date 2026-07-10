@@ -25,17 +25,21 @@ from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.rag.ingestion.table_chunker import (
     TableChunker,
     build_table_chunks,
+    built_table_ids,
     collect_table_ids,
     existing_table_chunk_ids,
     extract_markdown_tables,
     is_table_chunk,
     known_table_chunk_ids,
     merged_table_chunk_ids,
+    metadata_table_ids,
     retained_table_chunk_ids_on_embed_failure,
     stale_table_ids_safe_to_purge,
+    table_build_succeeded,
     table_chunk_id,
     table_chunks_needing_upsert,
     table_embedding_succeeded,
+    table_sync_succeeded,
 )
 from src.rag.pipelines.ingestion_pipeline import IngestionPipeline, IngestionResult, content_hash
 from tests.unit.ingestion_helpers import (
@@ -329,6 +333,43 @@ class TestTableChunkIdHelpers:
         assert collect_table_ids(document, []) == set()
 
 
+class TestMetadataTableIds:
+    def test_returns_ids_from_valid_entries(self) -> None:
+        document = _doc(
+            tables=[
+                {TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE},
+                {TABLE_ID_KEY: "table-2", "text": _SAMPLE_TABLE_2},
+            ]
+        )
+        assert metadata_table_ids(document) == {"table-1", "table-2"}
+
+    def test_skips_invalid_entries(self) -> None:
+        base = _doc(tables=[{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}])
+        metadata = dict(base.metadata)
+        metadata["tables"] = ["bad", metadata["tables"][0], {}]
+        document = base.model_copy(update={"metadata": metadata})
+        assert metadata_table_ids(document) == {"table-1"}
+
+    def test_returns_empty_without_tables(self) -> None:
+        assert metadata_table_ids(_doc()) == set()
+        assert metadata_table_ids(_doc(tables=[])) == set()
+        document = _doc()
+        document.metadata["tables"] = "bad"
+        assert metadata_table_ids(document) == set()
+
+
+class TestBuiltTableIds:
+    def test_extracts_table_ids_from_chunks(self) -> None:
+        document = _doc(
+            tables=[{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}],
+        )
+        built = build_table_chunks(document)
+        assert built_table_ids(built) == {"table-1"}
+
+    def test_returns_empty_for_no_chunks(self) -> None:
+        assert built_table_ids([]) == set()
+
+
 class TestTableEmbeddingSafetyHelpers:
     def test_table_embedding_succeeded_when_all_desired_embedded(self) -> None:
         source = "/tmp/report.pdf"
@@ -356,7 +397,35 @@ class TestTableEmbeddingSafetyHelpers:
         assert table_embedding_succeeded(built, []) is False
         assert table_embedding_succeeded(built, built[:1]) is False
 
-    def test_stale_table_ids_safe_to_purge_only_after_successful_embed(self) -> None:
+    def test_table_build_succeeded_when_all_metadata_tables_built(self) -> None:
+        document = _doc(
+            tables=[{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}],
+        )
+        built = build_table_chunks(document)
+        assert table_build_succeeded(document, built) is True
+
+    def test_table_build_succeeded_when_no_metadata_tables(self) -> None:
+        document = _doc(tables=[])
+        assert table_build_succeeded(document, []) is True
+
+    def test_table_build_succeeded_false_when_metadata_tables_unbuildable(self) -> None:
+        document = _doc(tables=[{TABLE_ID_KEY: "table-1"}])
+        assert table_build_succeeded(document, []) is False
+
+    def test_table_sync_succeeded_requires_build_and_embed(self) -> None:
+        source = "/tmp/report.pdf"
+        document = _doc(
+            source=source,
+            tables=[{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE}],
+        )
+        built = build_table_chunks(document)
+        embedded = [_embedded_table_chunk(document)]
+        assert table_sync_succeeded(document, built, embedded) is True
+        assert table_sync_succeeded(document, built, []) is False
+        unbuildable = _doc(source=source, tables=[{TABLE_ID_KEY: "table-1"}])
+        assert table_sync_succeeded(unbuildable, [], []) is False
+
+    def test_stale_table_ids_safe_to_purge_only_after_successful_sync(self) -> None:
         source = "/tmp/report.pdf"
         document = _doc(
             source=source,
@@ -364,10 +433,17 @@ class TestTableEmbeddingSafetyHelpers:
         )
         built = build_table_chunks(document)
         stale = [table_chunk_id(source, "table-1")]
-        assert stale_table_ids_safe_to_purge(built, [], stale) == []
+        assert stale_table_ids_safe_to_purge(document, built, [], stale) == []
         embedded = [_embedded_table_chunk(document)]
-        assert stale_table_ids_safe_to_purge(built, embedded, stale) == stale
-        assert stale_table_ids_safe_to_purge([], [], stale) == stale
+        assert stale_table_ids_safe_to_purge(document, built, embedded, stale) == stale
+        removed = _doc(source=source, tables=[])
+        assert stale_table_ids_safe_to_purge(removed, [], [], stale) == stale
+
+    def test_stale_table_ids_safe_to_purge_blocks_unbuildable_metadata_tables(self) -> None:
+        source = "/tmp/report.pdf"
+        document = _doc(source=source, tables=[{TABLE_ID_KEY: "table-1"}])
+        stale = [table_chunk_id(source, "table-1")]
+        assert stale_table_ids_safe_to_purge(document, [], [], stale) == []
 
     def test_retained_table_chunk_ids_on_embed_failure(self) -> None:
         source = "/tmp/report.pdf"
@@ -396,6 +472,18 @@ class TestTableEmbeddingSafetyHelpers:
             == set()
         )
 
+    def test_retained_table_chunk_ids_on_build_failure(self) -> None:
+        source = "/tmp/report.pdf"
+        document = _doc(source=source, tables=[{TABLE_ID_KEY: "table-1"}])
+        stable_id = table_chunk_id(source, "table-1")
+        assert retained_table_chunk_ids_on_embed_failure(
+            source,
+            document,
+            ["text-chunk-1", stable_id],
+            [],
+            [],
+        ) == {stable_id}
+
     def test_merged_table_chunk_ids_after_successful_embed(self) -> None:
         source = "/tmp/report.pdf"
         document = _doc(
@@ -411,6 +499,7 @@ class TestTableEmbeddingSafetyHelpers:
         assert merged_table_chunk_ids(
             ["text-chunk-1", table_chunk_id(source, "table-1")],
             known,
+            document,
             built,
             embedded,
         ) == [embedded[0].id]
@@ -428,15 +517,30 @@ class TestTableEmbeddingSafetyHelpers:
         assert merged_table_chunk_ids(
             ["text-chunk-1", stale_id],
             known,
+            document,
             built,
             [],
         ) == [stale_id]
 
+    def test_merged_table_chunk_ids_keeps_existing_on_build_failure(self) -> None:
+        source = "/tmp/report.pdf"
+        document = _doc(source=source, tables=[{TABLE_ID_KEY: "table-1"}])
+        stable_id = table_chunk_id(source, "table-1")
+        known = {stable_id}
+        assert merged_table_chunk_ids(
+            ["text-chunk-1", stable_id],
+            known,
+            document,
+            [],
+            [],
+        ) == [stable_id]
+
     def test_merged_table_chunk_ids_after_table_removal(self) -> None:
         source = "/tmp/report.pdf"
+        document = _doc(source=source, tables=[])
         stale_id = table_chunk_id(source, "table-1")
         known = {stale_id}
-        assert merged_table_chunk_ids(["text-chunk-1", stale_id], known, [], []) == []
+        assert merged_table_chunk_ids(["text-chunk-1", stale_id], known, document, [], []) == []
 
     def test_retained_table_chunk_ids_uses_bm25_payloads(self) -> None:
         source = "/tmp/report.pdf"
@@ -1133,6 +1237,61 @@ class TestIngestionPipelineTableChunks:
         vector_store.delete.assert_not_called()
         bm25.remove_by_ids.assert_not_called()
         assert "Purged" not in caplog.text
+
+    def test_skip_retains_table_chunks_when_metadata_tables_have_no_text(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path = _report_pdf_path(tmp_path)
+        source = str(path.resolve())
+        document = _doc(source=source, tables=[{TABLE_ID_KEY: "table-1"}])
+        stable_id = table_chunk_id(source, "table-1")
+        table_chunker = _mock_table_chunker_with_empty_index()
+        metadata = _unchanged_hash_metadata(
+            path,
+            document,
+            chunk_ids=["text-chunk-1", stable_id],
+        )
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        with caplog.at_level(logging.INFO, logger=_INGESTION_PIPELINE):
+            result = _run_table_chunker_ingest(
+                path,
+                document,
+                table_chunker=table_chunker,
+                pipeline=pipeline,
+            )
+
+        assert result.skipped is True
+        service.prepare.assert_not_called()
+        table_chunker.index.assert_not_called()
+        vector_store.upsert.assert_not_called()
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
+        assert "Purged" not in caplog.text
+
+    def test_reingest_retains_table_chunks_when_metadata_tables_have_no_text(
+        self, tmp_path: Path
+    ) -> None:
+        path = _report_pdf_path(tmp_path)
+        document = _doc(source=str(path.resolve()), tables=[{TABLE_ID_KEY: "table-1"}])
+        stable_id = table_chunk_id(document.source, "table-1")
+        metadata = mock_reingest_metadata(chunk_ids=["old-text-chunk-1", stable_id])
+        base = embedded_chunk(0).model_copy(update={"id": "new-text-chunk-1"})
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = []
+        pipeline, _, vector_store, bm25 = mock_ingestion_pipeline(
+            prepared_chunks=[base],
+            metadata=metadata,
+        )
+        _run_table_chunker_ingest(
+            path,
+            document,
+            table_chunker=table_chunker,
+            pipeline=pipeline,
+        )
+
+        _assert_purges_only_stale_text_chunk(vector_store, bm25)
+        _, _, merged_ids = metadata.upsert_document.call_args.args
+        assert stable_id in merged_ids
 
     def test_reingest_retains_stable_table_chunks_when_embedding_fails(
         self, tmp_path: Path
