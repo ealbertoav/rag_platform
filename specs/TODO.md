@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 22 nearly complete — **T-220** ✅ · **T-221** ✅ · **T-223** ✅ (scanned-PDF OCR fallback wired into ingest). **Next:** **T-222** (Azure Document Intelligence OCR). Then Phase 23 (**T-230–T-232** figure assets / VLM captions). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 22 complete — **T-220** ✅ · **T-221** ✅ · **T-222** ✅ · **T-223** ✅. **Next:** Phase 23 (**T-230–T-232** figure assets / VLM captions). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2500,7 +2500,7 @@
 >
 > **Preconditions:** Phases 19–20
 >
-> **Status:** T-220 ✅ · T-221 ✅ · T-223 ✅ — remaining **T-222** (Azure DI)
+> **Status:** T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅
 
 ---
 
@@ -2514,7 +2514,7 @@
   - [x] Feature-flagged or backward-compatible defaults preserved
   - [x] Unit tests pass for new modules
   - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Factory mirrors `get_layout_parser` (cache by `(enabled, provider)`, `None` when disabled). Self-hosted providers implemented in T-221; `azure_di` raises `ConfigurationError` until T-222.
+- **Notes:** Factory mirrors `get_layout_parser` (cache by `(enabled, provider)`, `None` when disabled). Self-hosted providers implemented in T-221; `azure_di` implemented in T-222.
 
 ---
 
@@ -2529,23 +2529,23 @@
   - [x] Feature-flagged or backward-compatible defaults preserved
   - [x] Unit tests pass for new modules
   - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Docling-backed `OcrRepository` implementations — `TesseractOcrProvider` (Tesseract CLI), `EasyOcrProvider`, `DoclingOcrProvider` (auto engine). Shared logic in `docling_backed.py`. Optional dep: `uv pip install docling`. Factory returns providers when `parsing.ocr.enabled=true`; still `None` when disabled. Wired into ingest by **T-223** (`apply_ocr_fallback`). `azure_di` remains T-222.
+- **Notes:** Docling-backed `OcrRepository` implementations — `TesseractOcrProvider` (Tesseract CLI), `EasyOcrProvider`, `DoclingOcrProvider` (auto engine). Shared logic in `docling_backed.py`. Optional dep: `uv pip install docling`. Factory returns providers when `parsing.ocr.enabled=true`; still `None` when disabled. Wired into ingest by **T-223** (`apply_ocr_fallback`). `azure_di` is T-222.
 
 ---
 
 
 ### T-222 · Azure Document Intelligence OCR Provider
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Azure DI REST API (FOTT backend, not labeling UI).
 - **Inputs:** T-220
 - **Outputs:** `AzureDocumentIntelligenceOcr`
 - **Files:** `src/infrastructure/ocr/azure_di_provider.py`, `docs/ocr-providers.md`, factory branch in `src/infrastructure/ocr/__init__.py`, tests, README / `configs/parsing.yaml`
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved (`parsing.ocr.provider=azure_di` only constructs when enabled + credentials present)
-  - Unit tests pass for new modules (mock Azure DI HTTP; no live calls in CI)
-  - Documented in `configs/parsing.yaml` / README — settings, credentials, and when to prefer Azure DI vs self-hosted
-  - `apply_ocr_fallback` (T-223) works unchanged with the Azure DI provider once registered in `get_ocr_provider()`
-- **Notes:** Today `azure_di` raises `ConfigurationError`; T-223 already treats that as a soft failure (keeps extractable text). Implement the provider and remove the factory stub so scanned-PDF ingest can use Azure DI without further pipeline changes.
+  - [x] Feature-flagged or backward-compatible defaults preserved (`parsing.ocr.provider=azure_di` only constructs when enabled + credentials present)
+  - [x] Unit tests pass for new modules (mock Azure DI HTTP; no live calls in CI)
+  - [x] Documented in `configs/parsing.yaml` / README — settings, credentials, and when to prefer Azure DI vs self-hosted
+  - [x] `apply_ocr_fallback` (T-223) works unchanged with the Azure DI provider once registered in `get_ocr_provider()`
+- **Notes:** `AzureDocumentIntelligenceOcr` posts local files as `base64Source` to Document Intelligence (`prebuilt-read`), polls `Operation-Location`, returns `analyzeResult.content`. Credentials under `parsing.ocr.azure_di` (`PARSING__OCR__AZURE_DI__*`). Missing credentials raise `ConfigurationError` (T-223 soft-fails). See `docs/ocr-providers.md`.
 
 ---
 
@@ -2565,7 +2565,7 @@
   - [x] Dual-hash dedup: skip matches text `content_hash` or PDF `source_file_hash`; successful OCR stores file hash; failed OCR stores pending hash for retry
   - [x] Toggling `enabled` / `min_chars` does not wipe OCR-derived chunks or force whole-file OCR over already-indexed extractable text
   - [x] Skip path preserves index and still backfills table chunks when layout `tables[]` exist (empty OCR candidates without layout tables do not purge prior tables)
-- **Notes:** Closes the T-221 gap: providers exist and ingest calls them via `apply_ocr_fallback` after `load_document`. Whole-file OCR only when every page (or overall content) is below `min_chars` non-whitespace chars — mixed born-digital + scanned docs are not overwritten. Provider construction runs only after the low-text check. Soft-fails on `DocumentLoadError`, empty OCR text, and `ConfigurationError` (misconfigured / `azure_di` stub). Azure DI provider (T-222) is optional — self-hosted engines from T-221 are sufficient.
+- **Notes:** Closes the T-221 gap: providers exist and ingest calls them via `apply_ocr_fallback` after `load_document`. Whole-file OCR only when every page (or overall content) is below `min_chars` non-whitespace chars — mixed born-digital + scanned docs are not overwritten. Provider construction runs only after the low-text check. Soft-fails on `DocumentLoadError`, empty OCR text, and `ConfigurationError` (misconfigured provider / missing Azure DI credentials). Azure DI provider (T-222) is optional — self-hosted engines from T-221 are sufficient.
 
 ---
 
