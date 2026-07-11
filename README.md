@@ -50,6 +50,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Scanned-PDF OCR fallback (T-223):** When `parsing.ocr.enabled=true`, low-text / empty PDF loads run through `get_ocr_provider()` after `load_document` and replace document content before chunking. Dual-hash dedup (`content_hash` or PDF `source_file_hash`) preserves OCR-derived chunks when toggling OCR flags; failed OCR stores a pending hash for retry. Off by default. Providers: self-hosted (T-221) or Azure DI (T-222). See [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223) and [docs/ocr-providers.md](docs/ocr-providers.md).
 
+> **Azure Document Intelligence OCR (T-222):** Optional cloud OCR via `parsing.ocr.provider=azure_di` — REST `prebuilt-read`, credentials under `parsing.ocr.azure_di` / `PARSING__OCR__AZURE_DI__*`. Factory caches by Azure DI identity and disposes the previous `httpx` client on credential/config rotation. Phase 22 OCR is complete; **next** is Phase 23 (**T-230–T-232** figure assets / VLM captions). See [docs/ocr-providers.md](docs/ocr-providers.md).
+
 ---
 
 ## Table of Contents
@@ -117,7 +119,7 @@ flowchart LR
     subgraph INGEST["📥 Ingestion Pipeline"]
         direction TB
         D["Documents<br/>.pdf .docx .html .md"] --> L[Document Loader]
-        L --> OCR["OCR Fallback<br/>scanned PDFs<br/>(optional · T-223)"]
+        L --> OCR["OCR Fallback<br/>Tesseract / EasyOCR / Docling / Azure DI<br/>(optional · T-221–T-223)"]
         OCR --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
         C --> E["BGE-M3<br/>Dense 1024-dim + Sparse Lexical"]
         E --> Q[("Qdrant<br/>HNSW Index")]
@@ -432,7 +434,8 @@ flowchart LR
     LD --> DEDUP
     DEDUP -->|skip · preserve index| SKIP["Skip path<br/>table backfill · T-202"]
     DEDUP -->|new / changed| OCR{"OCR fallback?<br/>(optional · T-223)"}
-    OCR -->|low-text PDF + enabled| OCRRUN["get_ocr_provider().ocr()<br/>replace content"]
+    OCR -->|low-text PDF + enabled| OCRSEL{"get_ocr_provider()<br/>tesseract · easyocr · docling · azure_di"}
+    OCRSEL --> OCRRUN["ocr(path) → replace content<br/>ocr_applied=true"]
     OCR -->|born-digital / disabled / fail| CL["Text Cleaning"]
     OCRRUN --> CL
     CL --> CM["chunk_metadata()<br/>filter doc-level keys<br/>promote section"]
@@ -606,7 +609,7 @@ flowchart TB
     subgraph CONFIG["configs/parsing.yaml"]
         LPSET["layout_parser.enabled=false<br/>provider=docling"]
         TCSET["table_chunks.enabled=false"]
-        OCRSET["ocr.enabled=false<br/>provider=tesseract<br/>min_chars=50"]
+        OCRSET["ocr.enabled=false<br/>provider=tesseract|easyocr|docling|azure_di<br/>min_chars=50 · azure_di.*"]
     end
 
     subgraph IMPL["Implementations"]
@@ -618,6 +621,7 @@ flowchart TB
         T221["T-221 Self-hosted OCR ✅"]
         T222["T-222 Azure DI OCR ✅"]
         T223["T-223 Scanned-PDF OCR fallback ✅"]
+        T230["T-230 Figure assets ← next"]
     end
 
     LPR --> PD
@@ -634,6 +638,8 @@ flowchart TB
     T200 --> T202
     T202 --> T210
     T221 --> T223
+    T222 --> T223
+    T210 -.->|asset_path / figure_id| T230
     CONST -.->|metadata keys for| T202
     CONST -.->|modality labels for| T210
 ```
@@ -656,12 +662,15 @@ parsing:
   table_chunks:
     enabled: false              # T-202 structured type=table chunks (off by default)
   ocr:
-    enabled: false              # T-220/T-223 OCR factory + scanned-PDF fallback
+    enabled: false              # T-220–T-223 OCR factory + scanned-PDF fallback
     provider: tesseract         # tesseract | easyocr | docling | azure_di
     min_chars: 50               # OCR when extractable text is below this many non-whitespace chars
+    azure_di:                   # T-222 — required when provider=azure_di
+      endpoint: ""
+      api_key: ""
 ```
 
-**OCR factory (T-220 / T-221 / T-222):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider, azure_di identity)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` uses Azure Document Intelligence REST (`prebuilt-read`) with credentials under `parsing.ocr.azure_di`; credential/config changes rebuild the cached client — see [docs/ocr-providers.md](docs/ocr-providers.md). Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223).
+**OCR factory (T-220 / T-221 / T-222):** `get_ocr_provider()` in `src/infrastructure/ocr/` uses shared `EnabledProviderCache` — keyed by `(enabled, provider, identity)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` uses Azure Document Intelligence REST (`prebuilt-read`) with credentials under `parsing.ocr.azure_di`; the identity fingerprint includes endpoint, API key, API version, model ID, timeout, and poll interval so credential/config rotations rebuild the client and call `close()` on the previous instance — see [docs/ocr-providers.md](docs/ocr-providers.md). Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223). **Next multimodal work:** Phase 23 (**T-230–T-232**).
 
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
@@ -735,9 +744,14 @@ flowchart TD
     DEDUP -->|new / changed / enrichers| APPLY["apply_ocr_fallback()"]
     APPLY --> NEED{"document_needs_ocr?<br/>all pages low-text"}
     NEED -->|no · born-digital / mixed| KEEP["Keep extractable text"]
-    NEED -->|yes| PROV["get_ocr_provider().ocr(path)"]
-    PROV -->|text| OK["Replace content<br/>metadata.ocr_applied=true<br/>store source_file_hash"]
-    PROV -->|fail / empty / misconfigured| PENDING["Keep extractable text<br/>store ocr_pending_hash"]
+    NEED -->|yes| FACTORY["get_ocr_provider()"]
+    FACTORY --> SEL{"provider"}
+    SEL -->|tesseract / easyocr / docling| HOSTED["Docling-backed OCR<br/>(T-221)"]
+    SEL -->|azure_di| AZURE["Azure DI REST<br/>prebuilt-read · T-222"]
+    HOSTED --> OCRCALL["ocr(path)"]
+    AZURE --> OCRCALL
+    OCRCALL -->|text| OK["Replace content<br/>metadata.ocr_applied=true<br/>store source_file_hash"]
+    OCRCALL -->|fail / empty / misconfigured| PENDING["Keep extractable text<br/>store ocr_pending_hash"]
     OK --> PREP
     KEEP --> PREP
     PENDING --> PREP
@@ -767,12 +781,16 @@ make ingest SOURCE=data/raw/
 # configs/parsing.yaml
 parsing:
   ocr:
-    enabled: false              # T-220/T-223 OCR factory + scanned-PDF fallback
+    enabled: false              # T-220–T-223 OCR factory + scanned-PDF fallback
     provider: tesseract         # tesseract | easyocr | docling | azure_di
     min_chars: 50               # non-whitespace char threshold
     azure_di:                   # T-222 credentials (when provider=azure_di)
       endpoint: ""
       api_key: ""
+      api_version: "2024-11-30"
+      model_id: prebuilt-read
+      timeout_seconds: 120
+      poll_interval_seconds: 1
 ```
 
 | Component | Location | Role |
@@ -780,14 +798,17 @@ parsing:
 | `apply_ocr_fallback` / `should_attempt_ocr` | `src/rag/ingestion/ocr_fallback.py` | Low-text detection + provider call; sets `OCR_APPLIED_KEY` |
 | Dual-hash helpers | `src/rag/pipelines/ingestion_pipeline.py` | `source_file_hash`, `ocr_pending_hash`, `is_unchanged_source`, `hash_after_ocr` |
 | Skip-path preserve | `IngestionPipeline._skip_unchanged_preserving_index` | Keeps OCR chunks; table backfill when layout tables exist |
-| OCR factory | `src/infrastructure/ocr/` | `get_ocr_provider()` — T-220/T-221/T-222 providers |
-| Config | `configs/parsing.yaml` + `OcrSettings` | `enabled`, `provider`, `min_chars` — off by default |
+| OCR factory | `src/infrastructure/ocr/` | `get_ocr_provider()` — T-220/T-221/T-222; identity cache + `close()` disposal |
+| Azure DI provider | `src/infrastructure/ocr/azure_di_provider.py` | REST `prebuilt-read`; polls `Operation-Location` |
+| Config | `configs/parsing.yaml` + `OcrSettings` | `enabled`, `provider`, `min_chars`, `azure_di.*` — off by default |
 
 **Dual-hash / skip-path behavior:** Skip detection accepts either text `content_hash` or PDF `source_file_hash` (file bytes), so toggling `parsing.ocr.enabled` / `min_chars` does not wipe OCR-derived chunks or force whole-file OCR over already-indexed extractable text. Successful OCR stores `source_file_hash`; failed OCR stores a pending hash so the next ingest retries. File-keyed scans with OCR disabled (or OCR that fails on reindex) preserve the existing index instead of re-preparing from empty loader text. Empty OCR candidates without layout tables skip table backfill so prior table chunks are not purged as "all removed."
 
-**Trade-offs:** Adds latency only on low-text PDFs. Requires Docling (+ Tesseract CLI for the default provider). Mixed-page PDFs are not overwritten (whole-file OCR only when every page is low-text). Re-ingest after enabling — empty scans previously stored without OCR re-run automatically.
+**Trade-offs:** Adds latency only on low-text PDFs. Self-hosted providers require Docling (+ Tesseract CLI for the default); `azure_di` needs Azure credentials and accepts cloud egress instead. Mixed-page PDFs are not overwritten (whole-file OCR only when every page is low-text). Re-ingest after enabling — empty scans previously stored without OCR re-run automatically.
 
-**Tests:** `tests/unit/test_ocr_fallback.py` (detection, pipeline wiring, dual-hash skip/retry, pending hash, file-keyed preserve, table backfill with OCR skip, LLM-enricher reindex without OCR on text-keyed PDFs).
+**Tests:** `tests/unit/test_ocr_fallback.py` (detection, pipeline wiring, dual-hash skip/retry, pending hash, file-keyed preserve, table backfill with OCR skip, LLM-enricher reindex without OCR on text-keyed PDFs); `tests/unit/test_ocr_provider.py` (factory, self-hosted, Azure DI HTTP mocks, identity cache / disposal).
+
+**Next steps:** Phase 23 (**T-230–T-232**) figure asset extraction, VLM captions, and caption chunks — see [specs/TODO.md](specs/TODO.md).
 
 #### Structured Table Chunks at Ingest (T-202)
 

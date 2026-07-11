@@ -2340,8 +2340,8 @@
 > | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
 > | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | T-210 ✅ |
-> | **22** | 12 | T-220 → T-223 | Phases 19–20 | T-220 ✅ · T-221 ✅ · T-223 ✅ · **T-222 next** |
-> | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
+> | **22** | 12 | T-220 → T-223 | Phases 19–20 | ✅ complete — T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅ |
+> | **23** | 13 | T-230 → T-232 | Phases 20–21 | **next** — T-230 → T-231 → T-232 |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
@@ -2514,7 +2514,7 @@
   - [x] Feature-flagged or backward-compatible defaults preserved
   - [x] Unit tests pass for new modules
   - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Factory mirrors `get_layout_parser` (cache by `(enabled, provider)`, `None` when disabled). Self-hosted providers implemented in T-221; `azure_di` implemented in T-222.
+- **Notes:** Factory mirrors `get_layout_parser` via shared `EnabledProviderCache` — key `(enabled, provider, identity)`, `None` when disabled. Self-hosted providers implemented in T-221; `azure_di` identity fingerprint + disposal in T-222.
 
 ---
 
@@ -2545,7 +2545,7 @@
   - [x] Unit tests pass for new modules (mock Azure DI HTTP; no live calls in CI)
   - [x] Documented in `configs/parsing.yaml` / README — settings, credentials, and when to prefer Azure DI vs self-hosted
   - [x] `apply_ocr_fallback` (T-223) works unchanged with the Azure DI provider once registered in `get_ocr_provider()`
-- **Notes:** `AzureDocumentIntelligenceOcr` posts local files as `base64Source` to Document Intelligence (`prebuilt-read`), polls `Operation-Location`, returns `analyzeResult.content`. Credentials under `parsing.ocr.azure_di` (`PARSING__OCR__AZURE_DI__*`). Missing credentials raise `ConfigurationError` (T-223 soft-fails). See `docs/ocr-providers.md`.
+- **Notes:** `AzureDocumentIntelligenceOcr` posts local files as `base64Source` to Document Intelligence (`prebuilt-read`), polls `Operation-Location`, returns `analyzeResult.content`. Credentials under `parsing.ocr.azure_di` (`PARSING__OCR__AZURE_DI__*`). Missing credentials raise `ConfigurationError` (T-223 soft-fails). Factory caches by Azure DI identity (endpoint, API key, API version, model ID, timeout, poll interval) and calls `close()` on the previous client when the identity changes or the cache is cleared. See `docs/ocr-providers.md`.
 
 ---
 
@@ -2575,19 +2575,22 @@
 > **Motivation:** Figure assets, VLM captions, caption chunks.
 >
 > **Preconditions:** Phases 20–21
+>
+> **Status:** **next** — T-230 → T-231 → T-232 (Phase 22 OCR complete)
 
 ---
 
 ### T-230 · Figure Asset Extraction & Storage
-- **Status:** `[ ]`
+- **Status:** `[ ]` ← **start here**
 - **Goal:** Persist figures with `figure_id`.
-- **Inputs:** T-200, T-201
+- **Inputs:** T-200, T-201, T-210
 - **Outputs:** Asset store
 - **Files:** `figure_extractor.py`, `local_asset_store.py`, tests
 - **Acceptance Criteria:**
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Extract figures from layout `figures[]` (T-200) / PPTX (T-201); persist bytes under a local asset store and set `Chunk.asset_path` / `figure_id` (T-210 fields). No VLM captions yet — that is T-231.
 
 ---
 
@@ -2602,6 +2605,7 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Depends on stored figure assets from T-230. Prefer feature-flagged vision provider selection; keep ingest soft-fail when VLM is unavailable.
 
 ---
 
@@ -2616,6 +2620,7 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Emit `CHUNK_TYPE_CAPTION` chunks linked to `figure_id`; index like table chunks (T-202 pattern) once captions exist.
 
 ---
 
@@ -3046,8 +3051,8 @@ T-150 + T-281 ──► T-282
 19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190 ✅ _(complete)_
 20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 ✅ → T-202 ✅ _(complete)_
 21. **Phase 21 — Priority 11 (Domain Model):** T-210 ✅ _(complete)_
-22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-223 ✅ → **T-222** _(next)_
-23. **Phase 23 — Priority 13 (VLM):** T-230 → T-231 → T-232
+22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-222 ✅ → T-223 ✅ _(complete)_
+23. **Phase 23 — Priority 13 (VLM):** **T-230** _(next)_ → T-231 → T-232
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 → T-241 → T-242 → T-243
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 → T-261 → T-262 → T-263

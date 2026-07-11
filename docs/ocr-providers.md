@@ -105,8 +105,9 @@ if provider is not None:
 `get_ocr_provider()` caches by `(enabled, provider, azure_di identity)`.
 For `azure_di`, the identity includes endpoint, API key, API version, model
 ID, timeout, and poll interval so credential/config rotations rebuild the
-client. Call `clear_ocr_provider_cache()` after settings reloads in tests
-(also done automatically by `temporary_config` / `reload_settings_module`).
+client and call `close()` on the previous `httpx` session. Call
+`clear_ocr_provider_cache()` after settings reloads in tests (also done
+automatically by `temporary_config` / `reload_settings_module`).
 
 ## Ingest wiring
 
