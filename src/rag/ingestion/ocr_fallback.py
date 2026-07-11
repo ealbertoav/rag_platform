@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.constants import OCR_APPLIED_KEY
-from src.core.exceptions import DocumentLoadError
+from src.core.exceptions import ConfigurationError, DocumentLoadError
 from src.core.settings import OcrSettings, Settings
 from src.domain.entities.document import Document
 from src.domain.repositories.ocr_repository import OcrRepository
@@ -54,27 +54,32 @@ def apply_ocr_fallback(
 
     No-op when:
       - path is not a PDF
-      - OCR is disabled ("get_ocr_provider()" returns "None")
       - document has enough extractable text (including mixed pages)
+      - OCR is disabled
+      - OCR provider is misconfigured ("ConfigurationError")
       - OCR returns empty text
       - OCR raises "DocumentLoadError" (logged; an original document kept)
+
+    Provider resolution (and "get_ocr_provider()") runs only after the
+    low-text check, so born-digital PDFs never pay for — or fail on —
+    OCR factory construction.
     """
     if path.suffix.lower() != _PDF_EXTENSION:
         return document
 
     ocr_cfg = _ocr_settings(app_settings)
-    provider = ocr_provider
-    if provider is None:
-        from src.infrastructure.ocr import get_ocr_provider
-
-        provider = get_ocr_provider(app_settings)
-    if provider is None:
-        return document
-
     min_chars = ocr_cfg.min_chars
     if not document_needs_ocr(document, min_chars):
         logger.debug("Skipping OCR for %s (sufficient extractable text)", path.name)
         return document
+
+    provider = ocr_provider
+    if provider is None:
+        if not ocr_cfg.enabled:
+            return document
+        provider = _resolve_ocr_provider(path, app_settings)
+        if provider is None:
+            return document
 
     try:
         ocr_text = provider.ocr(path).strip()
@@ -95,6 +100,24 @@ def apply_ocr_fallback(
         len(ocr_text),
     )
     return document.model_copy(update={"content": ocr_text, "metadata": metadata})
+
+
+def _resolve_ocr_provider(
+    path: Path,
+    app_settings: Settings | None,
+) -> OcrRepository | None:
+    """Return the configured OCR provider, or None when disabled / misconfigured."""
+    from src.infrastructure.ocr import get_ocr_provider
+
+    try:
+        return get_ocr_provider(app_settings)
+    except ConfigurationError as exc:
+        logger.warning(
+            "OCR provider misconfigured for %s; keeping extractable text: %s",
+            path.name,
+            exc,
+        )
+        return None
 
 
 def _ocr_settings(app_settings: Settings | None) -> OcrSettings:

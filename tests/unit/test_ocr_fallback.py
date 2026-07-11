@@ -111,13 +111,10 @@ class TestApplyOcrFallback:
         path.write_bytes(b"%PDF-1.4")
         doc = _doc("", source=str(path))
         settings = _ocr_settings(enabled=False)
-        with patch(
-            "src.infrastructure.ocr.get_ocr_provider",
-            return_value=None,
-        ) as get_provider:
+        with patch("src.infrastructure.ocr.get_ocr_provider") as get_provider:
             result = apply_ocr_fallback(doc, path, app_settings=settings)
         assert result is doc
-        get_provider.assert_called_once_with(settings)
+        get_provider.assert_not_called()
 
     def test_sufficient_text_skips_provider(self, tmp_path: Path) -> None:
         path = tmp_path / "born.pdf"
@@ -133,6 +130,52 @@ class TestApplyOcrFallback:
         )
         assert result is doc
         provider.ocr.assert_not_called()
+
+    def test_sufficient_text_skips_factory_resolution(self, tmp_path: Path) -> None:
+        """Born-digital PDFs must not construct the OCR provider (Bugbot / T-223)."""
+        path = tmp_path / "born.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        content = "Born-digital PDF with plenty of extractable characters."
+        doc = _doc(content, source=str(path), metadata={"pages": [content]})
+        settings = _ocr_settings(enabled=True, provider="azure_di")
+        with patch("src.infrastructure.ocr.get_ocr_provider") as get_provider:
+            result = apply_ocr_fallback(doc, path, app_settings=settings)
+        assert result is doc
+        get_provider.assert_not_called()
+
+    def test_misconfigured_provider_keeps_original_when_ocr_needed(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.core.exceptions import ConfigurationError
+
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        doc = _doc("", source=str(path))
+        settings = _ocr_settings(enabled=True, provider="azure_di")
+        with (
+            caplog.at_level(logging.WARNING),
+            patch(
+                "src.infrastructure.ocr.get_ocr_provider",
+                side_effect=ConfigurationError("azure_di not implemented yet (T-222)"),
+            ) as get_provider,
+        ):
+            result = apply_ocr_fallback(doc, path, app_settings=settings)
+        assert result is doc
+        get_provider.assert_called_once_with(settings)
+        assert "OCR provider misconfigured" in caplog.text
+
+    def test_factory_returns_none_is_noop(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        doc = _doc("", source=str(path))
+        settings = _ocr_settings(enabled=True)
+        with patch(
+            "src.infrastructure.ocr.get_ocr_provider",
+            return_value=None,
+        ) as get_provider:
+            result = apply_ocr_fallback(doc, path, app_settings=settings)
+        assert result is doc
+        get_provider.assert_called_once_with(settings)
 
     def test_low_text_pdf_replaces_content(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
@@ -218,6 +261,22 @@ class TestApplyOcrFallback:
             ocr_provider=provider,
         )
         assert result.content == "ocr replacement"
+
+    def test_injected_provider_bypasses_enabled_flag(self, tmp_path: Path) -> None:
+        """Explicit DI still runs OCR when the document needs it."""
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        doc = _doc("", source=str(path))
+        provider = MagicMock()
+        provider.ocr.return_value = "injected"
+        result = apply_ocr_fallback(
+            doc,
+            path,
+            app_settings=_ocr_settings(enabled=False),
+            ocr_provider=provider,
+        )
+        provider.ocr.assert_called_once_with(path)
+        assert result.content == "injected"
 
 
 class TestIngestionPipelineOcrWiring:

@@ -16,9 +16,9 @@ parsing:
     # Factory returns None when disabled. Self-hosted engines (tesseract /
     # easyocr / docling) are Docling-backed (T-221; requires: uv pip install docling).
     # tesseract → Tesseract CLI; easyocr → EasyOCR; docling → auto engine pick.
-    # azure_di is T-222. Enabling azure_di before T-222 raises ConfigurationError.
-    # When enabled, IngestionPipeline.apply_ocr_fallback runs after load_document
-    # for low-text / empty PDFs (T-223). Born-digital and mixed PDFs skip OCR.
+    # azure_di is T-222. get_ocr_provider() raises ConfigurationError for azure_di
+    # until T-222; apply_ocr_fallback logs and keeps extractable text instead of
+    # aborting ingest. Born-digital / mixed PDFs skip OCR before provider init.
     # Re-ingest after enabling to recover scanned PDFs.
   table_chunks:
     enabled: false              # T-202 structured type=table chunks at ingest; off by default
