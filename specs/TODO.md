@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 22 in progress — **T-220** ✅ · **T-221** ✅ · **T-223** ✅ (scanned-PDF OCR fallback). **Next:** **T-222** (Azure DI). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 22 nearly complete — **T-220** ✅ · **T-221** ✅ · **T-223** ✅ (scanned-PDF OCR fallback wired into ingest). **Next:** **T-222** (Azure Document Intelligence OCR). Then Phase 23 (**T-230–T-232** figure assets / VLM captions). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2340,7 +2340,7 @@
 > | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
 > | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | T-210 ✅ |
-> | **22** | 12 | T-220 → T-223 | Phases 19–20 | T-220 ✅ · T-221 ✅ · T-223 ✅ |
+> | **22** | 12 | T-220 → T-223 | Phases 19–20 | T-220 ✅ · T-221 ✅ · T-223 ✅ · **T-222 next** |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
@@ -2499,6 +2499,8 @@
 > **Motivation:** Self-hosted OCR + Azure Document Intelligence (not OCR-Form-Tools UI).
 >
 > **Preconditions:** Phases 19–20
+>
+> **Status:** T-220 ✅ · T-221 ✅ · T-223 ✅ — remaining **T-222** (Azure DI)
 
 ---
 
@@ -2537,11 +2539,13 @@
 - **Goal:** Azure DI REST API (FOTT backend, not labeling UI).
 - **Inputs:** T-220
 - **Outputs:** `AzureDocumentIntelligenceOcr`
-- **Files:** `azure_di_provider.py`, `docs/ocr-providers.md`
+- **Files:** `src/infrastructure/ocr/azure_di_provider.py`, `docs/ocr-providers.md`, factory branch in `src/infrastructure/ocr/__init__.py`, tests, README / `configs/parsing.yaml`
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - Feature-flagged or backward-compatible defaults preserved (`parsing.ocr.provider=azure_di` only constructs when enabled + credentials present)
+  - Unit tests pass for new modules (mock Azure DI HTTP; no live calls in CI)
+  - Documented in `configs/parsing.yaml` / README — settings, credentials, and when to prefer Azure DI vs self-hosted
+  - `apply_ocr_fallback` (T-223) works unchanged with the Azure DI provider once registered in `get_ocr_provider()`
+- **Notes:** Today `azure_di` raises `ConfigurationError`; T-223 already treats that as a soft failure (keeps extractable text). Implement the provider and remove the factory stub so scanned-PDF ingest can use Azure DI without further pipeline changes.
 
 ---
 
@@ -2551,14 +2555,17 @@
 - **Goal:** Route low-text pages through OCR during ingest.
 - **Inputs:** T-010, T-221 (self-hosted) / T-222 (Azure DI, optional), T-200
 - **Outputs:** OCR fallback
-- **Files:** `src/rag/ingestion/ocr_fallback.py`, wire from `IngestionPipeline.ingest_file` (after `load_document`), tests, README / `configs/parsing.yaml`
+- **Files:** `src/rag/ingestion/ocr_fallback.py`, `src/rag/pipelines/ingestion_pipeline.py` (dual-hash helpers + skip-path preserve), `src/core/constants.py` (`OCR_APPLIED_KEY`), `configs/parsing.yaml` (`min_chars`), `tests/unit/test_ocr_fallback.py`, README
 - **Acceptance Criteria:**
   - [x] Feature-flagged or backward-compatible defaults preserved (`parsing.ocr.enabled=false` → no-op)
   - [x] When OCR is enabled, low-text / empty PDF loads call `get_ocr_provider()` and replace content with OCR text
   - [x] Born-digital PDFs with enough extractable text skip OCR
   - [x] Unit tests pass for new modules (include pipeline wiring with mocked provider)
   - [x] Documented in `configs/parsing.yaml` / README — enabling the flag + re-ingest recovers scanned PDFs
-- **Notes:** Closes the T-221 gap: providers exist but nothing in loaders/ingestion calls them. Prefer whole-file OCR via `OcrRepository.ocr(path)` when all pages (or overall content) are low-text; do not overwrite mixed born-digital + scanned docs. Azure DI provider (T-222) is optional — self-hosted engines from T-221 are sufficient to ship this task.
+  - [x] Dual-hash dedup: skip matches text `content_hash` or PDF `source_file_hash`; successful OCR stores file hash; failed OCR stores pending hash for retry
+  - [x] Toggling `enabled` / `min_chars` does not wipe OCR-derived chunks or force whole-file OCR over already-indexed extractable text
+  - [x] Skip path preserves index and still backfills table chunks when layout `tables[]` exist (empty OCR candidates without layout tables do not purge prior tables)
+- **Notes:** Closes the T-221 gap: providers exist and ingest calls them via `apply_ocr_fallback` after `load_document`. Whole-file OCR only when every page (or overall content) is below `min_chars` non-whitespace chars — mixed born-digital + scanned docs are not overwritten. Provider construction runs only after the low-text check. Soft-fails on `DocumentLoadError`, empty OCR text, and `ConfigurationError` (misconfigured / `azure_di` stub). Azure DI provider (T-222) is optional — self-hosted engines from T-221 are sufficient.
 
 ---
 
@@ -3039,7 +3046,7 @@ T-150 + T-281 ──► T-282
 19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190 ✅ _(complete)_
 20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 ✅ → T-202 ✅ _(complete)_
 21. **Phase 21 — Priority 11 (Domain Model):** T-210 ✅ _(complete)_
-22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-223 ✅ → T-222
+22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-223 ✅ → **T-222** _(next)_
 23. **Phase 23 — Priority 13 (VLM):** T-230 → T-231 → T-232
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 → T-241 → T-242 → T-243
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253

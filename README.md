@@ -48,6 +48,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Multimodal domain model (T-210):** First-class modality fields on `Chunk` (`modality`, `image_embedding`, `asset_path`), structured `SourceReference` citations, and `Answer.source_references` — all with backward-compatible defaults (`modality=text`, empty references). Legacy `metadata.type` table/figure chunks still resolve via `resolve_modality` / `SourceReference.from_chunk`. Domain-only; API wiring is T-272. See [Multimodal Domain Model (T-210)](#multimodal-domain-model-t-210).
 
+> **Scanned-PDF OCR fallback (T-223):** When `parsing.ocr.enabled=true`, low-text / empty PDF loads run through `get_ocr_provider()` after `load_document` and replace document content before chunking. Dual-hash dedup (`content_hash` or PDF `source_file_hash`) preserves OCR-derived chunks when toggling OCR flags; failed OCR stores a pending hash for retry. Off by default. See [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223).
+
 ---
 
 ## Table of Contents
@@ -63,6 +65,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Optional Chunk Enrichment](#optional-chunk-enrichment)
     - [Multimodal Parsing Contracts (T-190)](#multimodal-parsing-contracts-t-190)
     - [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200)
+    - [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223)
     - [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202)
     - [Multimodal Domain Model (T-210)](#multimodal-domain-model-t-210)
   - [Start the API Server](#start-the-api-server)
@@ -114,7 +117,8 @@ flowchart LR
     subgraph INGEST["📥 Ingestion Pipeline"]
         direction TB
         D["Documents<br/>.pdf .docx .html .md"] --> L[Document Loader]
-        L --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
+        L --> OCR["OCR Fallback<br/>scanned PDFs<br/>(optional · T-223)"]
+        OCR --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
         C --> E["BGE-M3<br/>Dense 1024-dim + Sparse Lexical"]
         E --> Q[("Qdrant<br/>HNSW Index")]
         E --> B[("BM25<br/>memory | disk<br/>(T-165)")]
@@ -196,6 +200,7 @@ flowchart LR
 | Sparse search | BM25 via `rank-bm25` (`memory` default; optional `disk` backend — T-165) |
 | Knowledge graph | [Neo4j](https://neo4j.com) (optional, `uv sync --extra graph`) |
 | Layout parser (optional) | [Docling](https://github.com/docling-project/docling) — PDF/DOCX layout-aware parsing (T-200; `uv pip install docling`) |
+| OCR (optional) | Docling-backed Tesseract / EasyOCR / Docling engines via `get_ocr_provider()` (T-221); scanned-PDF ingest fallback (T-223); Azure DI is T-222 |
 | API framework | [FastAPI](https://fastapi.tiangolo.com) |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
 | Linting | [Ruff](https://docs.astral.sh/ruff/) + [mypy](https://mypy-lang.org/) + [basedpyright](https://docs.basedpyright.com/) |
@@ -352,12 +357,13 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
 
-# Multimodal parsing (layout parser off by default; OCR self-hosted T-221, Azure DI T-222)
+# Multimodal parsing (layout parser off by default; OCR factory T-220/T-221 + scanned-PDF fallback T-223; Azure DI T-222)
 PARSING__LAYOUT_PARSER__ENABLED=false   # Docling layout parser for .pdf/.docx (T-200)
 PARSING__LAYOUT_PARSER__PROVIDER=docling
 PARSING__TABLE_CHUNKS__ENABLED=false    # structured type=table chunks at ingest (T-202)
 PARSING__OCR__ENABLED=false             # OCR factory + scanned-PDF fallback (T-220/T-223); self-hosted T-221
 PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
+PARSING__OCR__MIN_CHARS=50              # OCR when extractable text is below this many non-whitespace chars
 
 # API security (optional — local dev leaves API key empty)
 API__API_KEY=                          # when set, require X-API-Key on /ingest, /chat, /feedback, /evals
@@ -403,7 +409,7 @@ uv run python scripts/ingest.py --list
 # Supported formats: .pdf, .docx, .html, .htm, .md, .markdown
 ```
 
-Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a content hash stored in the SQLite metadata store (`data/processed/metadata.db` by default). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync table chunks on the skip path — backfilling missing/updated tables and purging stale ones (T-202).
+Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a hash stored in the SQLite metadata store (`data/processed/metadata.db` by default) — normally a text `content_hash`, or for PDFs that went through OCR a `source_file_hash` of the file bytes (T-223 dual-hash contract). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync table chunks on the skip path — backfilling missing/updated tables and purging stale ones (T-202), including when OCR is skipped or fails but layout `tables[]` still carry text.
 
 With `chunking.strategy: parent_child`, both parent and child chunks are indexed in Qdrant and BM25. At query time, retrieval matches on child embeddings; enable `retrieval.parent_context` to substitute parent text into the LLM context (see [Parent Context on Retrieve (T-124)](#parent-context-on-retrieve-t-124)).
 
@@ -420,8 +426,13 @@ flowchart LR
     SRC["📄 Source File<br/>.pdf/.docx/.html/.md"] --> LP{"Layout parser?<br/>(optional · T-200)"}
     LP -->|disabled / default| LD["Plain Loader<br/>pypdf · python-docx · …"]
     LP -->|parsing.layout_parser.enabled| PARSE["DoclingLayoutParser<br/>→ ParsedDocument<br/>→ Document"]
-    PARSE --> CL["Text Cleaning"]
-    LD --> CL
+    PARSE --> DEDUP{"Unchanged?<br/>content_hash or<br/>source_file_hash"}
+    LD --> DEDUP
+    DEDUP -->|skip · preserve index| SKIP["Skip path<br/>table backfill · T-202"]
+    DEDUP -->|new / changed| OCR{"OCR fallback?<br/>(optional · T-223)"}
+    OCR -->|low-text PDF + enabled| OCRRUN["get_ocr_provider().ocr()<br/>replace content"]
+    OCR -->|born-digital / disabled / fail| CL["Text Cleaning"]
+    OCRRUN --> CL
     CL --> CM["chunk_metadata()<br/>filter doc-level keys<br/>promote section"]
     CM --> CH{"Chunking<br/>Strategy"}
     CH -->|recursive| RC["Recursive<br/>Splitter"]
@@ -446,6 +457,7 @@ flowchart LR
     HY --> IDX
     HS --> IDX
     TC --> IDX
+    SKIP --> META
     IDX["Upsert indexes"] --> QD[("Qdrant<br/>HNSW + Sparse")]
     IDX --> BM[("BM25<br/>memory | disk<br/>excludes HyPE + summaries<br/>includes table chunks")]
     IDX --> META[("SQLite<br/>metadata.db")]
@@ -468,6 +480,7 @@ Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptiv
 | HyPE (T-122) | `retrieval.hype` | Qdrant only (`type=hype_question`) | Dedicated question→question dense search → RRF source |
 | Hierarchical summaries (T-125) | `chunking.hierarchical` | Qdrant only (`type=summary` + `type=detail`) | Two-stage summary→detail dense search → RRF source |
 | Structured table chunks (T-202) | `parsing.table_chunks` | Qdrant + BM25 (`type=table`) | Standard dense/BM25 (same as passage chunks) |
+| Scanned-PDF OCR fallback (T-223) | `parsing.ocr` | Replaces document text before chunk/embed | Standard dense/BM25 (OCR text becomes passage chunks) |
 
 ##### Contextual Chunk Headers (T-120)
 
@@ -591,7 +604,7 @@ flowchart TB
     subgraph CONFIG["configs/parsing.yaml"]
         LPSET["layout_parser.enabled=false<br/>provider=docling"]
         TCSET["table_chunks.enabled=false"]
-        OCRSET["ocr.enabled=false<br/>provider=tesseract"]
+        OCRSET["ocr.enabled=false<br/>provider=tesseract<br/>min_chars=50"]
     end
 
     subgraph IMPL["Implementations"]
@@ -644,13 +657,11 @@ parsing:
     min_chars: 50               # OCR when extractable text is below this many non-whitespace chars
 ```
 
-**OCR factory (T-220 / T-221):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` raises `ConfigurationError` until T-222.
-
-**Scanned-PDF OCR fallback (T-223):** After `load_document`, `IngestionPipeline.ingest_file` checks whether OCR would run (`should_attempt_ocr`). Skip detection accepts either text `content_hash` or PDF `source_file_hash` (file bytes), so toggling `parsing.ocr.enabled` / `min_chars` does not wipe OCR-derived chunks or force whole-file OCR over already-indexed extractable text. Successful OCR stores `source_file_hash`; failed OCR stores a pending hash so the next ingest retries. Empty scans previously ingested without OCR still re-run after enabling. When not skipped, `apply_ocr_fallback()` from `src/rag/ingestion/ocr_fallback.py` runs: if OCR is enabled and extractable text is below `parsing.ocr.min_chars` **non-whitespace** characters (all pages when `metadata.pages` is present), the pipeline runs `get_ocr_provider().ocr(path)` and replaces document content. Born-digital and mixed born-digital + scanned PDFs skip OCR before the provider is constructed. Runtime OCR failures, empty results, and a misconfigured provider (`ConfigurationError`) keep the original text.
+**OCR factory (T-220 / T-221):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` raises `ConfigurationError` until T-222. Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223).
 
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
-**Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`. OCR factory and self-hosted providers are covered in `tests/unit/test_ocr_provider.py`. Scanned-PDF fallback wiring is covered in `tests/unit/test_ocr_fallback.py`.
+**Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`. OCR factory and self-hosted providers are covered in `tests/unit/test_ocr_provider.py`.
 
 #### Layout-Aware Parsing (T-200)
 
@@ -703,9 +714,68 @@ make ingest SOURCE=data/raw/
 | Loader routing | `src/infrastructure/loaders/__init__.py` | `load_document()` delegates PDF/DOCX to layout parser when enabled |
 | Chunk metadata filter | `src/rag/chunking/metadata.py` | `chunk_metadata()` — filters doc-level keys, promotes `CHUNK_SECTION_KEY` |
 
-**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text from plain loaders; enable `parsing.ocr.enabled=true` (T-223) and re-ingest so `apply_ocr_fallback` recovers text via `get_ocr_provider()`. OCR adds latency on low-text PDFs only — born-digital and mixed pages skip it, and unchanged sources skip via dual-hash dedup (text and/or PDF file bytes) before OCR runs.
+**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text from plain loaders; enable `parsing.ocr.enabled=true` and re-ingest — see [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223).
 
 **Tests:** `tests/unit/test_docling_parser.py` (parser, metadata extraction, factory cache, settings reload), `tests/unit/test_chunk_metadata.py` (filtering and section promotion), plus routing coverage in `tests/unit/test_loaders.py` and `tests/unit/test_ingestion.py`.
+
+#### Scanned-PDF OCR Fallback (T-223)
+
+When `parsing.ocr.enabled=true`, `IngestionPipeline.ingest_file` recovers text from low-text / empty PDF loads after `load_document`. Detection uses `should_attempt_ocr` / `document_needs_ocr`: extractable text below `parsing.ocr.min_chars` **non-whitespace** characters (every page when `metadata.pages` is present). Whole-file OCR via `get_ocr_provider().ocr(path)` replaces document content and sets `ocr_applied=true`. Born-digital and mixed born-digital + scanned PDFs skip OCR before the provider is constructed. Runtime failures, empty OCR output, and a misconfigured provider (`ConfigurationError`, including `azure_di` until T-222) keep the original text.
+
+```mermaid
+flowchart TD
+    LOAD["load_document(path)"] --> CAND{"should_attempt_ocr?<br/>PDF · enabled · low-text"}
+    CAND -->|no| PREP["prepare → index"]
+    CAND -->|yes| DEDUP{"is_unchanged_source?<br/>content_hash OR<br/>source_file_hash"}
+    DEDUP -->|unchanged · no LLM enrichers| SKIP["_skip_unchanged_preserving_index<br/>optional table backfill"]
+    DEDUP -->|new / changed / enrichers| APPLY["apply_ocr_fallback()"]
+    APPLY --> NEED{"document_needs_ocr?<br/>all pages low-text"}
+    NEED -->|no · born-digital / mixed| KEEP["Keep extractable text"]
+    NEED -->|yes| PROV["get_ocr_provider().ocr(path)"]
+    PROV -->|text| OK["Replace content<br/>metadata.ocr_applied=true<br/>store source_file_hash"]
+    PROV -->|fail / empty / misconfigured| PENDING["Keep extractable text<br/>store ocr_pending_hash"]
+    OK --> PREP
+    KEEP --> PREP
+    PENDING --> PREP
+    SKIP --> DONE["✅ Skip or table sync"]
+    PREP --> DONE2["✅ Indexed"]
+```
+
+```bash
+# Install Docling (OCR engines are Docling-backed — T-221)
+uv pip install docling
+
+# Enable OCR fallback (Tesseract CLI by default)
+PARSING__OCR__ENABLED=true
+PARSING__OCR__PROVIDER=tesseract   # tesseract | easyocr | docling
+PARSING__OCR__MIN_CHARS=50
+
+# Re-ingest scanned PDFs (empty scans ingested without OCR re-run after enabling)
+make ingest SOURCE=data/raw/
+```
+
+```yaml
+# configs/parsing.yaml
+parsing:
+  ocr:
+    enabled: false              # T-220/T-223 OCR factory + scanned-PDF fallback
+    provider: tesseract         # tesseract | easyocr | docling | azure_di
+    min_chars: 50               # non-whitespace char threshold
+```
+
+| Component | Location | Role |
+|---|---|---|
+| `apply_ocr_fallback` / `should_attempt_ocr` | `src/rag/ingestion/ocr_fallback.py` | Low-text detection + provider call; sets `OCR_APPLIED_KEY` |
+| Dual-hash helpers | `src/rag/pipelines/ingestion_pipeline.py` | `source_file_hash`, `ocr_pending_hash`, `is_unchanged_source`, `hash_after_ocr` |
+| Skip-path preserve | `IngestionPipeline._skip_unchanged_preserving_index` | Keeps OCR chunks; table backfill when layout tables exist |
+| OCR factory | `src/infrastructure/ocr/` | `get_ocr_provider()` — T-220/T-221 providers |
+| Config | `configs/parsing.yaml` + `OcrSettings` | `enabled`, `provider`, `min_chars` — off by default |
+
+**Dual-hash / skip-path behavior:** Skip detection accepts either text `content_hash` or PDF `source_file_hash` (file bytes), so toggling `parsing.ocr.enabled` / `min_chars` does not wipe OCR-derived chunks or force whole-file OCR over already-indexed extractable text. Successful OCR stores `source_file_hash`; failed OCR stores a pending hash so the next ingest retries. File-keyed scans with OCR disabled (or OCR that fails on reindex) preserve the existing index instead of re-preparing from empty loader text. Empty OCR candidates without layout tables skip table backfill so prior table chunks are not purged as "all removed."
+
+**Trade-offs:** Adds latency only on low-text PDFs. Requires Docling (+ Tesseract CLI for the default provider). Mixed-page PDFs are not overwritten (whole-file OCR only when every page is low-text). Re-ingest after enabling — empty scans previously stored without OCR re-run automatically.
+
+**Tests:** `tests/unit/test_ocr_fallback.py` (detection, pipeline wiring, dual-hash skip/retry, pending hash, file-keyed preserve, table backfill with OCR skip, LLM-enricher reindex without OCR on text-keyed PDFs).
 
 #### Structured Table Chunks at Ingest (T-202)
 
@@ -752,7 +822,7 @@ parsing:
 | Docling table text | `src/infrastructure/parsers/docling_parser.py` | `tables[].text` via `export_to_markdown()` |
 | Config | `configs/parsing.yaml` + `TableChunkSettings` | `parsing.table_chunks.enabled` — off by default |
 
-**Skip-path behavior:** When content hash is unchanged and no LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex, the pipeline still builds/embeds table chunks, upserts only new or text-changed tables, and purges stale table IDs only after a successful build+embed sync. Failed embeds retain previously indexed table points so a transient embedding error does not wipe tables.
+**Skip-path behavior:** When content hash is unchanged and no LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex, the pipeline still builds/embeds table chunks, upserts only new or text-changed tables, and purges stale table IDs only after a successful build+embed sync. Failed embeds retain previously indexed table points so a transient embedding error does not wipe tables. Empty OCR candidates (T-223) without layout `tables[]` skip backfill so prior table chunks are not treated as removed.
 
 **Trade-offs:** Needs T-200 layout `tables[]` (or markdown tables in content as fallback). Extra embed calls proportional to table count. Skip-path backfill is skipped when LLM enrichers are enabled (those require a full `prepare()`). Re-ingest after enabling — unchanged documents backfill missing table chunks automatically.
 
@@ -786,7 +856,7 @@ flowchart LR
 
 **Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
 
-**Next steps:** Phase 22 — **T-222** (Azure DI OCR). Phase 23 (**T-230–T-232**) figure assets and caption chunks.
+**Next steps:** Phase 22 remaining — **T-222** (Azure DI OCR). Phase 23 (**T-230–T-232**) figure assets and caption chunks.
 
 ### Start the API Server
 
@@ -2249,10 +2319,11 @@ rag_implementation/
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · InfraBenchmark (T-172) · benchmark_samples helpers
-│   ├── infrastructure/         # BGE-M3, Qdrant, BM25 (+ disk backend T-165), feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search, parsers (T-200)
+│   ├── infrastructure/         # BGE-M3, Qdrant, BM25 (+ disk backend T-165), feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search, parsers (T-200), OCR (T-220/T-221)
 │   │   ├── cache/              # Redis client helper (embedding cache + rate limit + feedback backend)
 │   │   ├── loaders/            # PDF/DOCX/HTML/Markdown loaders; load_document() routes to layout parser (T-200)
 │   │   ├── metadata/           # SQLiteMetadataStore (ingestion history + dedup)
+│   │   ├── ocr/                # get_ocr_provider() + Tesseract/EasyOCR/Docling providers (T-220/T-221)
 │   │   ├── parsers/            # DoclingLayoutParser factory + cache (T-200)
 │   │   └── search/             # DuckDuckGo · Tavily · Null web search providers (T-142)
 │   ├── observability/          # OTel tracing, Prometheus metrics
@@ -2268,13 +2339,13 @@ rag_implementation/
 │   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
-│   │   └── ingestion/          # GraphIndexer (entity extraction on ingest)
+│   │   └── ingestion/          # ocr_fallback (T-223) · table_chunker (T-202) · GraphIndexer
 │   ├── type_regression/        # Typed smoke modules for mypy regression detection (T-171)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
+│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_ocr_fallback T-223, test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
 ├── .dockerignore
 ├── .env.example
 ├── .github/
@@ -2369,6 +2440,7 @@ CHUNKING__HIERARCHICAL__ENABLED=false
 PARSING__LAYOUT_PARSER__ENABLED=false
 PARSING__TABLE_CHUNKS__ENABLED=false
 PARSING__OCR__ENABLED=false
+PARSING__OCR__MIN_CHARS=50
 NEO4J__ENABLED=true
 EMBEDDINGS__DEVICE=cpu
 ```
