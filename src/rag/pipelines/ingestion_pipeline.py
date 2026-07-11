@@ -24,6 +24,7 @@ from src.rag.ingestion.table_chunker import (
     build_table_chunks,
     existing_table_chunk_ids,
     merged_table_chunk_ids,
+    metadata_table_ids,
     retained_table_chunk_ids_on_embed_failure,
     stale_table_ids_safe_to_purge,
     table_chunks_needing_upsert,
@@ -207,19 +208,20 @@ class IngestionPipeline:
                 skip_hash = existing.content_hash
                 if self._requires_full_reindex_on_skip():
                     file_hash = _pdf_source_file_hash(source, path)
-                    # Re-preparing from empty loader text would wipe OCR chunks
-                    # when OCR is now disabled, but the record is file-keyed.
-                    if (
-                        file_hash is not None
-                        and existing.content_hash == file_hash
-                        and not ocr_candidate
-                    ):
-                        return self._record_unchanged_skip(
+                    is_file_keyed = file_hash is not None and existing.content_hash == file_hash
+                    # File-keyed scans were indexed from a prior successful OCR.
+                    # Re-preparing from empty loader text (OCR disabled, or OCR
+                    # failed / empty / misconfigured) would purge those chunks
+                    # and rewrite the stored hash to a pending value.
+                    if is_file_keyed and not ocr_candidate:
+                        return self._skip_unchanged_preserving_index(
+                            document,
                             source,
                             skip_hash,
                             existing,
                             path,
                             t0,
+                            ocr_candidate=ocr_candidate,
                         )
                     old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
                     document = apply_ocr_fallback(document, path)
@@ -230,26 +232,25 @@ class IngestionPipeline:
                         source,
                         ocr_candidate=ocr_candidate,
                     )
-                else:
-                    # Empty OCR candidates skip table backfill: no extractable
-                    # text would look like missing tables and purge chunks.
-                    empty_ocr_candidate = ocr_candidate and not document.content.strip()
-                    if not empty_ocr_candidate:
-                        backfill = self._backfill_table_chunks_on_skip(
+                    if is_file_keyed and not document.metadata.get(OCR_APPLIED_KEY):
+                        return self._skip_unchanged_preserving_index(
                             document,
                             source,
                             skip_hash,
                             existing,
+                            path,
                             t0,
+                            ocr_candidate=ocr_candidate,
                         )
-                        if backfill is not None:
-                            return backfill
-                    return self._record_unchanged_skip(
+                else:
+                    return self._skip_unchanged_preserving_index(
+                        document,
                         source,
                         skip_hash,
                         existing,
                         path,
                         t0,
+                        ocr_candidate=ocr_candidate,
                     )
             if existing is not None:
                 old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
@@ -444,6 +445,39 @@ class IngestionPipeline:
             content_hash=doc_hash,
             skipped=True,
         )
+
+    def _skip_unchanged_preserving_index(
+        self,
+        document: Document,
+        source: str,
+        doc_hash: str,
+        existing: DocumentRecord,
+        path: Path,
+        t0: float,
+        *,
+        ocr_candidate: bool,
+    ) -> IngestionResult:
+        """Skip full reindex while optionally syncing table chunks.
+
+        Empty OCR candidates (scanned PDFs that still load as blank) may still
+        backfill when layout ``tables[]`` carry text. Without layout tables,
+        skip backfill so an empty body is not treated as "all tables removed"
+        (which would purge prior table chunks).
+        """
+        empty_ocr_without_layout = (
+            ocr_candidate and not document.content.strip() and not metadata_table_ids(document)
+        )
+        if not empty_ocr_without_layout:
+            backfill = self._backfill_table_chunks_on_skip(
+                document,
+                source,
+                doc_hash,
+                existing,
+                t0,
+            )
+            if backfill is not None:
+                return backfill
+        return self._record_unchanged_skip(source, doc_hash, existing, path, t0)
 
     def _backfill_table_chunks_on_skip(
         self,

@@ -8,9 +8,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.core.constants import OCR_APPLIED_KEY
+from src.core.constants import (
+    CHUNK_TYPE_KEY,
+    CHUNK_TYPE_TABLE,
+    OCR_APPLIED_KEY,
+    TABLE_ID_KEY,
+)
 from src.core.exceptions import DocumentLoadError
 from src.core.settings import Settings
+from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.rag.ingestion.ocr_fallback import (
     apply_ocr_fallback,
@@ -18,6 +24,7 @@ from src.rag.ingestion.ocr_fallback import (
     should_attempt_ocr,
     text_is_low,
 )
+from src.rag.ingestion.table_chunker import table_chunk_id
 from src.rag.pipelines.ingestion_pipeline import (
     IngestionPipeline,
     IngestionResult,
@@ -31,6 +38,7 @@ from tests.unit.ingestion_helpers import mock_ingestion_pipeline
 
 _INGEST_MOD = "src.rag.pipelines.ingestion_pipeline"
 _UNSET = object()
+_SAMPLE_TABLE_MD = "| A | B |\n|---|---|\n| 1 | 2 |"
 
 
 def _doc(
@@ -118,6 +126,66 @@ def _assert_skipped_without_ocr(
     if chunk_count is not None:
         assert result.chunk_count == chunk_count
 
+
+def _file_keyed_empty_scan_with_layout_table(
+    tmp_path: Path,
+) -> tuple[Path, Document, str, str, Chunk]:
+    """Return (path, empty OCR doc with layout table, file_hash, table_id, table_chunk)."""
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"%PDF-1.4")
+    source = str(path.resolve())
+    loaded = _doc(
+        "",
+        source=source,
+        metadata={
+            "pages": [""],
+            "tables": [{TABLE_ID_KEY: "table-1", "text": _SAMPLE_TABLE_MD}],
+        },
+    )
+    file_hash = source_file_hash(source, path)
+    table_id = table_chunk_id(source, "table-1")
+    table_chunk = Chunk(
+        id=table_id,
+        document_id="doc-1",
+        text=_SAMPLE_TABLE_MD,
+        embedding=[0.1] * 4,
+        sparse_vector={1: 0.9},
+        metadata={CHUNK_TYPE_KEY: CHUNK_TYPE_TABLE, TABLE_ID_KEY: "table-1"},
+    )
+    return path, loaded, file_hash, table_id, table_chunk
+
+
+def _pipeline_with_table_chunker(
+    *,
+    metadata: MagicMock,
+    table_chunk: Chunk,
+    augmentor: MagicMock | None = None,
+) -> tuple[IngestionPipeline, MagicMock, MagicMock, MagicMock, MagicMock]:
+    table_chunker = MagicMock()
+    table_chunker.index.return_value = [table_chunk]
+    pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
+        metadata=metadata,
+        augmentor=augmentor,
+    )
+    pipeline._table_chunker = table_chunker  # noqa: SLF001
+    return pipeline, service, vector_store, bm25, table_chunker
+
+
+def _assert_table_backfill(
+    *,
+    service: MagicMock,
+    table_chunker: MagicMock,
+    vector_store: MagicMock,
+    bm25: MagicMock,
+    result: IngestionResult,
+    expected_hash: str,
+) -> None:
+    service.prepare.assert_not_called()
+    table_chunker.index.assert_called_once()
+    vector_store.upsert.assert_called_once()
+    bm25.add.assert_called_once()
+    assert result.skipped is False
+    assert result.content_hash == expected_hash
 
 
 class TestTextIsLow:
@@ -470,12 +538,8 @@ class TestDedupHashStability:
         source = str(path.resolve())
         doc = _doc("", source=source)
         file_hash = source_file_hash(source, path)
-        assert (
-            is_unchanged_source(file_hash, source, path, doc, ocr_candidate=False) is True
-        )
-        assert (
-            is_unchanged_source(file_hash, source, path, doc, ocr_candidate=True) is True
-        )
+        assert is_unchanged_source(file_hash, source, path, doc, ocr_candidate=False) is True
+        assert is_unchanged_source(file_hash, source, path, doc, ocr_candidate=True) is True
 
     def test_text_keyed_empty_ocr_candidate_allows_recovery(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
@@ -483,12 +547,8 @@ class TestDedupHashStability:
         source = str(path.resolve())
         doc = _doc("", source=source)
         text_hash = content_hash(source, "")
-        assert (
-            is_unchanged_source(text_hash, source, path, doc, ocr_candidate=False) is True
-        )
-        assert (
-            is_unchanged_source(text_hash, source, path, doc, ocr_candidate=True) is False
-        )
+        assert is_unchanged_source(text_hash, source, path, doc, ocr_candidate=False) is True
+        assert is_unchanged_source(text_hash, source, path, doc, ocr_candidate=True) is False
 
     def test_text_keyed_nonempty_skips_when_min_chars_would_trigger_ocr(
         self, tmp_path: Path
@@ -499,9 +559,7 @@ class TestDedupHashStability:
         content = "x" * 40  # below a raised min_chars=100, but already indexed
         doc = _doc(content, source=source)
         text_hash = content_hash(source, content)
-        assert (
-            is_unchanged_source(text_hash, source, path, doc, ocr_candidate=True) is True
-        )
+        assert is_unchanged_source(text_hash, source, path, doc, ocr_candidate=True) is True
 
     def test_pending_hash_never_matches_text_or_file(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
@@ -511,20 +569,16 @@ class TestDedupHashStability:
         doc = _doc("tiny", source=source)
         assert pending != content_hash(source, "tiny")
         assert pending != source_file_hash(source, path)
-        assert (
-            is_unchanged_source(pending, source, path, doc, ocr_candidate=True) is False
-        )
+        assert is_unchanged_source(pending, source, path, doc, ocr_candidate=True) is False
 
-    def test_hash_after_ocr_pending_when_candidate_without_apply(
-        self, tmp_path: Path
-    ) -> None:
+    def test_hash_after_ocr_pending_when_candidate_without_apply(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"%PDF-1.4")
         source = str(path.resolve())
         doc = _doc("tiny", source=source)
-        assert hash_after_ocr(
-            doc, path, source, ocr_candidate=True
-        ) == ocr_pending_hash(source, "tiny")
+        assert hash_after_ocr(doc, path, source, ocr_candidate=True) == ocr_pending_hash(
+            source, "tiny"
+        )
 
     def test_hash_after_ocr_file_hash_when_applied(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
@@ -535,9 +589,8 @@ class TestDedupHashStability:
             source=source,
             metadata={OCR_APPLIED_KEY: True},
         )
-        assert (
-            hash_after_ocr(doc, path, source, ocr_candidate=True)
-            == source_file_hash(source, path)
+        assert hash_after_ocr(doc, path, source, ocr_candidate=True) == source_file_hash(
+            source, path
         )
 
     def test_non_pdf_ignores_file_hash_scheme(self, tmp_path: Path) -> None:
@@ -555,7 +608,6 @@ class TestDedupHashStability:
             )
             is True
         )
-
 
 
 class TestIngestionPipelineOcrWiring:
@@ -596,13 +648,9 @@ class TestIngestionPipelineOcrWiring:
         file_hash = source_file_hash(source, path)
         metadata = _metadata_record(file_hash, chunk_count=3)
         pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
-        result, ocr_fn = _ingest_with_ocr_patches(
-            pipeline, path, loaded, ocr_candidate=True
-        )
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=True)
 
-        _assert_skipped_without_ocr(
-            result, ocr_fn, service, expected_hash=file_hash, chunk_count=3
-        )
+        _assert_skipped_without_ocr(result, ocr_fn, service, expected_hash=file_hash, chunk_count=3)
         vector_store.upsert.assert_not_called()
         bm25.add.assert_not_called()
 
@@ -655,20 +703,14 @@ class TestIngestionPipelineOcrWiring:
         file_hash = source_file_hash(source, path)
         metadata = _metadata_record(file_hash, chunk_count=5)
         pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
-        result, ocr_fn = _ingest_with_ocr_patches(
-            pipeline, path, loaded, ocr_candidate=False
-        )
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=False)
 
-        _assert_skipped_without_ocr(
-            result, ocr_fn, service, expected_hash=file_hash, chunk_count=5
-        )
+        _assert_skipped_without_ocr(result, ocr_fn, service, expected_hash=file_hash, chunk_count=5)
         vector_store.upsert.assert_not_called()
         vector_store.delete.assert_not_called()
         bm25.add.assert_not_called()
 
-    def test_disabling_ocr_with_augmentor_still_skips_file_keyed_scan(
-        self, tmp_path: Path
-    ) -> None:
+    def test_disabling_ocr_with_augmentor_still_skips_file_keyed_scan(self, tmp_path: Path) -> None:
         """Augmentor reindex must not wipe OCR chunks when OCR is disabled."""
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"%PDF-1.4")
@@ -681,17 +723,13 @@ class TestIngestionPipelineOcrWiring:
             metadata=metadata,
             augmentor=augmentor,
         )
-        result, ocr_fn = _ingest_with_ocr_patches(
-            pipeline, path, loaded, ocr_candidate=False
-        )
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=False)
 
         _assert_skipped_without_ocr(result, ocr_fn, service, expected_hash=file_hash)
         vector_store.delete.assert_not_called()
         augmentor.augment.assert_not_called()
 
-    def test_raising_min_chars_does_not_force_ocr_on_text_keyed_pdf(
-        self, tmp_path: Path
-    ) -> None:
+    def test_raising_min_chars_does_not_force_ocr_on_text_keyed_pdf(self, tmp_path: Path) -> None:
         path = tmp_path / "born.pdf"
         path.write_bytes(b"%PDF-1.4")
         source = str(path.resolve())
@@ -700,13 +738,9 @@ class TestIngestionPipelineOcrWiring:
         text_hash = content_hash(source, content)
         metadata = _metadata_record(text_hash, chunk_count=4)
         pipeline, service, vector_store, _ = mock_ingestion_pipeline(metadata=metadata)
-        result, ocr_fn = _ingest_with_ocr_patches(
-            pipeline, path, loaded, ocr_candidate=True
-        )
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=True)
 
-        _assert_skipped_without_ocr(
-            result, ocr_fn, service, expected_hash=text_hash, chunk_count=4
-        )
+        _assert_skipped_without_ocr(result, ocr_fn, service, expected_hash=text_hash, chunk_count=4)
         vector_store.upsert.assert_not_called()
 
     def test_enabling_ocr_recovers_empty_text_keyed_scan(self, tmp_path: Path) -> None:
@@ -741,3 +775,148 @@ class TestIngestionPipelineOcrWiring:
         ocr_fn.assert_called_once()
         service.prepare.assert_called_once_with(ocr_doc)
         assert result.content_hash == source_file_hash(source, path)
+
+    def test_augmentor_ocr_failure_preserves_file_keyed_chunks(self, tmp_path: Path) -> None:
+        """Failed OCR on unchanged file-keyed scan must not purge or pending-hash."""
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        loaded = _doc("", source=source, metadata={"pages": [""]})
+        file_hash = source_file_hash(source, path)
+        metadata = _metadata_record(file_hash, chunk_count=3, chunk_ids=["c1", "c2", "c3"])
+        augmentor = MagicMock()
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
+            metadata=metadata,
+            augmentor=augmentor,
+        )
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=loaded
+        )
+
+        ocr_fn.assert_called_once()
+        service.prepare.assert_not_called()
+        vector_store.delete.assert_not_called()
+        vector_store.upsert.assert_not_called()
+        bm25.add.assert_not_called()
+        augmentor.augment.assert_not_called()
+        assert result.skipped is True
+        assert result.content_hash == file_hash
+        assert result.chunk_count == 3
+
+    def test_augmentor_empty_ocr_result_preserves_file_keyed_chunks(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4 scanned")
+        source = str(path.resolve())
+        loaded = _doc("", source=source, metadata={"pages": [""]})
+        # OCR "ran" but returned the same empty document (no OCR_APPLIED_KEY).
+        file_hash = source_file_hash(source, path)
+        metadata = _metadata_record(file_hash, chunk_count=2)
+        hype = MagicMock()
+        pipeline, service, vector_store, _ = mock_ingestion_pipeline(metadata=metadata)
+        pipeline._hype_indexer = hype  # noqa: SLF001
+        result, _ = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=loaded
+        )
+
+        service.prepare.assert_not_called()
+        vector_store.delete.assert_not_called()
+        hype.index.assert_not_called()
+        assert result.skipped is True
+        assert result.content_hash == file_hash
+
+    def test_skip_backfills_tables_for_empty_ocr_candidate_with_layout(
+        self, tmp_path: Path
+    ) -> None:
+        """File-keyed empty scans still backfill when layout tables[] have text."""
+        path, loaded, file_hash, table_id, table_chunk = _file_keyed_empty_scan_with_layout_table(
+            tmp_path
+        )
+        metadata = _metadata_record(file_hash, chunk_count=1, chunk_ids=["text-1"])
+        pipeline, service, vector_store, bm25, table_chunker = _pipeline_with_table_chunker(
+            metadata=metadata,
+            table_chunk=table_chunk,
+        )
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=True)
+
+        ocr_fn.assert_not_called()
+        _assert_table_backfill(
+            service=service,
+            table_chunker=table_chunker,
+            vector_store=vector_store,
+            bm25=bm25,
+            result=result,
+            expected_hash=file_hash,
+        )
+        _, _, merged_ids = metadata.upsert_document.call_args.args
+        assert merged_ids == ["text-1", table_id]
+
+    def test_skip_empty_ocr_without_layout_does_not_purge_tables(self, tmp_path: Path) -> None:
+        """Empty OCR loads without layout tables must not treat tables as removed."""
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        loaded = _doc("", source=source, metadata={"pages": [""]})
+        file_hash = source_file_hash(source, path)
+        stale_table = table_chunk_id(source, "table-1")
+        metadata = _metadata_record(file_hash, chunk_count=2, chunk_ids=["text-1", stale_table])
+        table_chunker = MagicMock()
+        table_chunker.index.return_value = []
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        pipeline._table_chunker = table_chunker
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=True)
+
+        ocr_fn.assert_not_called()
+        service.prepare.assert_not_called()
+        table_chunker.index.assert_not_called()
+        vector_store.delete.assert_not_called()
+        bm25.remove_by_ids.assert_not_called()
+        assert result.skipped is True
+        assert result.content_hash == file_hash
+
+    def test_augmentor_ocr_failure_still_backfills_layout_tables(self, tmp_path: Path) -> None:
+        """When OCR fails on file-keyed reindex, preserve text and still sync tables."""
+        path, loaded, file_hash, _, table_chunk = _file_keyed_empty_scan_with_layout_table(tmp_path)
+        metadata = _metadata_record(file_hash, chunk_count=1, chunk_ids=["ocr-text-1"])
+        augmentor = MagicMock()
+        pipeline, service, vector_store, bm25, table_chunker = _pipeline_with_table_chunker(
+            metadata=metadata,
+            table_chunk=table_chunk,
+            augmentor=augmentor,
+        )
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=loaded
+        )
+
+        ocr_fn.assert_called_once()
+        augmentor.augment.assert_not_called()
+        vector_store.delete.assert_not_called()
+        _assert_table_backfill(
+            service=service,
+            table_chunker=table_chunker,
+            vector_store=vector_store,
+            bm25=bm25,
+            result=result,
+            expected_hash=file_hash,
+        )
+
+    def test_disabling_ocr_with_augmentor_backfills_layout_tables(self, tmp_path: Path) -> None:
+        path, loaded, file_hash, _, table_chunk = _file_keyed_empty_scan_with_layout_table(tmp_path)
+        metadata = _metadata_record(file_hash, chunk_count=1, chunk_ids=["ocr-text-1"])
+        augmentor = MagicMock()
+        pipeline, service, vector_store, bm25, table_chunker = _pipeline_with_table_chunker(
+            metadata=metadata,
+            table_chunk=table_chunk,
+            augmentor=augmentor,
+        )
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=False)
+
+        ocr_fn.assert_not_called()
+        augmentor.augment.assert_not_called()
+        _assert_table_backfill(
+            service=service,
+            table_chunker=table_chunker,
+            vector_store=vector_store,
+            bm25=bm25,
+            result=result,
+            expected_hash=file_hash,
+        )
