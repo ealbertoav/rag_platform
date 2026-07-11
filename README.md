@@ -639,7 +639,7 @@ parsing:
     provider: tesseract         # tesseract | easyocr | docling | azure_di
 ```
 
-**OCR factory (T-220 / T-221):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` raises `ConfigurationError` until T-222.
+**OCR factory (T-220 / T-221):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` raises `ConfigurationError` until T-222. Enabling the flag constructs providers only — loaders and ingestion do not call OCR yet (scanned-PDF fallback is **T-223**).
 
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
@@ -696,7 +696,7 @@ make ingest SOURCE=data/raw/
 | Loader routing | `src/infrastructure/loaders/__init__.py` | `load_document()` delegates PDF/DOCX to layout parser when enabled |
 | Chunk metadata filter | `src/rag/chunking/metadata.py` | `chunk_metadata()` — filters doc-level keys, promotes `CHUNK_SECTION_KEY` |
 
-**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text until OCR is enabled (`parsing.ocr.enabled=true`, T-221). Re-ingest after toggling the flag — existing indexes are not updated retroactively.
+**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text until scanned-PDF OCR fallback lands (**T-223**). T-221 provides self-hosted OCR providers behind `get_ocr_provider()` when `parsing.ocr.enabled=true`, but ingestion does not route low-text pages through them yet. Re-ingest after T-223 — existing indexes are not updated retroactively.
 
 **Tests:** `tests/unit/test_docling_parser.py` (parser, metadata extraction, factory cache, settings reload), `tests/unit/test_chunk_metadata.py` (filtering and section promotion), plus routing coverage in `tests/unit/test_loaders.py` and `tests/unit/test_ingestion.py`.
 
@@ -779,7 +779,7 @@ flowchart LR
 
 **Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
 
-**Next steps:** Phase 22 (**T-222–T-223**) Azure DI OCR and scanned-PDF fallback. Phase 23 (**T-230–T-232**) figure assets and caption chunks.
+**Next steps:** Phase 22 next — **T-223** (scanned-PDF OCR fallback into ingest), then **T-222** (Azure DI OCR). Phase 23 (**T-230–T-232**) figure assets and caption chunks.
 
 ### Start the API Server
 
