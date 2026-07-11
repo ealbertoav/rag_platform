@@ -39,6 +39,7 @@ from tests.unit.ingestion_helpers import mock_ingestion_pipeline
 _INGEST_MOD = "src.rag.pipelines.ingestion_pipeline"
 _UNSET = object()
 _SAMPLE_TABLE_MD = "| A | B |\n|---|---|\n| 1 | 2 |"
+_MIN_CHARS_RAISED_CONTENT = "Extractable text that was enough under the old min_chars threshold."
 
 
 def _doc(
@@ -155,6 +156,19 @@ def _file_keyed_empty_scan_with_layout_table(
     return path, loaded, file_hash, table_id, table_chunk
 
 
+def _text_keyed_born_digital_pdf(
+    tmp_path: Path,
+    *,
+    content: str = _MIN_CHARS_RAISED_CONTENT,
+) -> tuple[Path, Document, str, str]:
+    """Return (path, loaded doc, content, text_hash) for a text-keyed born-digital PDF."""
+    path = tmp_path / "born.pdf"
+    path.write_bytes(b"%PDF-1.4")
+    source = str(path.resolve())
+    loaded = _doc(content, source=source, metadata={"pages": [content]})
+    return path, loaded, content, content_hash(source, content)
+
+
 def _pipeline_with_table_chunker(
     *,
     metadata: MagicMock,
@@ -184,6 +198,26 @@ def _assert_table_backfill(
     table_chunker.index.assert_called_once()
     vector_store.upsert.assert_called_once()
     bm25.add.assert_called_once()
+    assert result.skipped is False
+    assert result.content_hash == expected_hash
+
+
+def _assert_reindexed_without_ocr(
+    result: IngestionResult,
+    ocr_fn: MagicMock,
+    service: MagicMock,
+    vector_store: MagicMock,
+    *,
+    content: str,
+    expected_hash: str,
+) -> None:
+    ocr_fn.assert_not_called()
+    service.prepare.assert_called_once()
+    prepared_doc = service.prepare.call_args.args[0]
+    assert prepared_doc.id == "doc-1"
+    assert prepared_doc.content == content
+    assert prepared_doc.metadata.get(OCR_APPLIED_KEY) is not True
+    vector_store.upsert.assert_called_once()
     assert result.skipped is False
     assert result.content_hash == expected_hash
 
@@ -730,18 +764,84 @@ class TestIngestionPipelineOcrWiring:
         augmentor.augment.assert_not_called()
 
     def test_raising_min_chars_does_not_force_ocr_on_text_keyed_pdf(self, tmp_path: Path) -> None:
-        path = tmp_path / "born.pdf"
-        path.write_bytes(b"%PDF-1.4")
-        source = str(path.resolve())
-        content = "Extractable text that was enough under the old min_chars threshold."
-        loaded = _doc(content, source=source, metadata={"pages": [content]})
-        text_hash = content_hash(source, content)
+        path, loaded, _, text_hash = _text_keyed_born_digital_pdf(tmp_path)
         metadata = _metadata_record(text_hash, chunk_count=4)
         pipeline, service, vector_store, _ = mock_ingestion_pipeline(metadata=metadata)
         result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=True)
 
         _assert_skipped_without_ocr(result, ocr_fn, service, expected_hash=text_hash, chunk_count=4)
         vector_store.upsert.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "enricher_attr",
+        ("augmentor", "hype_indexer", "hierarchical_indexer"),
+    )
+    def test_raising_min_chars_with_llm_enricher_reindexes_text_keyed_without_ocr(
+        self,
+        tmp_path: Path,
+        enricher_attr: str,
+    ) -> None:
+        """Full reindex on skip must not OCR overwrite text-keyed born-digital PDFs."""
+        path, loaded, content, text_hash = _text_keyed_born_digital_pdf(tmp_path)
+        metadata = _metadata_record(text_hash, chunk_count=2, chunk_ids=["c1", "c2"])
+        enricher = MagicMock()
+        if enricher_attr == "augmentor":
+            enricher.augment.return_value = []
+            pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
+                metadata=metadata,
+                augmentor=enricher,
+            )
+        elif enricher_attr == "hype_indexer":
+            enricher.index.return_value = []
+            pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+            pipeline._hype_indexer = enricher  # noqa: SLF001
+        else:
+            pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+            prepared = list(service.prepare.return_value)
+            enricher.index.return_value = (prepared, [])
+            pipeline._hierarchical_indexer = enricher  # noqa: SLF001
+
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=True)
+
+        _assert_reindexed_without_ocr(
+            result,
+            ocr_fn,
+            service,
+            vector_store,
+            content=content,
+            expected_hash=text_hash,
+        )
+        bm25.add.assert_called_once()
+        metadata.upsert_document.assert_called()
+        assert metadata.upsert_document.call_args.args[1] == text_hash
+
+    def test_text_keyed_with_augmentor_reindexes_without_ocr_when_not_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        path, loaded, content, text_hash = _text_keyed_born_digital_pdf(
+            tmp_path,
+            content=(
+                "Born-digital PDF with plenty of extractable characters across the page content."
+            ),
+        )
+        metadata = _metadata_record(text_hash, chunk_count=1)
+        augmentor = MagicMock()
+        augmentor.augment.return_value = []
+        pipeline, service, vector_store, _ = mock_ingestion_pipeline(
+            metadata=metadata,
+            augmentor=augmentor,
+        )
+        result, ocr_fn = _ingest_with_ocr_patches(pipeline, path, loaded, ocr_candidate=False)
+
+        _assert_reindexed_without_ocr(
+            result,
+            ocr_fn,
+            service,
+            vector_store,
+            content=content,
+            expected_hash=text_hash,
+        )
+        augmentor.augment.assert_called_once()
 
     def test_enabling_ocr_recovers_empty_text_keyed_scan(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"

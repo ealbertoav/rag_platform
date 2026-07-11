@@ -100,7 +100,7 @@ def is_unchanged_source(
     flipping "parsing.ocr.enabled" / "min_chars" does not invalidate prior
     records. Empty OCR candidates that only match the text hash are treated as
     changed, so enabling OCR can recover scans ingested without it. Non-empty
-    text-hash matches still skip when "min_chars" later flags needs-OCR, avoiding
+    text-hash matches still skip when "min_chars" later flags need-OCR, avoiding
     whole-file OCR over already-indexed extractable text.
     """
     file_hash = _pdf_source_file_hash(source, path)
@@ -224,24 +224,33 @@ class IngestionPipeline:
                             ocr_candidate=ocr_candidate,
                         )
                     old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
-                    document = apply_ocr_fallback(document, path)
-                    ocr_applied = True
-                    doc_hash = hash_after_ocr(
-                        document,
-                        path,
-                        source,
-                        ocr_candidate=ocr_candidate,
-                    )
-                    if is_file_keyed and not document.metadata.get(OCR_APPLIED_KEY):
-                        return self._skip_unchanged_preserving_index(
+                    if is_file_keyed:
+                        # Scans: loader text is empty — re-OCR so prepare() has
+                        # content. Preserve the index if OCR does not apply.
+                        document = apply_ocr_fallback(document, path)
+                        ocr_applied = True
+                        doc_hash = hash_after_ocr(
                             document,
-                            source,
-                            skip_hash,
-                            existing,
                             path,
-                            t0,
+                            source,
                             ocr_candidate=ocr_candidate,
                         )
+                        if not document.metadata.get(OCR_APPLIED_KEY):
+                            return self._skip_unchanged_preserving_index(
+                                document,
+                                source,
+                                skip_hash,
+                                existing,
+                                path,
+                                t0,
+                                ocr_candidate=ocr_candidate,
+                            )
+                    else:
+                        # Text-keyed unchanged: reindex from extractable text.
+                        # Raised min_chars must not whole-file-OCR over already
+                        # indexed born-digital content (dual-hash contract).
+                        ocr_applied = True
+                        doc_hash = skip_hash
                 else:
                     return self._skip_unchanged_preserving_index(
                         document,
@@ -460,7 +469,7 @@ class IngestionPipeline:
         """Skip full reindex while optionally syncing table chunks.
 
         Empty OCR candidates (scanned PDFs that still load as blank) may still
-        backfill when layout ``tables[]`` carry text. Without layout tables,
+        backfill when layout "tables[]" carry text. Without layout tables,
         skip backfill so an empty body is not treated as "all tables removed"
         (which would purge prior table chunks).
         """
