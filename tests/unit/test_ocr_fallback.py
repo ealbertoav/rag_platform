@@ -18,8 +18,19 @@ from src.rag.ingestion.ocr_fallback import (
     should_attempt_ocr,
     text_is_low,
 )
-from src.rag.pipelines.ingestion_pipeline import content_hash, source_file_hash
+from src.rag.pipelines.ingestion_pipeline import (
+    IngestionPipeline,
+    IngestionResult,
+    content_hash,
+    hash_after_ocr,
+    is_unchanged_source,
+    ocr_pending_hash,
+    source_file_hash,
+)
 from tests.unit.ingestion_helpers import mock_ingestion_pipeline
+
+_INGEST_MOD = "src.rag.pipelines.ingestion_pipeline"
+_UNSET = object()
 
 
 def _doc(
@@ -40,6 +51,73 @@ def _ocr_settings(
     return Settings(
         parsing={"ocr": {"enabled": enabled, "provider": provider, "min_chars": min_chars}}
     )
+
+
+def _metadata_record(
+    content_hash_value: str,
+    *,
+    chunk_count: int,
+    chunk_ids: list[str] | None = None,
+) -> MagicMock:
+    metadata = MagicMock()
+    metadata.get_by_source.return_value = MagicMock(
+        id="doc-1",
+        content_hash=content_hash_value,
+        chunk_count=chunk_count,
+    )
+    if chunk_ids is not None:
+        metadata.get_chunk_ids.return_value = chunk_ids
+    elif chunk_count == 0:
+        metadata.get_chunk_ids.return_value = []
+    else:
+        metadata.get_chunk_ids.return_value = [f"c{i}" for i in range(1, chunk_count + 1)]
+    return metadata
+
+
+def _ocr_applied_doc(loaded: Document, content: str) -> Document:
+    return loaded.model_copy(
+        update={
+            "content": content,
+            "metadata": {**loaded.metadata, OCR_APPLIED_KEY: True},
+        }
+    )
+
+
+def _ingest_with_ocr_patches(
+    pipeline: IngestionPipeline,
+    path: Path,
+    loaded: Document,
+    *,
+    ocr_candidate: bool,
+    ocr_return: Document | object = _UNSET,
+) -> tuple[IngestionResult, MagicMock]:
+    """Run ingest_file with load/OCR helpers patched; return (result, ocr mock)."""
+    ocr_kwargs: dict = {}
+    if ocr_return is not _UNSET:
+        ocr_kwargs["return_value"] = ocr_return
+    with (
+        patch(f"{_INGEST_MOD}.load_document", return_value=loaded),
+        patch(f"{_INGEST_MOD}.should_attempt_ocr", return_value=ocr_candidate),
+        patch(f"{_INGEST_MOD}.apply_ocr_fallback", **ocr_kwargs) as ocr_fn,
+    ):
+        return pipeline.ingest_file(path), ocr_fn
+
+
+def _assert_skipped_without_ocr(
+    result: IngestionResult,
+    ocr_fn: MagicMock,
+    service: MagicMock,
+    *,
+    expected_hash: str,
+    chunk_count: int | None = None,
+) -> None:
+    ocr_fn.assert_not_called()
+    service.prepare.assert_not_called()
+    assert result.skipped is True
+    assert result.content_hash == expected_hash
+    if chunk_count is not None:
+        assert result.chunk_count == chunk_count
+
 
 
 class TestTextIsLow:
@@ -90,7 +168,7 @@ class TestDocumentNeedsOcr:
         assert document_needs_ocr(doc, 50) is True
 
     def test_mixed_pages_skip_ocr(self) -> None:
-        # ≥50 non-whitespace chars so internal spaces do not inflate the count.
+        # ≥50 non-whitespace chars, so internal spaces do not inflate the count.
         born_digital = (
             "This page has plenty of extractable text from the born-digital PDF document."
         )
@@ -385,33 +463,111 @@ class TestSourceFileHash:
         assert source_file_hash(source, path) != first
 
 
+class TestDedupHashStability:
+    def test_file_keyed_match_ignores_ocr_candidate_flag(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        doc = _doc("", source=source)
+        file_hash = source_file_hash(source, path)
+        assert (
+            is_unchanged_source(file_hash, source, path, doc, ocr_candidate=False) is True
+        )
+        assert (
+            is_unchanged_source(file_hash, source, path, doc, ocr_candidate=True) is True
+        )
+
+    def test_text_keyed_empty_ocr_candidate_allows_recovery(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        doc = _doc("", source=source)
+        text_hash = content_hash(source, "")
+        assert (
+            is_unchanged_source(text_hash, source, path, doc, ocr_candidate=False) is True
+        )
+        assert (
+            is_unchanged_source(text_hash, source, path, doc, ocr_candidate=True) is False
+        )
+
+    def test_text_keyed_nonempty_skips_when_min_chars_would_trigger_ocr(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "born.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        content = "x" * 40  # below a raised min_chars=100, but already indexed
+        doc = _doc(content, source=source)
+        text_hash = content_hash(source, content)
+        assert (
+            is_unchanged_source(text_hash, source, path, doc, ocr_candidate=True) is True
+        )
+
+    def test_pending_hash_never_matches_text_or_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        pending = ocr_pending_hash(source, "tiny")
+        doc = _doc("tiny", source=source)
+        assert pending != content_hash(source, "tiny")
+        assert pending != source_file_hash(source, path)
+        assert (
+            is_unchanged_source(pending, source, path, doc, ocr_candidate=True) is False
+        )
+
+    def test_hash_after_ocr_pending_when_candidate_without_apply(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        doc = _doc("tiny", source=source)
+        assert hash_after_ocr(
+            doc, path, source, ocr_candidate=True
+        ) == ocr_pending_hash(source, "tiny")
+
+    def test_hash_after_ocr_file_hash_when_applied(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        doc = _doc(
+            "OCR text",
+            source=source,
+            metadata={OCR_APPLIED_KEY: True},
+        )
+        assert (
+            hash_after_ocr(doc, path, source, ocr_candidate=True)
+            == source_file_hash(source, path)
+        )
+
+    def test_non_pdf_ignores_file_hash_scheme(self, tmp_path: Path) -> None:
+        path = tmp_path / "notes.md"
+        path.write_text("hello")
+        source = str(path.resolve())
+        doc = _doc("hello", source=source)
+        assert (
+            is_unchanged_source(
+                content_hash(source, "hello"),
+                source,
+                path,
+                doc,
+                ocr_candidate=False,
+            )
+            is True
+        )
+
+
+
 class TestIngestionPipelineOcrWiring:
     def test_ingest_file_applies_ocr_and_stores_file_hash(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"%PDF-1.4 scanned")
         loaded = _doc("", source=str(path.resolve()), metadata={"pages": [""]})
-        ocr_doc = loaded.model_copy(
-            update={
-                "content": "OCR recovered text for hashing",
-                "metadata": {**loaded.metadata, OCR_APPLIED_KEY: True},
-            }
-        )
+        ocr_doc = _ocr_applied_doc(loaded, "OCR recovered text for hashing")
         pipeline, service, *_ = mock_ingestion_pipeline()
-        with (
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.load_document",
-                return_value=loaded,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.should_attempt_ocr",
-                return_value=True,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.apply_ocr_fallback",
-                return_value=ocr_doc,
-            ) as ocr_fn,
-        ):
-            result = pipeline.ingest_file(path)
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=ocr_doc
+        )
 
         ocr_fn.assert_called_once()
         assert ocr_fn.call_args.args[0] is loaded
@@ -424,21 +580,9 @@ class TestIngestionPipelineOcrWiring:
         path.write_bytes(b"%PDF-1.4")
         loaded = _doc("enough text " * 20, source=str(path.resolve()))
         pipeline, service, *_ = mock_ingestion_pipeline()
-        with (
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.load_document",
-                return_value=loaded,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.should_attempt_ocr",
-                return_value=False,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.apply_ocr_fallback",
-                return_value=loaded,
-            ),
-        ):
-            result = pipeline.ingest_file(path)
+        result, _ = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=False, ocr_return=loaded
+        )
 
         service.prepare.assert_called_once_with(loaded)
         assert result.skipped is False
@@ -450,77 +594,35 @@ class TestIngestionPipelineOcrWiring:
         source = str(path.resolve())
         loaded = _doc("", source=source, metadata={"pages": [""]})
         file_hash = source_file_hash(source, path)
-        metadata = MagicMock()
-        metadata.get_by_source.return_value = MagicMock(
-            id="doc-1",
-            content_hash=file_hash,
-            chunk_count=3,
-        )
-        metadata.get_chunk_ids.return_value = ["c1", "c2", "c3"]
+        metadata = _metadata_record(file_hash, chunk_count=3)
         pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
-        with (
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.load_document",
-                return_value=loaded,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.should_attempt_ocr",
-                return_value=True,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.apply_ocr_fallback",
-            ) as ocr_fn,
-        ):
-            result = pipeline.ingest_file(path)
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True
+        )
 
-        ocr_fn.assert_not_called()
-        service.prepare.assert_not_called()
+        _assert_skipped_without_ocr(
+            result, ocr_fn, service, expected_hash=file_hash, chunk_count=3
+        )
         vector_store.upsert.assert_not_called()
         bm25.add.assert_not_called()
-        assert result.skipped is True
-        assert result.content_hash == file_hash
-        assert result.chunk_count == 3
 
     def test_unchanged_scanned_pdf_with_augmentor_ocrs_then_reindexes(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"%PDF-1.4")
         source = str(path.resolve())
         loaded = _doc("", source=source, metadata={"pages": [""]})
-        ocr_doc = loaded.model_copy(
-            update={
-                "content": "OCR text for reindex",
-                "metadata": {**loaded.metadata, OCR_APPLIED_KEY: True},
-            }
-        )
+        ocr_doc = _ocr_applied_doc(loaded, "OCR text for reindex")
         file_hash = source_file_hash(source, path)
-        metadata = MagicMock()
-        metadata.get_by_source.return_value = MagicMock(
-            id="doc-1",
-            content_hash=file_hash,
-            chunk_count=1,
-        )
-        metadata.get_chunk_ids.return_value = ["c1"]
+        metadata = _metadata_record(file_hash, chunk_count=1)
         augmentor = MagicMock()
         augmentor.augment.return_value = []
         pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(
             metadata=metadata,
             augmentor=augmentor,
         )
-        with (
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.load_document",
-                return_value=loaded,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.should_attempt_ocr",
-                return_value=True,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.apply_ocr_fallback",
-                return_value=ocr_doc,
-            ) as ocr_fn,
-        ):
-            result = pipeline.ingest_file(path)
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=ocr_doc
+        )
 
         ocr_fn.assert_called_once()
         service.prepare.assert_called_once_with(ocr_doc)
@@ -529,28 +631,113 @@ class TestIngestionPipelineOcrWiring:
         assert result.skipped is False
         assert result.content_hash == file_hash
 
-    def test_ocr_failure_stores_text_hash_not_file_hash(self, tmp_path: Path) -> None:
+    def test_ocr_failure_stores_pending_hash_not_file_hash(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"%PDF-1.4")
         source = str(path.resolve())
         loaded = _doc("tiny", source=source)
         pipeline, service, *_ = mock_ingestion_pipeline()
-        with (
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.load_document",
-                return_value=loaded,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.should_attempt_ocr",
-                return_value=True,
-            ),
-            patch(
-                "src.rag.pipelines.ingestion_pipeline.apply_ocr_fallback",
-                return_value=loaded,
-            ),
-        ):
-            result = pipeline.ingest_file(path)
+        result, _ = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=loaded
+        )
 
         service.prepare.assert_called_once_with(loaded)
-        assert result.content_hash == content_hash(source, "tiny")
+        assert result.content_hash == ocr_pending_hash(source, "tiny")
+        assert result.content_hash != content_hash(source, "tiny")
         assert result.content_hash != source_file_hash(source, path)
+
+    def test_disabling_ocr_preserves_file_keyed_scan(self, tmp_path: Path) -> None:
+        """OCR off after a successful OCR ingested must not reindex empty text."""
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4 scanned")
+        source = str(path.resolve())
+        loaded = _doc("", source=source, metadata={"pages": [""]})
+        file_hash = source_file_hash(source, path)
+        metadata = _metadata_record(file_hash, chunk_count=5)
+        pipeline, service, vector_store, bm25 = mock_ingestion_pipeline(metadata=metadata)
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=False
+        )
+
+        _assert_skipped_without_ocr(
+            result, ocr_fn, service, expected_hash=file_hash, chunk_count=5
+        )
+        vector_store.upsert.assert_not_called()
+        vector_store.delete.assert_not_called()
+        bm25.add.assert_not_called()
+
+    def test_disabling_ocr_with_augmentor_still_skips_file_keyed_scan(
+        self, tmp_path: Path
+    ) -> None:
+        """Augmentor reindex must not wipe OCR chunks when OCR is disabled."""
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        loaded = _doc("", source=source, metadata={"pages": [""]})
+        file_hash = source_file_hash(source, path)
+        metadata = _metadata_record(file_hash, chunk_count=2)
+        augmentor = MagicMock()
+        pipeline, service, vector_store, _ = mock_ingestion_pipeline(
+            metadata=metadata,
+            augmentor=augmentor,
+        )
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=False
+        )
+
+        _assert_skipped_without_ocr(result, ocr_fn, service, expected_hash=file_hash)
+        vector_store.delete.assert_not_called()
+        augmentor.augment.assert_not_called()
+
+    def test_raising_min_chars_does_not_force_ocr_on_text_keyed_pdf(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "born.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        content = "Extractable text that was enough under the old min_chars threshold."
+        loaded = _doc(content, source=source, metadata={"pages": [content]})
+        text_hash = content_hash(source, content)
+        metadata = _metadata_record(text_hash, chunk_count=4)
+        pipeline, service, vector_store, _ = mock_ingestion_pipeline(metadata=metadata)
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True
+        )
+
+        _assert_skipped_without_ocr(
+            result, ocr_fn, service, expected_hash=text_hash, chunk_count=4
+        )
+        vector_store.upsert.assert_not_called()
+
+    def test_enabling_ocr_recovers_empty_text_keyed_scan(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        loaded = _doc("", source=source, metadata={"pages": [""]})
+        ocr_doc = _ocr_applied_doc(loaded, "Recovered by OCR after enabling")
+        metadata = _metadata_record(content_hash(source, ""), chunk_count=0)
+        pipeline, service, *_ = mock_ingestion_pipeline(metadata=metadata)
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=ocr_doc
+        )
+
+        ocr_fn.assert_called_once()
+        service.prepare.assert_called_once_with(ocr_doc)
+        assert result.skipped is False
+        assert result.content_hash == source_file_hash(source, path)
+
+    def test_ocr_pending_hash_retries_on_next_ingest(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4")
+        source = str(path.resolve())
+        loaded = _doc("tiny", source=source)
+        ocr_doc = _ocr_applied_doc(loaded, "OCR works now")
+        metadata = _metadata_record(ocr_pending_hash(source, "tiny"), chunk_count=0)
+        pipeline, service, *_ = mock_ingestion_pipeline(metadata=metadata)
+        result, ocr_fn = _ingest_with_ocr_patches(
+            pipeline, path, loaded, ocr_candidate=True, ocr_return=ocr_doc
+        )
+
+        ocr_fn.assert_called_once()
+        service.prepare.assert_called_once_with(ocr_doc)
+        assert result.content_hash == source_file_hash(source, path)

@@ -68,10 +68,65 @@ def source_file_hash(source: str, path: Path) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
-def _hash_after_ocr(document: Document, path: Path, source: str) -> str:
-    """Prefer file-byte hash when OCR replaced content; otherwise text hash."""
+# Salt so a failed OCR attempt does not store a plain text hash that would
+# skip forever before OCR can succeed on a later run.
+_OCR_PENDING_SALT = "\0ocr-pending\0"
+
+
+def _pdf_source_file_hash(source: str, path: Path) -> str | None:
+    """Return "source_file_hash" for PDFs; "None" for other extensions."""
+    if path.suffix.lower() != ".pdf":
+        return None
+    return source_file_hash(source, path)
+
+
+def ocr_pending_hash(source: str, text: str) -> str:
+    """Dedup hash that never matches plain text or file hashes (forces OCR retry)."""
+    return content_hash(source, f"{_OCR_PENDING_SALT}{text}")
+
+
+def is_unchanged_source(
+    existing_hash: str,
+    source: str,
+    path: Path,
+    document: Document,
+    *,
+    ocr_candidate: bool,
+) -> bool:
+    """Return True when metadata says this source need not be fully re-ingested.
+
+    Accepts either the text "content_hash" or (for PDFs) "source_file_hash" so
+    flipping "parsing.ocr.enabled" / "min_chars" does not invalidate prior
+    records. Empty OCR candidates that only match the text hash are treated as
+    changed, so enabling OCR can recover scans ingested without it. Non-empty
+    text-hash matches still skip when "min_chars" later flags needs-OCR, avoiding
+    whole-file OCR over already-indexed extractable text.
+    """
+    file_hash = _pdf_source_file_hash(source, path)
+    if file_hash is not None and existing_hash == file_hash:
+        return True
+
+    text_hash = content_hash(source, document.content)
+    if existing_hash != text_hash:
+        return False
+
+    # Empty extract + OCR would run → allow recovery after enabling OCR.
+    return not (ocr_candidate and not document.content.strip())
+
+
+def hash_after_ocr(
+    document: Document,
+    path: Path,
+    source: str,
+    *,
+    ocr_candidate: bool,
+) -> str:
+    """Prefer file-byte hash when OCR replaced content; else text or pending hash."""
     if document.metadata.get(OCR_APPLIED_KEY):
         return source_file_hash(source, path)
+    if ocr_candidate:
+        # OCR was warranted but did not apply — force retry on the next ingest.
+        return ocr_pending_hash(source, document.content)
     return content_hash(source, document.content)
 
 
@@ -87,8 +142,8 @@ class IngestionPipeline:
     """Orchestrates the full ingestion flow for one or many files.
 
     Flow per file:
-      load_document → provisional dedup hash (file bytes when OCR would run)
-                    → skip unchanged sources without OCR
+      load_document → dual-hash unchanged check (text and/or PDF file bytes)
+                    → skip unchanged sources without OCR (config-stable)
                     → optional OCR fallback (scanned PDFs) → finalize hash
                     → IngestionService.prepare (chunk and embed)
                     → optional graph entity extraction
@@ -132,12 +187,7 @@ class IngestionPipeline:
             raise IngestionError(f"Cannot load {path.name}", cause=exc) from exc
 
         ocr_candidate = should_attempt_ocr(document, path)
-        provisional_hash = (
-            source_file_hash(source, path)
-            if ocr_candidate
-            else content_hash(source, document.content)
-        )
-        doc_hash = provisional_hash
+        doc_hash = content_hash(source, document.content)
         old_chunk_ids: list[str] = []
         ocr_applied = False
 
@@ -145,20 +195,50 @@ class IngestionPipeline:
             existing = self._metadata.get_by_source(source)
             if existing is not None:
                 document = document.model_copy(update={"id": existing.id})
-            if existing is not None and existing.content_hash == provisional_hash:
+            if existing is not None and is_unchanged_source(
+                existing.content_hash,
+                source,
+                path,
+                document,
+                ocr_candidate=ocr_candidate,
+            ):
+                # Persist the hash already stored so OCR config flips do not
+                # rewrite file-byte keys to empty-text content hashes.
+                skip_hash = existing.content_hash
                 if self._requires_full_reindex_on_skip():
+                    file_hash = _pdf_source_file_hash(source, path)
+                    # Re-preparing from empty loader text would wipe OCR chunks
+                    # when OCR is now disabled, but the record is file-keyed.
+                    if (
+                        file_hash is not None
+                        and existing.content_hash == file_hash
+                        and not ocr_candidate
+                    ):
+                        return self._record_unchanged_skip(
+                            source,
+                            skip_hash,
+                            existing,
+                            path,
+                            t0,
+                        )
                     old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
                     document = apply_ocr_fallback(document, path)
                     ocr_applied = True
-                    doc_hash = _hash_after_ocr(document, path, source)
+                    doc_hash = hash_after_ocr(
+                        document,
+                        path,
+                        source,
+                        ocr_candidate=ocr_candidate,
+                    )
                 else:
-                    # OCR candidates skip table backfill: empty extractable text
-                    # would look like missing tables and purge existing chunks.
-                    if not ocr_candidate:
+                    # Empty OCR candidates skip table backfill: no extractable
+                    # text would look like missing tables and purge chunks.
+                    empty_ocr_candidate = ocr_candidate and not document.content.strip()
+                    if not empty_ocr_candidate:
                         backfill = self._backfill_table_chunks_on_skip(
                             document,
                             source,
-                            provisional_hash,
+                            skip_hash,
                             existing,
                             t0,
                         )
@@ -166,7 +246,7 @@ class IngestionPipeline:
                             return backfill
                     return self._record_unchanged_skip(
                         source,
-                        provisional_hash,
+                        skip_hash,
                         existing,
                         path,
                         t0,
@@ -176,7 +256,12 @@ class IngestionPipeline:
 
         if not ocr_applied:
             document = apply_ocr_fallback(document, path)
-            doc_hash = _hash_after_ocr(document, path, source)
+            doc_hash = hash_after_ocr(
+                document,
+                path,
+                source,
+                ocr_candidate=ocr_candidate,
+            )
 
         with self._bm25.deferred_rebuild():
             chunks = self._service.prepare(document)

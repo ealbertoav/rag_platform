@@ -19,8 +19,10 @@ parsing:
     # azure_di is T-222. get_ocr_provider() raises ConfigurationError for azure_di
     # until T-222; apply_ocr_fallback logs and keeps extractable text instead of
     # aborting ingest. Born-digital / mixed PDFs skip OCR before the provider init.
-    # Unchanged OCR candidates skip via source_file_hash before Docling OCR.
-    # Re-ingest after enabling to recover scanned PDFs.
+    # Dedup matches text content_hash or PDF source_file_hash so toggling
+    # enabled/min_chars does not wipe OCR chunks or force re-OCR. Empty scans
+    # ingested without OCR still re-run after enabling (text-hash + empty).
+    # Failed OCR stores a pending hash so the next ingest retries.
   table_chunks:
     enabled: false              # T-202 structured type=table chunks at ingesting; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.
