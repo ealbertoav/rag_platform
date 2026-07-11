@@ -306,10 +306,12 @@ def _default_technique_configs() -> list[TechniqueConfig]:
 def reload_settings_module() -> None:
     """Reload the settings singleton after env var changes."""
     import src.core.settings as settings_mod
+    from src.infrastructure.ocr import clear_ocr_provider_cache
     from src.infrastructure.parsers import clear_layout_parser_cache
 
     _ = importlib.reload(settings_mod)
     clear_layout_parser_cache()
+    clear_ocr_provider_cache()
 
 
 @contextmanager

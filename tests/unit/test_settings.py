@@ -159,6 +159,12 @@ class TestYamlDefaults:
         assert settings.parsing.ocr.enabled is False
         assert settings.parsing.ocr.provider == "tesseract"
         assert settings.parsing.ocr.min_chars == 50
+        assert settings.parsing.ocr.azure_di.endpoint == ""
+        assert settings.parsing.ocr.azure_di.api_key.get_secret_value() == ""
+        assert settings.parsing.ocr.azure_di.api_version == "2024-11-30"
+        assert settings.parsing.ocr.azure_di.model_id == "prebuilt-read"
+        assert settings.parsing.ocr.azure_di.timeout_seconds == 120.0
+        assert settings.parsing.ocr.azure_di.poll_interval_seconds == 1.0
         assert settings.parsing.table_chunks.enabled is False
 
 
@@ -209,10 +215,19 @@ class TestEnvVarOverride:
         monkeypatch.setenv("PARSING__OCR__ENABLED", "true")
         monkeypatch.setenv("PARSING__OCR__PROVIDER", "azure_di")
         monkeypatch.setenv("PARSING__OCR__MIN_CHARS", "100")
+        monkeypatch.setenv(
+            "PARSING__OCR__AZURE_DI__ENDPOINT",
+            "https://example.cognitiveservices.azure.com",
+        )
+        monkeypatch.setenv("PARSING__OCR__AZURE_DI__API_KEY", "secret-key")
+        monkeypatch.setenv("PARSING__OCR__AZURE_DI__MODEL_ID", "prebuilt-layout")
         s = Settings()
         assert s.parsing.ocr.enabled is True
         assert s.parsing.ocr.provider == "azure_di"
         assert s.parsing.ocr.min_chars == 100
+        assert s.parsing.ocr.azure_di.endpoint == "https://example.cognitiveservices.azure.com"
+        assert s.parsing.ocr.azure_di.api_key.get_secret_value() == "secret-key"
+        assert s.parsing.ocr.azure_di.model_id == "prebuilt-layout"
 
     def test_parsing_table_chunks_override(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("PARSING__TABLE_CHUNKS__ENABLED", "true")

@@ -1,4 +1,4 @@
-"""T-220 / T-221 — OCR provider factory and self-hosted provider tests."""
+"""T-220 / T-221 / T-222 — OCR provider factory and provider tests."""
 
 from __future__ import annotations
 
@@ -8,12 +8,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from src.core.exceptions import ConfigurationError, DocumentLoadError
 from src.core.settings import Settings
 from src.infrastructure import ocr as ocr_module
 from src.infrastructure.ocr import (
+    AzureDocumentIntelligenceOcr,
     DoclingOcrProvider,
     EasyOcrProvider,
     TesseractOcrProvider,
@@ -24,6 +26,8 @@ from src.infrastructure.ocr import docling_backed as backed_module
 from src.infrastructure.ocr.docling_backed import DoclingBackedOcr, create_ocr_converter
 
 _BACKED = "src.infrastructure.ocr.docling_backed"
+_ENDPOINT = "https://example.cognitiveservices.azure.com"
+_API_KEY = "test-key"
 
 
 @pytest.fixture(autouse=True)
@@ -33,8 +37,55 @@ def _clear_ocr_cache() -> Generator[None]:
     clear_ocr_provider_cache()
 
 
-def _ocr_settings(*, enabled: bool = False, provider: str = "tesseract") -> Settings:
-    return Settings(parsing={"ocr": {"enabled": enabled, "provider": provider}})
+def _ocr_settings(
+    *,
+    enabled: bool = False,
+    provider: str = "tesseract",
+    azure_endpoint: str = "",
+    azure_api_key: str = "",
+    azure_api_version: str = "2024-11-30",
+    azure_model_id: str = "prebuilt-read",
+    azure_timeout_seconds: float = 120.0,
+    azure_poll_interval_seconds: float = 1.0,
+) -> Settings:
+    return Settings(
+        parsing={
+            "ocr": {
+                "enabled": enabled,
+                "provider": provider,
+                "azure_di": {
+                    "endpoint": azure_endpoint,
+                    "api_key": azure_api_key,
+                    "api_version": azure_api_version,
+                    "model_id": azure_model_id,
+                    "timeout_seconds": azure_timeout_seconds,
+                    "poll_interval_seconds": azure_poll_interval_seconds,
+                },
+            }
+        }
+    )
+
+
+def _azure_settings(
+    *,
+    enabled: bool = True,
+    azure_endpoint: str = _ENDPOINT,
+    azure_api_key: str = _API_KEY,
+    azure_api_version: str = "2024-11-30",
+    azure_model_id: str = "prebuilt-read",
+    azure_timeout_seconds: float = 120.0,
+    azure_poll_interval_seconds: float = 1.0,
+) -> Settings:
+    return _ocr_settings(
+        enabled=enabled,
+        provider="azure_di",
+        azure_endpoint=azure_endpoint,
+        azure_api_key=azure_api_key,
+        azure_api_version=azure_api_version,
+        azure_model_id=azure_model_id,
+        azure_timeout_seconds=azure_timeout_seconds,
+        azure_poll_interval_seconds=azure_poll_interval_seconds,
+    )
 
 
 def _make_result(
@@ -101,9 +152,69 @@ class TestGetOcrProvider:
         second = get_ocr_provider(settings)
         assert first is second
 
-    def test_azure_di_not_implemented(self) -> None:
+    def test_returns_azure_di_provider(self) -> None:
+        result = get_ocr_provider(_azure_settings())
+        assert isinstance(result, AzureDocumentIntelligenceOcr)
+        assert result.endpoint == _ENDPOINT
+        assert result.api_key == _API_KEY
+
+    def test_caches_azure_di_provider_for_same_config(self) -> None:
+        settings = _azure_settings()
+        first = get_ocr_provider(settings)
+        second = get_ocr_provider(settings)
+        assert first is second
+
+    def test_azure_di_credential_change_rebuilds_provider(self) -> None:
+        first = get_ocr_provider(_azure_settings(azure_api_key=_API_KEY))
+        second = get_ocr_provider(_azure_settings(azure_api_key="rotated-key"))
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        assert second.api_key == "rotated-key"
+
+    def test_azure_di_endpoint_change_rebuilds_provider(self) -> None:
+        first = get_ocr_provider(_azure_settings())
+        second = get_ocr_provider(
+            _azure_settings(azure_endpoint="https://other.cognitiveservices.azure.com")
+        )
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        assert second.endpoint == "https://other.cognitiveservices.azure.com"
+
+    def test_azure_di_model_and_timeout_change_rebuilds_provider(self) -> None:
+        first = get_ocr_provider(_azure_settings())
+        second = get_ocr_provider(
+            _azure_settings(
+                azure_model_id="prebuilt-layout",
+                azure_timeout_seconds=30.0,
+                azure_poll_interval_seconds=2.0,
+                azure_api_version="2024-02-29",
+            )
+        )
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        assert second.model_id == "prebuilt-layout"
+        assert second.timeout_seconds == 30.0
+        assert second.poll_interval_seconds == 2.0
+        assert second.api_version == "2024-02-29"
+
+    def test_azure_di_credential_change_closes_previous_client(self) -> None:
+        first = get_ocr_provider(_azure_settings(azure_api_key=_API_KEY))
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        owned = MagicMock()
+        first._client = owned
+        first._owns_client = True
+
+        second = get_ocr_provider(_azure_settings(azure_api_key="rotated-key"))
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        owned.close.assert_called_once_with()
+
+    def test_azure_di_missing_credentials_raises(self) -> None:
         settings = _ocr_settings(enabled=True, provider="azure_di")
-        with pytest.raises(ConfigurationError, match=r"not implemented yet \(T-222\)"):
+        with pytest.raises(ConfigurationError, match="requires parsing.ocr.azure_di"):
             get_ocr_provider(settings)
 
     def test_unknown_provider_raises_configuration_error(self) -> None:
@@ -117,8 +228,18 @@ class TestGetOcrProvider:
             get_ocr_provider(enabled)
         assert get_ocr_provider(_ocr_settings(enabled=False)) is None
 
+    def test_failed_azure_lookup_after_valid_cache_does_not_keep_stale(self) -> None:
+        valid = get_ocr_provider(_azure_settings())
+        assert isinstance(valid, AzureDocumentIntelligenceOcr)
+        with pytest.raises(ConfigurationError):
+            get_ocr_provider(_ocr_settings(enabled=True, provider="azure_di"))
+        rebuilt = get_ocr_provider(_azure_settings())
+        assert isinstance(rebuilt, AzureDocumentIntelligenceOcr)
+        assert rebuilt is not valid
+
     def test_module_exports(self) -> None:
         assert set(ocr_module.__all__) == {
+            "AzureDocumentIntelligenceOcr",
             "DoclingOcrProvider",
             "EasyOcrProvider",
             "TesseractOcrProvider",
@@ -300,3 +421,245 @@ class TestCreateOcrConverter:
             pytest.raises(ConfigurationError, match="Unknown Docling OCR engine"),
         ):
             backed_module._ocr_options_for_engine("nope")
+
+
+def _azure_provider(
+    *,
+    client: httpx.Client | MagicMock | None = None,
+    sleeper: MagicMock | None = None,
+    clock: MagicMock | None = None,
+    timeout_seconds: float = 120.0,
+    poll_interval_seconds: float = 1.0,
+) -> AzureDocumentIntelligenceOcr:
+    return AzureDocumentIntelligenceOcr(
+        endpoint=_ENDPOINT,
+        api_key=_API_KEY,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        client=client,  # type: ignore[arg-type]
+        sleeper=sleeper,
+        clock=clock,
+    )
+
+
+def _http_response(
+    *,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+    json_data: dict[str, Any] | None = None,
+) -> httpx.Response:
+    request = httpx.Request("GET", "https://example.test")
+    return httpx.Response(
+        status_code=status_code,
+        headers=headers or {},
+        json=json_data,
+        request=request,
+    )
+
+
+class TestAzureDocumentIntelligenceOcr:
+    def test_init_requires_credentials(self) -> None:
+        with pytest.raises(ConfigurationError, match="requires parsing.ocr.azure_di"):
+            AzureDocumentIntelligenceOcr(endpoint="", api_key="")
+        with pytest.raises(ConfigurationError, match="requires parsing.ocr.azure_di"):
+            AzureDocumentIntelligenceOcr(endpoint=_ENDPOINT, api_key="  ")
+
+    def test_from_settings_uses_global_config(self) -> None:
+        mock_settings = _azure_settings()
+        with patch("src.core.settings.settings", mock_settings):
+            provider = AzureDocumentIntelligenceOcr.from_settings()
+        assert provider.endpoint == _ENDPOINT
+        assert provider.api_key == _API_KEY
+        assert provider.model_id == "prebuilt-read"
+
+    def test_ocr_happy_path(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4 fake")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/1"},
+        )
+        client.get.return_value = _http_response(
+            json_data={
+                "status": "succeeded",
+                "analyzeResult": {"content": "  hello azure  "},
+            }
+        )
+        provider = _azure_provider(client=client)
+        assert provider.ocr(path) == "hello azure"
+        client.post.assert_called_once()
+        body = client.post.call_args.kwargs["json"]
+        assert "base64Source" in body
+
+    def test_ocr_polls_until_succeeded(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.png"
+        path.write_bytes(b"img")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/2"},
+        )
+        client.get.side_effect = [
+            _http_response(json_data={"status": "running"}),
+            _http_response(json_data={"status": "succeeded", "analyzeResult": {"content": "done"}}),
+        ]
+        sleeper = MagicMock()
+        clock = MagicMock(side_effect=[0.0, 0.5, 1.0])
+        provider = _azure_provider(client=client, sleeper=sleeper, clock=clock)
+        assert provider.ocr(path) == "done"
+        sleeper.assert_called_once_with(1.0)
+
+    def test_unsupported_extension(self, tmp_path: Path) -> None:
+        path = tmp_path / "notes.docx"
+        path.write_text("x")
+        with pytest.raises(DocumentLoadError, match="does not support"):
+            _azure_provider(client=MagicMock()).ocr(path)
+
+    def test_empty_content_returns_empty_string(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path = tmp_path / "blank.pdf"
+        path.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/3"},
+        )
+        client.get.return_value = _http_response(
+            json_data={"status": "succeeded", "analyzeResult": {"content": "   "}}
+        )
+        with caplog.at_level("WARNING"):
+            assert _azure_provider(client=client).ocr(path) == ""
+        assert "No OCR text extracted" in caplog.text
+
+    def test_missing_analyze_result_returns_empty(self, tmp_path: Path) -> None:
+        path = tmp_path / "ok.jpg"
+        path.write_bytes(b"img")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/4"},
+        )
+        client.get.return_value = _http_response(json_data={"status": "succeeded"})
+        assert _azure_provider(client=client).ocr(path) == ""
+
+    def test_failed_status_raises(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.pdf"
+        path.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/5"},
+        )
+        client.get.return_value = _http_response(
+            json_data={"status": "failed", "error": {"message": "boom"}}
+        )
+        with pytest.raises(DocumentLoadError, match="Azure DI analysis failed"):
+            _azure_provider(client=client).ocr(path)
+
+    def test_missing_operation_location_raises(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.post.return_value = _http_response(status_code=202, headers={})
+        with pytest.raises(DocumentLoadError, match="Operation-Location"):
+            _azure_provider(client=client).ocr(path)
+
+    def test_analyze_http_error(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.post.return_value = _http_response(status_code=401, json_data={"error": "nope"})
+        with pytest.raises(DocumentLoadError, match="HTTP 401") as exc_info:
+            _azure_provider(client=client).ocr(path)
+        assert exc_info.value.cause is not None
+
+    def test_poll_http_error(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/6"},
+        )
+        client.get.return_value = _http_response(status_code=500, json_data={"error": "x"})
+        with pytest.raises(DocumentLoadError, match="HTTP 500"):
+            _azure_provider(client=client).ocr(path)
+
+    def test_timeout_raises(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/7"},
+        )
+        client.get.return_value = _http_response(json_data={"status": "running"})
+        sleeper = MagicMock()
+        clock = MagicMock(side_effect=[0.0, 5.0])
+        provider = _azure_provider(client=client, sleeper=sleeper, clock=clock, timeout_seconds=5.0)
+        with pytest.raises(DocumentLoadError, match="timed out"):
+            provider.ocr(path)
+
+    def test_wraps_configuration_error(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF")
+        provider = _azure_provider(client=MagicMock())
+        with (
+            patch.object(
+                provider,
+                "_start_analyze",
+                side_effect=ConfigurationError("creds"),
+            ),
+            pytest.raises(DocumentLoadError, match="not configured") as exc_info,
+        ):
+            provider.ocr(path)
+        assert isinstance(exc_info.value.cause, ConfigurationError)
+
+    def test_wraps_unexpected_exception(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.webp"
+        path.write_bytes(b"img")
+        client = MagicMock()
+        client.post.side_effect = RuntimeError("network down")
+        with pytest.raises(DocumentLoadError, match="Cannot OCR") as exc_info:
+            _azure_provider(client=client).ocr(path)
+        assert exc_info.value.cause is not None
+
+    def test_lazy_client_created_and_closed(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.tif"
+        path.write_bytes(b"img")
+        mock_client = MagicMock()
+        mock_client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/8"},
+        )
+        mock_client.get.return_value = _http_response(
+            json_data={"status": "succeeded", "analyzeResult": {"content": "x"}}
+        )
+        with patch("httpx.Client", return_value=mock_client) as client_cls:
+            provider = AzureDocumentIntelligenceOcr(endpoint=_ENDPOINT, api_key=_API_KEY)
+            assert provider.ocr(path) == "x"
+            client_cls.assert_called_once()
+            provider.close()
+            mock_client.close.assert_called_once()
+            provider.close()  # second close is a no-op
+
+    def test_injected_client_not_closed(self) -> None:
+        client = MagicMock()
+        provider = _azure_provider(client=client)
+        provider.close()
+        client.close.assert_not_called()
+
+    def test_null_content_field(self, tmp_path: Path) -> None:
+        path = tmp_path / "scan.bmp"
+        path.write_bytes(b"img")
+        client = MagicMock()
+        client.post.return_value = _http_response(
+            status_code=202,
+            headers={"Operation-Location": f"{_ENDPOINT}/ops/9"},
+        )
+        client.get.return_value = _http_response(
+            json_data={"status": "succeeded", "analyzeResult": {"content": None}}
+        )
+        assert _azure_provider(client=client).ocr(path) == ""

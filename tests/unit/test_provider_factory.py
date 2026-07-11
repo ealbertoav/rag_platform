@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -65,3 +66,73 @@ class TestEnabledProviderCache:
         cache: EnabledProviderCache[str] = EnabledProviderCache()
         cfg = SimpleNamespace(enabled=True, provider="tesseract")
         assert cache.get(cfg, lambda provider: f"ok:{provider}") == "ok:tesseract"
+
+    def test_identity_change_rebuilds_provider(self) -> None:
+        cache: EnabledProviderCache[object] = EnabledProviderCache()
+        cfg = SimpleNamespace(enabled=True, provider="azure_di")
+        first = cache.get(cfg, lambda _p: object(), identity=("ep-a", "key-a"))
+        second = cache.get(cfg, lambda _p: object(), identity=("ep-b", "key-b"))
+        third = cache.get(cfg, lambda _p: object(), identity=("ep-b", "key-b"))
+        assert first is not second
+        assert second is third
+
+    def test_same_identity_reuses_provider(self) -> None:
+        cache: EnabledProviderCache[object] = EnabledProviderCache()
+        cfg = SimpleNamespace(enabled=True, provider="azure_di")
+        identity = ("ep", "key", "2024-11-30")
+        first = cache.get(cfg, lambda _p: object(), identity=identity)
+        second = cache.get(cfg, lambda _p: object(), identity=identity)
+        assert first is second
+
+    def test_clear_closes_cached_value(self) -> None:
+        cache: EnabledProviderCache[MagicMock] = EnabledProviderCache()
+        cfg = SimpleNamespace(enabled=True, provider="azure_di")
+        provider = MagicMock()
+        assert cache.get(cfg, lambda _p: provider) is provider
+        cache.clear()
+        provider.close.assert_called_once_with()
+
+    def test_identity_change_closes_previous_value(self) -> None:
+        cache: EnabledProviderCache[MagicMock] = EnabledProviderCache()
+        cfg = SimpleNamespace(enabled=True, provider="azure_di")
+        first = MagicMock()
+        second = MagicMock()
+        assert cache.get(cfg, lambda _p: first, identity="a") is first
+        assert cache.get(cfg, lambda _p: second, identity="b") is second
+        first.close.assert_called_once_with()
+        second.close.assert_not_called()
+
+    def test_failed_create_after_identity_change_does_not_keep_old_value(self) -> None:
+        cache: EnabledProviderCache[MagicMock] = EnabledProviderCache()
+        cfg = SimpleNamespace(enabled=True, provider="azure_di")
+        first = MagicMock()
+        assert cache.get(cfg, lambda _p: first, identity="a") is first
+
+        with pytest.raises(ValueError, match="boom"):
+            cache.get(
+                cfg,
+                lambda _p: (_ for _ in ()).throw(ValueError("boom")),
+                identity="b",
+            )
+
+        first.close.assert_called_once_with()
+        recreated = MagicMock()
+        assert cache.get(cfg, lambda _p: recreated, identity="a") is recreated
+        assert recreated is not first
+
+    def test_disable_closes_previous_value(self) -> None:
+        cache: EnabledProviderCache[MagicMock] = EnabledProviderCache()
+        enabled = SimpleNamespace(enabled=True, provider="azure_di")
+        disabled = SimpleNamespace(enabled=False, provider="azure_di")
+        provider = MagicMock()
+        assert cache.get(enabled, lambda _p: provider) is provider
+        assert cache.get(disabled, lambda _p: MagicMock()) is None
+        provider.close.assert_called_once_with()
+
+    def test_values_without_close_are_replaced_safely(self) -> None:
+        cache: EnabledProviderCache[object] = EnabledProviderCache()
+        cfg = SimpleNamespace(enabled=True, provider="docling")
+        first = object()
+        second = object()
+        assert cache.get(cfg, lambda _p: first, identity=1) is first
+        assert cache.get(cfg, lambda _p: second, identity=2) is second

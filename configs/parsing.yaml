@@ -16,13 +16,21 @@ parsing:
     # Factory returns None when disabled. Self-hosted engines (tesseract /
     # easyocr / docling) are Docling-backed (T-221; requires: uv pip install docling).
     # tesseract → Tesseract CLI; easyocr → EasyOCR; docling → auto engine pick.
-    # azure_di is T-222. get_ocr_provider() raises ConfigurationError for azure_di
-    # until T-222; apply_ocr_fallback logs and keeps extractable text instead of
-    # aborting ingest. Born-digital / mixed PDFs skip OCR before the provider init.
+    # azure_di → Azure Document Intelligence REST API (T-222; see docs/ocr-providers.md).
+    # Missing Azure DI credentials raise ConfigurationError; apply_ocr_fallback
+    # logs and keeps extractable text instead of aborting ingest.
+    # Born-digital / mixed PDFs skip OCR before the provider init.
     # Dedup matches text content_hash or PDF source_file_hash so toggling
     # enabled/min_chars does not wipe OCR chunks or force re-OCR. Empty scans
     # ingested without OCR still re-run after enabling (text-hash + empty).
     # Failed OCR stores a pending hash so the next ingest retries.
+    azure_di:
+      endpoint: ""              # e.g. https://<resource>.cognitiveservices.azure.com
+      api_key: ""               # prefer PARSING__OCR__AZURE_DI__API_KEY
+      api_version: "2024-11-30"
+      model_id: prebuilt-read
+      timeout_seconds: 120
+      poll_interval_seconds: 1
   table_chunks:
     enabled: false              # T-202 structured type=table chunks at ingesting; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.

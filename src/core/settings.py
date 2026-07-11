@@ -360,6 +360,20 @@ class LayoutParserSettings(BaseModel):
     provider: str = "docling"
 
 
+class AzureDiOcrConfig(BaseModel):
+    """Azure Document Intelligence credentials (T-222).
+
+    Required when "parsing.ocr.provider=azure_di" and OCR is enabled.
+    """
+
+    endpoint: str = ""
+    api_key: SecretStr = SecretStr("")
+    api_version: str = "2024-11-30"
+    model_id: str = "prebuilt-read"
+    timeout_seconds: float = Field(default=120.0, gt=0.0)
+    poll_interval_seconds: float = Field(default=1.0, gt=0.0)
+
+
 class OcrSettings(BaseModel):
     enabled: bool = False
     provider: str = "tesseract"
@@ -367,6 +381,7 @@ class OcrSettings(BaseModel):
     # non-whitespace chars (per page when metadata["pages"] is present;
     # otherwise overall content).
     min_chars: int = Field(default=50, ge=0)
+    azure_di: AzureDiOcrConfig = Field(default_factory=AzureDiOcrConfig)
 
 
 class TableChunkSettings(BaseModel):
