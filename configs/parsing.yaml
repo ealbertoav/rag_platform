@@ -12,15 +12,16 @@ parsing:
   ocr:
     enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di
-    min_chars: 50               # OCR when extractable text is below this many chars
+    min_chars: 50               # OCR when extractable text is below this many non-whitespace chars
     # Factory returns None when disabled. Self-hosted engines (tesseract /
     # easyocr / docling) are Docling-backed (T-221; requires: uv pip install docling).
     # tesseract → Tesseract CLI; easyocr → EasyOCR; docling → auto engine pick.
     # azure_di is T-222. get_ocr_provider() raises ConfigurationError for azure_di
     # until T-222; apply_ocr_fallback logs and keeps extractable text instead of
-    # aborting ingest. Born-digital / mixed PDFs skip OCR before provider init.
+    # aborting ingest. Born-digital / mixed PDFs skip OCR before the provider init.
+    # Unchanged OCR candidates skip via source_file_hash before Docling OCR.
     # Re-ingest after enabling to recover scanned PDFs.
   table_chunks:
-    enabled: false              # T-202 structured type=table chunks at ingest; off by default
+    enabled: false              # T-202 structured type=table chunks at ingesting; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.
     # Re-ingest after enabling — unchanged documents backfill missing table chunks.

@@ -2,8 +2,10 @@
 
 When "parsing.ocr.enabled" is true, low-text / empty PDF loads are re-read
 via "get_ocr_provider()" and the extracted text replaces document content.
-Born-digital PDFs with enough extractable text (or mixed born-digital + scanned
-pages) skip OCR so existing text is not overwritten.
+"Low-text" means fewer than "parsing.ocr.min_chars" non-whitespace characters
+(per page when "metadata["pages"]" is present). Born-digital PDFs with enough
+extractable text (or mixed born-digital + scanned pages) skip OCR so existing
+text is not overwritten.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ _PDF_EXTENSION = ".pdf"
 
 def text_is_low(text: str, min_chars: int) -> bool:
     """Return True when *text* has fewer than *min_chars* non-whitespace characters."""
-    return len(text.strip()) < min_chars
+    return sum(1 for char in text if not char.isspace()) < min_chars
 
 
 def document_needs_ocr(document: Document, min_chars: int) -> bool:
@@ -41,6 +43,25 @@ def document_needs_ocr(document: Document, min_chars: int) -> bool:
         # Whole-file OCR only when every page is low-text.
         return all(text_is_low(page, min_chars) for page in page_texts)
     return text_is_low(document.content, min_chars)
+
+
+def should_attempt_ocr(
+    document: Document,
+    path: Path,
+    *,
+    app_settings: Settings | None = None,
+) -> bool:
+    """Return True when ingest would run whole-file OCR for *path*.
+
+    Matches the preconditions in "apply_ocr_fallback" (PDF suffix, OCR enabled,
+    low extractable text) so callers can cheaply gate work before provider I/O.
+    """
+    if path.suffix.lower() != _PDF_EXTENSION:
+        return False
+    ocr_cfg = _ocr_settings(app_settings)
+    if not ocr_cfg.enabled:
+        return False
+    return document_needs_ocr(document, ocr_cfg.min_chars)
 
 
 def apply_ocr_fallback(
@@ -94,10 +115,10 @@ def apply_ocr_fallback(
     metadata: dict[str, Any] = dict(document.metadata)
     metadata[OCR_APPLIED_KEY] = True
     logger.info(
-        "Applied OCR fallback for %s (%d → %d chars)",
+        "Applied OCR fallback for %s (%d → %d non-whitespace chars)",
         path.name,
-        len(document.content.strip()),
-        len(ocr_text),
+        sum(1 for char in document.content if not char.isspace()),
+        sum(1 for char in ocr_text if not char.isspace()),
     )
     return document.model_copy(update={"content": ocr_text, "metadata": metadata})
 

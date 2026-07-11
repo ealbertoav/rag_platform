@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
-from src.core.constants import SUPPORTED_EXTENSIONS
+from src.core.constants import OCR_APPLIED_KEY, SUPPORTED_EXTENSIONS
 from src.core.exceptions import DocumentLoadError, IngestionError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
@@ -19,7 +19,7 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
-from src.rag.ingestion.ocr_fallback import apply_ocr_fallback
+from src.rag.ingestion.ocr_fallback import apply_ocr_fallback, should_attempt_ocr
 from src.rag.ingestion.table_chunker import (
     build_table_chunks,
     existing_table_chunk_ids,
@@ -56,6 +56,25 @@ def content_hash(source: str, text: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
+def source_file_hash(source: str, path: Path) -> str:
+    """Stable hash for OCR-path dedup: sha256(file bytes digest + source_path).
+
+    Scanned PDFs have empty/low extractable text, so text-based "content_hash"
+    only matches after OCR. Keying skip checks off file bytes lets unchanged
+    scans skip without re-running Docling OCR.
+    """
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    payload = f"file:{digest}|{source}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _hash_after_ocr(document: Document, path: Path, source: str) -> str:
+    """Prefer file-byte hash when OCR replaced content; otherwise text hash."""
+    if document.metadata.get(OCR_APPLIED_KEY):
+        return source_file_hash(source, path)
+    return content_hash(source, document.content)
+
+
 def _discover(path: Path) -> list[Path]:
     if path.is_file():
         return [path] if path.suffix.lower() in SUPPORTED_EXTENSIONS else []
@@ -68,7 +87,9 @@ class IngestionPipeline:
     """Orchestrates the full ingestion flow for one or many files.
 
     Flow per file:
-      load_document → optional OCR fallback (scanned PDFs) → dedup check
+      load_document → provisional dedup hash (file bytes when OCR would run)
+                    → skip unchanged sources without OCR
+                    → optional OCR fallback (scanned PDFs) → finalize hash
                     → IngestionService.prepare (chunk and embed)
                     → optional graph entity extraction
                     → VectorStoreRepository.upsert
@@ -110,45 +131,52 @@ class IngestionPipeline:
         except DocumentLoadError as exc:
             raise IngestionError(f"Cannot load {path.name}", cause=exc) from exc
 
-        document = apply_ocr_fallback(document, path)
-        doc_hash = content_hash(source, document.content)
+        ocr_candidate = should_attempt_ocr(document, path)
+        provisional_hash = (
+            source_file_hash(source, path)
+            if ocr_candidate
+            else content_hash(source, document.content)
+        )
+        doc_hash = provisional_hash
         old_chunk_ids: list[str] = []
+        ocr_applied = False
 
         if self._metadata is not None:
             existing = self._metadata.get_by_source(source)
             if existing is not None:
                 document = document.model_copy(update={"id": existing.id})
-            if existing is not None and existing.content_hash == doc_hash:
+            if existing is not None and existing.content_hash == provisional_hash:
                 if self._requires_full_reindex_on_skip():
                     old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
+                    document = apply_ocr_fallback(document, path)
+                    ocr_applied = True
+                    doc_hash = _hash_after_ocr(document, path, source)
                 else:
-                    backfill = self._backfill_table_chunks_on_skip(
-                        document,
+                    # OCR candidates skip table backfill: empty extractable text
+                    # would look like missing tables and purge existing chunks.
+                    if not ocr_candidate:
+                        backfill = self._backfill_table_chunks_on_skip(
+                            document,
+                            source,
+                            provisional_hash,
+                            existing,
+                            t0,
+                        )
+                        if backfill is not None:
+                            return backfill
+                    return self._record_unchanged_skip(
                         source,
-                        doc_hash,
+                        provisional_hash,
                         existing,
+                        path,
                         t0,
-                    )
-                    if backfill is not None:
-                        return backfill
-                    elapsed_ms = (time.monotonic() - t0) * 1000
-                    _ = self._metadata.upsert_document(
-                        source,
-                        doc_hash,
-                        self._metadata.get_chunk_ids(existing.id),
-                        chunk_count=existing.chunk_count,
-                        duration_ms=elapsed_ms,
-                        skipped=True,
-                    )
-                    logger.info("Skipped %s (unchanged)", path.name)
-                    return IngestionResult(
-                        source=source,
-                        chunk_count=existing.chunk_count,
-                        content_hash=doc_hash,
-                        skipped=True,
                     )
             if existing is not None:
                 old_chunk_ids = self._metadata.get_chunk_ids(existing.id)
+
+        if not ocr_applied:
+            document = apply_ocr_fallback(document, path)
+            doc_hash = _hash_after_ocr(document, path, source)
 
         with self._bm25.deferred_rebuild():
             chunks = self._service.prepare(document)
@@ -303,6 +331,33 @@ class IngestionPipeline:
                 self._hype_indexer is not None,
                 self._hierarchical_indexer is not None,
             )
+        )
+
+    def _record_unchanged_skip(
+        self,
+        source: str,
+        doc_hash: str,
+        existing: DocumentRecord,
+        path: Path,
+        t0: float,
+    ) -> IngestionResult:
+        """Persist a skipped ingested run for an unchanged source and return the result."""
+        assert self._metadata is not None
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        _ = self._metadata.upsert_document(
+            source,
+            doc_hash,
+            self._metadata.get_chunk_ids(existing.id),
+            chunk_count=existing.chunk_count,
+            duration_ms=elapsed_ms,
+            skipped=True,
+        )
+        logger.info("Skipped %s (unchanged)", path.name)
+        return IngestionResult(
+            source=source,
+            chunk_count=existing.chunk_count,
+            content_hash=doc_hash,
+            skipped=True,
         )
 
     def _backfill_table_chunks_on_skip(

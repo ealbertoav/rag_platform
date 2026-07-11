@@ -641,12 +641,12 @@ parsing:
   ocr:
     enabled: false              # T-220/T-223 OCR factory + scanned-PDF fallback
     provider: tesseract         # tesseract | easyocr | docling | azure_di
-    min_chars: 50               # OCR when extractable text is below this many chars
+    min_chars: 50               # OCR when extractable text is below this many non-whitespace chars
 ```
 
 **OCR factory (T-220 / T-221):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` raises `ConfigurationError` until T-222.
 
-**Scanned-PDF OCR fallback (T-223):** After `load_document`, `IngestionPipeline.ingest_file` calls `apply_ocr_fallback()` from `src/rag/ingestion/ocr_fallback.py`. When OCR is enabled and a PDF’s extractable text is below `parsing.ocr.min_chars` (all pages when `metadata.pages` is present), the pipeline runs `get_ocr_provider().ocr(path)` and replaces document content. Born-digital and mixed born-digital + scanned PDFs skip OCR before the provider is constructed. Runtime OCR failures, empty results, and a misconfigured provider (`ConfigurationError`) keep the original text. Re-ingest after enabling to recover scanned PDFs.
+**Scanned-PDF OCR fallback (T-223):** After `load_document`, `IngestionPipeline.ingest_file` checks whether OCR would run (`should_attempt_ocr`). OCR candidates dedupe on `source_file_hash` (PDF bytes) so unchanged scans skip **before** Docling OCR. Otherwise it uses text `content_hash` as usual. When not skipped, `apply_ocr_fallback()` from `src/rag/ingestion/ocr_fallback.py` runs: if OCR is enabled and extractable text is below `parsing.ocr.min_chars` **non-whitespace** characters (all pages when `metadata.pages` is present), the pipeline runs `get_ocr_provider().ocr(path)` and replaces document content. Born-digital and mixed born-digital + scanned PDFs skip OCR before the provider is constructed. Runtime OCR failures, empty results, and a misconfigured provider (`ConfigurationError`) keep the original text. Re-ingest after enabling to recover scanned PDFs.
 
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
@@ -703,7 +703,7 @@ make ingest SOURCE=data/raw/
 | Loader routing | `src/infrastructure/loaders/__init__.py` | `load_document()` delegates PDF/DOCX to layout parser when enabled |
 | Chunk metadata filter | `src/rag/chunking/metadata.py` | `chunk_metadata()` — filters doc-level keys, promotes `CHUNK_SECTION_KEY` |
 
-**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text from plain loaders; enable `parsing.ocr.enabled=true` (T-223) and re-ingest so `apply_ocr_fallback` recovers text via `get_ocr_provider()`. OCR adds latency on low-text PDFs only — born-digital and mixed pages skip it.
+**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text from plain loaders; enable `parsing.ocr.enabled=true` (T-223) and re-ingest so `apply_ocr_fallback` recovers text via `get_ocr_provider()`. OCR adds latency on low-text PDFs only — born-digital and mixed pages skip it, and unchanged scans skip via `source_file_hash` before OCR runs.
 
 **Tests:** `tests/unit/test_docling_parser.py` (parser, metadata extraction, factory cache, settings reload), `tests/unit/test_chunk_metadata.py` (filtering and section promotion), plus routing coverage in `tests/unit/test_loaders.py` and `tests/unit/test_ingestion.py`.
 
