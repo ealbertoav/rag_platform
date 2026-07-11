@@ -363,6 +363,10 @@ class LayoutParserSettings(BaseModel):
 class OcrSettings(BaseModel):
     enabled: bool = False
     provider: str = "tesseract"
+    # Whole-file OCR when extractable text has fewer than this many
+    # non-whitespace chars (per page when metadata["pages"] is present;
+    # otherwise overall content).
+    min_chars: int = Field(default=50, ge=0)
 
 
 class TableChunkSettings(BaseModel):
