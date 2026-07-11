@@ -10,12 +10,16 @@ parsing:
   # T-210 multimodal domain model (no feature flag): Chunk.modality / image_embedding /
   # asset_path, Answer.source_references, and SourceReference — see README.
   ocr:
-    enabled: false              # T-220 get_ocr_provider(); off by default
+    enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di
+    min_chars: 50               # OCR when extractable text is below this many chars
     # Factory returns None when disabled. Self-hosted engines (tesseract /
     # easyocr / docling) are Docling-backed (T-221; requires: uv pip install docling).
     # tesseract → Tesseract CLI; easyocr → EasyOCR; docling → auto engine pick.
     # azure_di is T-222. Enabling azure_di before T-222 raises ConfigurationError.
+    # When enabled, IngestionPipeline.apply_ocr_fallback runs after load_document
+    # for low-text / empty PDFs (T-223). Born-digital and mixed PDFs skip OCR.
+    # Re-ingest after enabling to recover scanned PDFs.
   table_chunks:
     enabled: false              # T-202 structured type=table chunks at ingest; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.

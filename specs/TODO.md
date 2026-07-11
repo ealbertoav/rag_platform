@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 22 in progress — **T-220** ✅ · **T-221** ✅ (self-hosted OCR providers). **Next:** **T-223** (scanned-PDF OCR fallback — wires providers into ingest), then T-222 (Azure DI). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 22 in progress — **T-220** ✅ · **T-221** ✅ · **T-223** ✅ (scanned-PDF OCR fallback). **Next:** **T-222** (Azure DI). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2340,7 +2340,7 @@
 > | **19** | 9 | T-190 | Phases 0–3, 18 | ✅ complete |
 > | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | T-210 ✅ |
-> | **22** | 12 | T-220 → T-223 | Phases 19–20 | T-220 ✅ · T-221 ✅ |
+> | **22** | 12 | T-220 → T-223 | Phases 19–20 | T-220 ✅ · T-221 ✅ · T-223 ✅ |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | pending |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
@@ -2527,7 +2527,7 @@
   - [x] Feature-flagged or backward-compatible defaults preserved
   - [x] Unit tests pass for new modules
   - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Docling-backed `OcrRepository` implementations — `TesseractOcrProvider` (Tesseract CLI), `EasyOcrProvider`, `DoclingOcrProvider` (auto engine). Shared logic in `docling_backed.py`. Optional dep: `uv pip install docling`. Factory returns providers when `parsing.ocr.enabled=true`; still `None` when disabled. **Scope:** providers + factory only — loaders / `IngestionPipeline` do not call `get_ocr_provider()` yet (that wiring is **T-223**). `azure_di` remains T-222.
+- **Notes:** Docling-backed `OcrRepository` implementations — `TesseractOcrProvider` (Tesseract CLI), `EasyOcrProvider`, `DoclingOcrProvider` (auto engine). Shared logic in `docling_backed.py`. Optional dep: `uv pip install docling`. Factory returns providers when `parsing.ocr.enabled=true`; still `None` when disabled. Wired into ingest by **T-223** (`apply_ocr_fallback`). `azure_di` remains T-222.
 
 ---
 
@@ -2547,17 +2547,17 @@
 
 
 ### T-223 · Scanned-PDF Detection & OCR Fallback Router
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Route low-text pages through OCR during ingest.
 - **Inputs:** T-010, T-221 (self-hosted) / T-222 (Azure DI, optional), T-200
 - **Outputs:** OCR fallback
 - **Files:** `src/rag/ingestion/ocr_fallback.py`, wire from `IngestionPipeline.ingest_file` (after `load_document`), tests, README / `configs/parsing.yaml`
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved (`parsing.ocr.enabled=false` → no-op)
-  - When OCR is enabled, low-text / empty PDF loads call `get_ocr_provider()` and replace content with OCR text
-  - Born-digital PDFs with enough extractable text skip OCR
-  - Unit tests pass for new modules (include pipeline wiring with mocked provider)
-  - Documented in `configs/parsing.yaml` / README — enabling the flag + re-ingest recovers scanned PDFs
+  - [x] Feature-flagged or backward-compatible defaults preserved (`parsing.ocr.enabled=false` → no-op)
+  - [x] When OCR is enabled, low-text / empty PDF loads call `get_ocr_provider()` and replace content with OCR text
+  - [x] Born-digital PDFs with enough extractable text skip OCR
+  - [x] Unit tests pass for new modules (include pipeline wiring with mocked provider)
+  - [x] Documented in `configs/parsing.yaml` / README — enabling the flag + re-ingest recovers scanned PDFs
 - **Notes:** Closes the T-221 gap: providers exist but nothing in loaders/ingestion calls them. Prefer whole-file OCR via `OcrRepository.ocr(path)` when all pages (or overall content) are low-text; do not overwrite mixed born-digital + scanned docs. Azure DI provider (T-222) is optional — self-hosted engines from T-221 are sufficient to ship this task.
 
 ---
@@ -3039,7 +3039,7 @@ T-150 + T-281 ──► T-282
 19. **Phase 19 — Priority 9 (Parsing Contracts):** T-190 ✅ _(complete)_
 20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 ✅ → T-202 ✅ _(complete)_
 21. **Phase 21 — Priority 11 (Domain Model):** T-210 ✅ _(complete)_
-22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-223 → T-222
+22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-223 ✅ → T-222
 23. **Phase 23 — Priority 13 (VLM):** T-230 → T-231 → T-232
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 → T-241 → T-242 → T-243
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253

@@ -19,6 +19,7 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.rag.ingestion.ocr_fallback import apply_ocr_fallback
 from src.rag.ingestion.table_chunker import (
     build_table_chunks,
     existing_table_chunk_ids,
@@ -67,7 +68,8 @@ class IngestionPipeline:
     """Orchestrates the full ingestion flow for one or many files.
 
     Flow per file:
-      load_document → dedup check → IngestionService.prepare (chunk and embed)
+      load_document → optional OCR fallback (scanned PDFs) → dedup check
+                    → IngestionService.prepare (chunk and embed)
                     → optional graph entity extraction
                     → VectorStoreRepository.upsert
                     → BM25Index.add
@@ -108,6 +110,7 @@ class IngestionPipeline:
         except DocumentLoadError as exc:
             raise IngestionError(f"Cannot load {path.name}", cause=exc) from exc
 
+        document = apply_ocr_fallback(document, path)
         doc_hash = content_hash(source, document.content)
         old_chunk_ids: list[str] = []
 

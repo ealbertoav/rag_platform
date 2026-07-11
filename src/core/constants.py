@@ -31,6 +31,7 @@ TABLE_ID_KEY = "table_id"
 FIGURE_ID_KEY = "figure_id"
 BBOX_KEY = "bbox"
 ASSET_PATH_KEY = "asset_path"
+OCR_APPLIED_KEY = "ocr_applied"
 # First-class modality labels (T-210). Align with CHUNK_TYPE_* where applicable;
 # MODALITY_IMAGE covers raw figure assets / CLIP paths without a text chunk type.
 MODALITY_TEXT = "text"

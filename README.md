@@ -356,7 +356,7 @@ METADATA__DB_PATH=data/processed/metadata.db
 PARSING__LAYOUT_PARSER__ENABLED=false   # Docling layout parser for .pdf/.docx (T-200)
 PARSING__LAYOUT_PARSER__PROVIDER=docling
 PARSING__TABLE_CHUNKS__ENABLED=false    # structured type=table chunks at ingest (T-202)
-PARSING__OCR__ENABLED=false             # OCR factory (T-220); self-hosted providers T-221
+PARSING__OCR__ENABLED=false             # OCR factory + scanned-PDF fallback (T-220/T-223); self-hosted T-221
 PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
 
 # API security (optional — local dev leaves API key empty)
@@ -377,7 +377,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
-| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), OCR factory + self-hosted providers (T-220/T-221), and T-210 domain-model notes — feature flags disabled by default |
+| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), OCR factory + scanned-PDF fallback (T-220/T-221/T-223), and T-210 domain-model notes — feature flags disabled by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -577,7 +577,7 @@ CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 #### Multimodal Parsing Contracts (T-190)
 
-Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented. The OCR factory (`get_ocr_provider()`, T-220) returns Docling-backed self-hosted providers when enabled (T-221); Azure DI is T-222.
+Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented. The OCR factory (`get_ocr_provider()`, T-220) returns Docling-backed self-hosted providers when enabled (T-221); scanned-PDF ingest fallback is T-223; Azure DI is T-222.
 
 ```mermaid
 flowchart TB
@@ -601,18 +601,22 @@ flowchart TB
         T210["T-210 multimodal domain model ✅"]
         T220["T-220 OCR provider factory ✅"]
         T221["T-221 Self-hosted OCR ✅"]
+        T223["T-223 Scanned-PDF OCR fallback ✅"]
     end
 
     LPR --> PD
     CONFIG -.->|gates| T200
     CONFIG -.->|gates| T202
     CONFIG -.->|gates| T220
+    CONFIG -.->|gates| T223
     T200 -.->|implements| LPR
     T220 -.->|implements| OCR
     T221 -.->|implements| OCR
+    T223 -.->|uses| OCR
     T200 --> T201
     T200 --> T202
     T202 --> T210
+    T221 --> T223
     CONST -.->|metadata keys for| T202
     CONST -.->|modality labels for| T210
 ```
@@ -624,7 +628,7 @@ flowchart TB
 | `ParsedDocument` | `src/domain/entities/parsed_document.py` | Immutable parse result before chunking (`source`, `content`, optional `metadata`) |
 | `SourceReference` | `src/domain/entities/source_reference.py` | Structured multimodal citation (T-210) |
 | `ParsingSettings` | `src/core/settings.py` + `configs/parsing.yaml` | Feature flags and provider selection |
-| Multimodal chunk constants | `src/core/constants.py` | `CHUNK_TYPE_TABLE`, `CHUNK_TYPE_CAPTION`, `CHUNK_TYPE_FIGURE`, `CHUNK_TYPE_PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY`, `ASSET_PATH_KEY`, `MODALITY_*`, `LAYOUT_DOCUMENT_METADATA_KEYS`; reuses `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata |
+| Multimodal chunk constants | `src/core/constants.py` | `CHUNK_TYPE_TABLE`, `CHUNK_TYPE_CAPTION`, `CHUNK_TYPE_FIGURE`, `CHUNK_TYPE_PAGE`, `TABLE_ID_KEY`, `FIGURE_ID_KEY`, `BBOX_KEY`, `ASSET_PATH_KEY`, `OCR_APPLIED_KEY`, `MODALITY_*`, `LAYOUT_DOCUMENT_METADATA_KEYS`; reuses `CHUNK_PAGE_KEY` / `CHUNK_SECTION_KEY` for layout metadata |
 
 ```yaml
 # configs/parsing.yaml
@@ -635,15 +639,18 @@ parsing:
   table_chunks:
     enabled: false              # T-202 structured type=table chunks (off by default)
   ocr:
-    enabled: false              # T-220 get_ocr_provider(); self-hosted T-221
+    enabled: false              # T-220/T-223 OCR factory + scanned-PDF fallback
     provider: tesseract         # tesseract | easyocr | docling | azure_di
+    min_chars: 50               # OCR when extractable text is below this many chars
 ```
 
-**OCR factory (T-220 / T-221):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` raises `ConfigurationError` until T-222. Enabling the flag constructs providers only — loaders and ingestion do not call OCR yet (scanned-PDF fallback is **T-223**).
+**OCR factory (T-220 / T-221):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` raises `ConfigurationError` until T-222.
+
+**Scanned-PDF OCR fallback (T-223):** After `load_document`, `IngestionPipeline.ingest_file` calls `apply_ocr_fallback()` from `src/rag/ingestion/ocr_fallback.py`. When OCR is enabled and a PDF’s extractable text is below `parsing.ocr.min_chars` (all pages when `metadata.pages` is present), the pipeline runs `get_ocr_provider().ocr(path)` and replaces document content. Born-digital and mixed born-digital + scanned PDFs skip OCR. Failures and empty OCR results keep the original text. Re-ingest after enabling to recover scanned PDFs.
 
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
-**Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`. OCR factory and self-hosted providers are covered in `tests/unit/test_ocr_provider.py`.
+**Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`. OCR factory and self-hosted providers are covered in `tests/unit/test_ocr_provider.py`. Scanned-PDF fallback wiring is covered in `tests/unit/test_ocr_fallback.py`.
 
 #### Layout-Aware Parsing (T-200)
 
@@ -696,7 +703,7 @@ make ingest SOURCE=data/raw/
 | Loader routing | `src/infrastructure/loaders/__init__.py` | `load_document()` delegates PDF/DOCX to layout parser when enabled |
 | Chunk metadata filter | `src/rag/chunking/metadata.py` | `chunk_metadata()` — filters doc-level keys, promotes `CHUNK_SECTION_KEY` |
 
-**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text until scanned-PDF OCR fallback lands (**T-223**). T-221 provides self-hosted OCR providers behind `get_ocr_provider()` when `parsing.ocr.enabled=true`, but ingestion does not route low-text pages through them yet. Re-ingest after T-223 — existing indexes are not updated retroactively.
+**Trade-offs:** Docling adds a heavyweight optional dependency and slower ingest for PDF/DOCX compared to plain loaders. Scanned PDFs may yield empty text from plain loaders; enable `parsing.ocr.enabled=true` (T-223) and re-ingest so `apply_ocr_fallback` recovers text via `get_ocr_provider()`. OCR adds latency on low-text PDFs only — born-digital and mixed pages skip it.
 
 **Tests:** `tests/unit/test_docling_parser.py` (parser, metadata extraction, factory cache, settings reload), `tests/unit/test_chunk_metadata.py` (filtering and section promotion), plus routing coverage in `tests/unit/test_loaders.py` and `tests/unit/test_ingestion.py`.
 
@@ -779,7 +786,7 @@ flowchart LR
 
 **Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
 
-**Next steps:** Phase 22 next — **T-223** (scanned-PDF OCR fallback into ingest), then **T-222** (Azure DI OCR). Phase 23 (**T-230–T-232**) figure assets and caption chunks.
+**Next steps:** Phase 22 — **T-222** (Azure DI OCR). Phase 23 (**T-230–T-232**) figure assets and caption chunks.
 
 ### Start the API Server
 
@@ -2164,7 +2171,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
-│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR T-220/T-221; T-210 domain note
+│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR T-220/T-221/T-223; T-210 domain note
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
