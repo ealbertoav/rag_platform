@@ -661,7 +661,7 @@ parsing:
     min_chars: 50               # OCR when extractable text is below this many non-whitespace chars
 ```
 
-**OCR factory (T-220 / T-221 / T-222):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` uses Azure Document Intelligence REST (`prebuilt-read`) with credentials under `parsing.ocr.azure_di` — see [docs/ocr-providers.md](docs/ocr-providers.md). Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223).
+**OCR factory (T-220 / T-221 / T-222):** `get_ocr_provider()` in `src/infrastructure/ocr/` mirrors `get_layout_parser` — cached by `(enabled, provider, azure_di identity)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` uses Azure Document Intelligence REST (`prebuilt-read`) with credentials under `parsing.ocr.azure_di`; credential/config changes rebuild the cached client — see [docs/ocr-providers.md](docs/ocr-providers.md). Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223).
 
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 

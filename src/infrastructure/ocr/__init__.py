@@ -6,8 +6,10 @@ Azure Document Intelligence uses the REST API via ``AzureDocumentIntelligenceOcr
 
 from __future__ import annotations
 
+from collections.abc import Hashable
+
 from src.core.exceptions import ConfigurationError
-from src.core.settings import Settings
+from src.core.settings import OcrSettings, Settings
 from src.domain.repositories.ocr_repository import OcrRepository
 from src.infrastructure.ocr.azure_di_provider import AzureDocumentIntelligenceOcr
 from src.infrastructure.ocr.docling_provider import DoclingOcrProvider
@@ -33,6 +35,21 @@ def clear_ocr_provider_cache() -> None:
     _cache.clear()
 
 
+def _ocr_provider_identity(ocr_cfg: OcrSettings) -> Hashable | None:
+    """Fingerprint config captured at provider construction (Azure DI only)."""
+    if ocr_cfg.provider != "azure_di":
+        return None
+    azure = ocr_cfg.azure_di
+    return (
+        azure.endpoint,
+        azure.api_key.get_secret_value(),
+        azure.api_version,
+        azure.model_id,
+        azure.timeout_seconds,
+        azure.poll_interval_seconds,
+    )
+
+
 def _azure_di_from_settings(app_settings: Settings) -> AzureDocumentIntelligenceOcr:
     cfg = app_settings.parsing.ocr.azure_di
     return AzureDocumentIntelligenceOcr(
@@ -51,9 +68,15 @@ def get_ocr_provider(app_settings: Settings | None = None) -> OcrRepository | No
     When OCR is enabled, self-hosted providers (tesseract / easyocr / docling)
     return Docling-backed implementations. ``azure_di`` returns
     ``AzureDocumentIntelligenceOcr`` when endpoint and API key are set.
+
+    Cache key is ``(enabled, provider, azure_di identity)`` so credential and
+    Azure config rotations rebuild the client without requiring an explicit
+    ``clear_ocr_provider_cache()`` first.
     """
     if app_settings is None:
         app_settings = _settings()
+
+    ocr_cfg = app_settings.parsing.ocr
 
     def _create(provider: str) -> OcrRepository:
         match provider:
@@ -68,4 +91,4 @@ def get_ocr_provider(app_settings: Settings | None = None) -> OcrRepository | No
             case _:
                 raise ConfigurationError(f"Unknown OCR provider: {provider!r}")
 
-    return _cache.get(app_settings.parsing.ocr, _create)
+    return _cache.get(ocr_cfg, _create, identity=_ocr_provider_identity(ocr_cfg))

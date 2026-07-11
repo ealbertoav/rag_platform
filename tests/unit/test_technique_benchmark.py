@@ -239,6 +239,26 @@ class TestTemporaryConfig:
         second = get_layout_parser(settings)
         assert first is not second
 
+    def test_reload_settings_clears_ocr_provider_cache(self):
+        from src.infrastructure.ocr import get_ocr_provider
+
+        settings = Settings(
+            parsing={
+                "ocr": {
+                    "enabled": True,
+                    "provider": "azure_di",
+                    "azure_di": {
+                        "endpoint": "https://example.cognitiveservices.azure.com",
+                        "api_key": "test-key",
+                    },
+                }
+            }
+        )
+        first = get_ocr_provider(settings)
+        reload_settings_module()
+        second = get_ocr_provider(settings)
+        assert first is not second
+
     def test_reload_settings_refreshes_loader_layout_parser_bindings(self):
         import src.infrastructure.loaders as loaders_mod
 

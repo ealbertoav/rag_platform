@@ -43,6 +43,10 @@ def _ocr_settings(
     provider: str = "tesseract",
     azure_endpoint: str = "",
     azure_api_key: str = "",
+    azure_api_version: str = "2024-11-30",
+    azure_model_id: str = "prebuilt-read",
+    azure_timeout_seconds: float = 120.0,
+    azure_poll_interval_seconds: float = 1.0,
 ) -> Settings:
     return Settings(
         parsing={
@@ -52,18 +56,35 @@ def _ocr_settings(
                 "azure_di": {
                     "endpoint": azure_endpoint,
                     "api_key": azure_api_key,
+                    "api_version": azure_api_version,
+                    "model_id": azure_model_id,
+                    "timeout_seconds": azure_timeout_seconds,
+                    "poll_interval_seconds": azure_poll_interval_seconds,
                 },
             }
         }
     )
 
 
-def _azure_settings(*, enabled: bool = True) -> Settings:
+def _azure_settings(
+    *,
+    enabled: bool = True,
+    azure_endpoint: str = _ENDPOINT,
+    azure_api_key: str = _API_KEY,
+    azure_api_version: str = "2024-11-30",
+    azure_model_id: str = "prebuilt-read",
+    azure_timeout_seconds: float = 120.0,
+    azure_poll_interval_seconds: float = 1.0,
+) -> Settings:
     return _ocr_settings(
         enabled=enabled,
         provider="azure_di",
-        azure_endpoint=_ENDPOINT,
-        azure_api_key=_API_KEY,
+        azure_endpoint=azure_endpoint,
+        azure_api_key=azure_api_key,
+        azure_api_version=azure_api_version,
+        azure_model_id=azure_model_id,
+        azure_timeout_seconds=azure_timeout_seconds,
+        azure_poll_interval_seconds=azure_poll_interval_seconds,
     )
 
 
@@ -137,6 +158,60 @@ class TestGetOcrProvider:
         assert result.endpoint == _ENDPOINT
         assert result.api_key == _API_KEY
 
+    def test_caches_azure_di_provider_for_same_config(self) -> None:
+        settings = _azure_settings()
+        first = get_ocr_provider(settings)
+        second = get_ocr_provider(settings)
+        assert first is second
+
+    def test_azure_di_credential_change_rebuilds_provider(self) -> None:
+        first = get_ocr_provider(_azure_settings(azure_api_key=_API_KEY))
+        second = get_ocr_provider(_azure_settings(azure_api_key="rotated-key"))
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        assert second.api_key == "rotated-key"
+
+    def test_azure_di_endpoint_change_rebuilds_provider(self) -> None:
+        first = get_ocr_provider(_azure_settings())
+        second = get_ocr_provider(
+            _azure_settings(azure_endpoint="https://other.cognitiveservices.azure.com")
+        )
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        assert second.endpoint == "https://other.cognitiveservices.azure.com"
+
+    def test_azure_di_model_and_timeout_change_rebuilds_provider(self) -> None:
+        first = get_ocr_provider(_azure_settings())
+        second = get_ocr_provider(
+            _azure_settings(
+                azure_model_id="prebuilt-layout",
+                azure_timeout_seconds=30.0,
+                azure_poll_interval_seconds=2.0,
+                azure_api_version="2024-02-29",
+            )
+        )
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        assert second.model_id == "prebuilt-layout"
+        assert second.timeout_seconds == 30.0
+        assert second.poll_interval_seconds == 2.0
+        assert second.api_version == "2024-02-29"
+
+    def test_azure_di_credential_change_closes_previous_client(self) -> None:
+        first = get_ocr_provider(_azure_settings(azure_api_key=_API_KEY))
+        assert isinstance(first, AzureDocumentIntelligenceOcr)
+        owned = MagicMock()
+        first._client = owned
+        first._owns_client = True
+
+        second = get_ocr_provider(_azure_settings(azure_api_key="rotated-key"))
+        assert isinstance(second, AzureDocumentIntelligenceOcr)
+        assert first is not second
+        owned.close.assert_called_once_with()
+
     def test_azure_di_missing_credentials_raises(self) -> None:
         settings = _ocr_settings(enabled=True, provider="azure_di")
         with pytest.raises(ConfigurationError, match="requires parsing.ocr.azure_di"):
@@ -152,6 +227,15 @@ class TestGetOcrProvider:
         with pytest.raises(ConfigurationError):
             get_ocr_provider(enabled)
         assert get_ocr_provider(_ocr_settings(enabled=False)) is None
+
+    def test_failed_azure_lookup_after_valid_cache_does_not_keep_stale(self) -> None:
+        valid = get_ocr_provider(_azure_settings())
+        assert isinstance(valid, AzureDocumentIntelligenceOcr)
+        with pytest.raises(ConfigurationError):
+            get_ocr_provider(_ocr_settings(enabled=True, provider="azure_di"))
+        rebuilt = get_ocr_provider(_azure_settings())
+        assert isinstance(rebuilt, AzureDocumentIntelligenceOcr)
+        assert rebuilt is not valid
 
     def test_module_exports(self) -> None:
         assert set(ocr_module.__all__) == {
