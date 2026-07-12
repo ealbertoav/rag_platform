@@ -56,6 +56,7 @@ dependencies = [
     "pyrefly>=0.60.0",
     "basedpyright>=1.39.9",
     "packaging>=26.2",
+    "pillow>=12.2.0",
 ]
 
 [tool.uv]

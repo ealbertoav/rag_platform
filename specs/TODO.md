@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 22 complete — **T-220** ✅ · **T-221** ✅ · **T-222** ✅ · **T-223** ✅. **Next:** Phase 23 (**T-230–T-232** figure assets / VLM captions). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 23 in progress — **T-230** ✅ · **T-231** ← next · **T-232**. Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2341,7 +2341,7 @@
 > | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | T-210 ✅ |
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | ✅ complete — T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅ |
-> | **23** | 13 | T-230 → T-232 | Phases 20–21 | **next** — T-230 → T-231 → T-232 |
+> | **23** | 13 | T-230 → T-232 | Phases 20–21 | **in progress** — T-230 ✅ → T-231 ← next → T-232 |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
@@ -2576,12 +2576,12 @@
 >
 > **Preconditions:** Phases 20–21
 >
-> **Status:** **next** — T-230 → T-231 → T-232 (Phase 22 OCR complete)
+> **Status:** **in progress** — T-230 ✅ → T-231 ← next → T-232
 
 ---
 
 ### T-230 · Figure Asset Extraction & Storage
-- **Status:** `[ ]` ← **start here**
+- **Status:** `[x]`
 - **Goal:** Persist figures with `figure_id`.
 - **Inputs:** T-200, T-201, T-210
 - **Outputs:** Asset store
@@ -2590,13 +2590,13 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Extract figures from layout `figures[]` (T-200) / PPTX (T-201); persist bytes under a local asset store and set `Chunk.asset_path` / `figure_id` (T-210 fields). No VLM captions yet — that is T-231.
+- **Notes:** Extract figures from layout `figures[]` (T-200) / PPTX (T-201); persist bytes under a local asset store and set `Chunk.asset_path` / `figure_id` (T-210 fields). No VLM captions yet — that is T-231. `LocalAssetStore` writes under `parsing.figure_assets.store_dir` (default `data/assets`); `apply_figure_assets` runs after OCR on full ingest and skip path; soft-fails per figure. `build_figure_chunks()` builds modality=figure chunks for T-231/T-232.
 
 ---
 
 
 ### T-231 · VLM Captioning at Ingest
-- **Status:** `[ ]`
+- **Status:** `[ ]` ← **start here**
 - **Goal:** Gemini/OpenAI vision captions at ingest.
 - **Inputs:** T-230, T-030
 - **Outputs:** Caption text per figure
@@ -3052,7 +3052,7 @@ T-150 + T-281 ──► T-282
 20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 ✅ → T-202 ✅ _(complete)_
 21. **Phase 21 — Priority 11 (Domain Model):** T-210 ✅ _(complete)_
 22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-222 ✅ → T-223 ✅ _(complete)_
-23. **Phase 23 — Priority 13 (VLM):** **T-230** _(next)_ → T-231 → T-232
+23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → **T-231** _(next)_ → T-232
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 → T-241 → T-242 → T-243
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 → T-261 → T-262 → T-263

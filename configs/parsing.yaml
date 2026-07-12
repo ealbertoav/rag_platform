@@ -35,3 +35,10 @@ parsing:
     enabled: false              # T-202 structured type=table chunks at ingesting; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.
     # Re-ingest after enabling — unchanged documents backfill missing table chunks.
+  figure_assets:
+    enabled: false              # T-230 persist figure bytes + asset_path / figure_id; off by default
+    store_dir: data/assets      # local asset root (gitignored); env: PARSING__FIGURE_ASSETS__STORE_DIR
+    # Extracts figures from layout figures[] (Docling PDF/DOCX) or PPTX picture
+    # shapes, writes PNG/JPEG bytes under store_dir, and sets figures[].asset_path
+    # plus Chunk.asset_path / figure_id via build_figure_chunks(). Soft-fails per
+    # figure when bytes cannot be exported. VLM captions are T-231.

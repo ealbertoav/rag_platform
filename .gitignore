@@ -19,6 +19,7 @@ models/
 data/raw/
 data/processed/
 data/chunks/
+data/assets/
 data/exports/*
 !data/exports/infra_baseline.json
 data/qdrant/

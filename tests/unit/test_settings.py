@@ -166,6 +166,8 @@ class TestYamlDefaults:
         assert settings.parsing.ocr.azure_di.timeout_seconds == 120.0
         assert settings.parsing.ocr.azure_di.poll_interval_seconds == 1.0
         assert settings.parsing.table_chunks.enabled is False
+        assert settings.parsing.figure_assets.enabled is False
+        assert settings.parsing.figure_assets.store_dir == "data/assets"
 
 
 class TestEnvVarOverride:
@@ -233,6 +235,13 @@ class TestEnvVarOverride:
         monkeypatch.setenv("PARSING__TABLE_CHUNKS__ENABLED", "true")
         s = Settings()
         assert s.parsing.table_chunks.enabled is True
+
+    def test_parsing_figure_assets_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PARSING__FIGURE_ASSETS__ENABLED", "true")
+        monkeypatch.setenv("PARSING__FIGURE_ASSETS__STORE_DIR", "/tmp/figures")
+        s = Settings()
+        assert s.parsing.figure_assets.enabled is True
+        assert s.parsing.figure_assets.store_dir == "/tmp/figures"
 
 
 class TestValidation:

@@ -1,0 +1,383 @@
+"""Figure asset extraction and Chunk builders (T-230).
+
+When "parsing.figure_assets.enabled" is true, persist figure bytes from
+layout "figures[]" (Docling PDF/DOCX) or PPTX picture shapes under a
+:class:`~src.rag.ingestion.local_asset_store.LocalAssetStore`, then set
+"figures[].asset_path" and produce :class:`~src.domain.entities.chunk.Chunk`
+instances with "asset_path" / "figure_id". Soft-fails per figure when
+bytes cannot be exported. VLM captions are T-231; caption indexing is T-232.
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+import uuid
+from pathlib import Path
+from typing import Any, Protocol, cast
+
+from src.core.constants import (
+    ASSET_PATH_KEY,
+    BBOX_KEY,
+    CHUNK_PAGE_KEY,
+    CHUNK_SOURCE_KEY,
+    CHUNK_TYPE_FIGURE,
+    CHUNK_TYPE_KEY,
+    FIGURE_ID_KEY,
+    MODALITY_FIGURE,
+)
+from src.core.exceptions import ConfigurationError, DocumentLoadError
+from src.core.settings import FigureAssetSettings, Settings
+from src.domain.entities.chunk import Chunk
+from src.domain.entities.document import Document
+from src.rag.chunking.metadata import chunk_metadata
+from src.rag.ingestion.local_asset_store import LocalAssetStore, document_asset_key
+
+logger = logging.getLogger(__name__)
+
+_PPTX_EXTENSION = ".pptx"
+_DOCLING_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx"})
+_FIGURE_CHUNK_NAMESPACE = uuid.UUID("c4e91b7a-2d6f-4a18-9e3b-8f0d5c1a7b42")
+_DEFAULT_FIGURE_TEXT = "[figure]"
+
+
+class _PilImage(Protocol):
+    def save(self, fp: Any, *args: Any, **kwargs: Any) -> None: ...
+
+
+class _PptxImage(Protocol):
+    blob: bytes
+    ext: str | None
+
+
+class _PictureShape(Protocol):
+    image: _PptxImage
+
+
+class _DoclingPicture(Protocol):
+    prov: list[Any]
+
+    def caption_text(self, doc: object) -> str: ...
+
+    def get_image(self, doc: object) -> _PilImage | None: ...
+
+
+class _DoclingDocument(Protocol):
+    pictures: list[_DoclingPicture]
+
+
+class _DoclingConversionStatus(Protocol):
+    name: str
+
+
+class _DoclingConversionResult(Protocol):
+    status: _DoclingConversionStatus | None
+    document: _DoclingDocument
+
+
+class _DoclingConverter(Protocol):
+    def convert(self, source: str) -> _DoclingConversionResult: ...
+
+
+def figure_chunk_id(source: str, figure_id: str) -> str:
+    """Stable chunk ID for a figure asset at *source*."""
+    return str(uuid.uuid5(_FIGURE_CHUNK_NAMESPACE, f"{source}:{figure_id}"))
+
+
+def is_figure_chunk(chunk: Chunk) -> bool:
+    """Return True when *chunk* is a figure asset index point."""
+    return chunk.metadata.get(CHUNK_TYPE_KEY) == CHUNK_TYPE_FIGURE
+
+
+def build_figure_chunks(document: Document) -> list[Chunk]:
+    """Build figure chunks from document metadata that already has asset paths."""
+    figures = document.metadata.get("figures")
+    if not isinstance(figures, list) or not figures:
+        return []
+
+    chunks: list[Chunk] = []
+    for index, raw_entry in enumerate(figures):
+        if not isinstance(raw_entry, dict):
+            logger.debug("Skipping non-dict figure entry at index %d", index)
+            continue
+        figure_id = raw_entry.get(FIGURE_ID_KEY)
+        asset_path = raw_entry.get(ASSET_PATH_KEY) or raw_entry.get("asset_path")
+        if not figure_id or not asset_path:
+            continue
+
+        caption = raw_entry.get("caption")
+        if isinstance(caption, str) and caption.strip():
+            text = caption.strip()
+        else:
+            text = _DEFAULT_FIGURE_TEXT
+
+        metadata = chunk_metadata(document.metadata)
+        metadata[CHUNK_TYPE_KEY] = CHUNK_TYPE_FIGURE
+        metadata[FIGURE_ID_KEY] = str(figure_id)
+        metadata[ASSET_PATH_KEY] = str(asset_path)
+        metadata[CHUNK_SOURCE_KEY] = document.source
+        if CHUNK_PAGE_KEY in raw_entry:
+            metadata[CHUNK_PAGE_KEY] = raw_entry[CHUNK_PAGE_KEY]
+        if BBOX_KEY in raw_entry:
+            metadata[BBOX_KEY] = raw_entry[BBOX_KEY]
+
+        chunks.append(
+            Chunk(
+                id=figure_chunk_id(document.source, str(figure_id)),
+                document_id=document.id,
+                text=text,
+                metadata=metadata,
+                modality=MODALITY_FIGURE,
+                asset_path=str(asset_path),
+            )
+        )
+    return chunks
+
+
+def apply_figure_assets(
+    document: Document,
+    path: Path,
+    *,
+    app_settings: Settings | None = None,
+    store: LocalAssetStore | None = None,
+) -> Document:
+    """Persist figure bytes and attach "asset_path" onto "figures[]" metadata.
+
+    No-op when figure assets are disabled. Soft-fails (logs + returns the
+    original document) on configuration / conversion errors so ingest continues.
+    """
+    cfg = _figure_asset_settings(app_settings)
+    if not cfg.enabled:
+        return document
+
+    asset_store = store or LocalAssetStore(cfg.store_dir)
+    try:
+        suffix = path.suffix.lower()
+        if suffix == _PPTX_EXTENSION:
+            return _apply_pptx_figures(document, path, asset_store)
+        if suffix in _DOCLING_EXTENSIONS:
+            return _apply_docling_figures(document, path, asset_store)
+        logger.debug("Skipping figure assets for unsupported type %s", path.name)
+        return document
+    except ConfigurationError as exc:
+        logger.warning(
+            "Figure asset extraction misconfigured for %s: %s — continuing without assets",
+            path.name,
+            exc,
+        )
+        return document
+    except DocumentLoadError as exc:
+        logger.warning(
+            "Figure asset extraction failed for %s: %s — continuing without assets",
+            path.name,
+            exc,
+        )
+        return document
+    except Exception as exc:
+        logger.warning(
+            "Unexpected figure asset error for %s: %s — continuing without assets",
+            path.name,
+            exc,
+        )
+        return document
+
+
+def _figure_asset_settings(app_settings: Settings | None) -> FigureAssetSettings:
+    if app_settings is None:
+        from src.core.settings import settings as default_settings
+
+        return default_settings.parsing.figure_assets
+    return app_settings.parsing.figure_assets
+
+
+def _apply_pptx_figures(
+    document: Document,
+    path: Path,
+    store: LocalAssetStore,
+) -> Document:
+    extracted = _extract_pptx_picture_bytes(path)
+    if not extracted:
+        return document
+
+    doc_key = document_asset_key(document.source)
+    figures: list[dict[str, Any]] = []
+    existing = document.metadata.get("figures")
+    existing_by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(existing, list):
+        for entry in existing:
+            if isinstance(entry, dict) and entry.get(FIGURE_ID_KEY):
+                existing_by_id[str(entry[FIGURE_ID_KEY])] = dict(entry)
+
+    for index, (blob, extension, page) in enumerate(extracted, start=1):
+        figure_id = f"figure-{index}"
+        entry = dict(existing_by_id.get(figure_id, {FIGURE_ID_KEY: figure_id}))
+        entry[FIGURE_ID_KEY] = figure_id
+        entry[CHUNK_PAGE_KEY] = page
+        try:
+            asset_path = store.save(doc_key, figure_id, blob, extension=extension)
+            entry[ASSET_PATH_KEY] = str(asset_path)
+        except Exception as exc:
+            logger.warning(
+                "Failed to store PPTX figure %s from %s: %s",
+                figure_id,
+                path.name,
+                exc,
+            )
+        figures.append(entry)
+
+    metadata = dict(document.metadata)
+    metadata["figures"] = figures
+    return document.model_copy(update={"metadata": metadata})
+
+
+def _extract_pptx_picture_bytes(path: Path) -> list[tuple[bytes, str, int]]:
+    try:
+        import pptx as python_pptx
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+    except ImportError as exc:
+        raise ConfigurationError(
+            "PPTX figure extraction requires python-pptx. Install with: uv pip install python-pptx"
+        ) from exc
+
+    try:
+        presentation = python_pptx.Presentation(str(path))
+    except Exception as exc:
+        raise DocumentLoadError(
+            f"Cannot open PPTX for figure extraction: {path}",
+            cause=exc,
+        ) from exc
+
+    pictures: list[tuple[bytes, str, int]] = []
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        for shape in slide.shapes:
+            if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+                continue
+            try:
+                image = cast(_PictureShape, shape).image
+                blob = image.blob
+                extension = (image.ext or "png").lstrip(".").lower() or "png"
+            except Exception as exc:
+                logger.warning(
+                    "Skipping unreadable PPTX picture on slide %s in %s: %s",
+                    slide_index,
+                    path.name,
+                    exc,
+                )
+                continue
+            if blob:
+                pictures.append((blob, extension, slide_index))
+    return pictures
+
+
+def _apply_docling_figures(
+    document: Document,
+    path: Path,
+    store: LocalAssetStore,
+) -> Document:
+    existing = document.metadata.get("figures")
+    if not isinstance(existing, list) or not existing:
+        logger.debug("No layout figures[] for %s — skipping Docling asset export", path.name)
+        return document
+
+    pictures = _load_docling_pictures(path)
+    if not pictures:
+        return document
+
+    doc_key = document_asset_key(document.source)
+    figures: list[dict[str, Any]] = []
+    for index, raw_entry in enumerate(existing):
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = dict(raw_entry)
+        figure_id = str(entry.get(FIGURE_ID_KEY) or f"figure-{index + 1}")
+        entry[FIGURE_ID_KEY] = figure_id
+        if index >= len(pictures):
+            figures.append(entry)
+            continue
+
+        picture, doc = pictures[index]
+        try:
+            png_bytes = _picture_to_png_bytes(picture, doc)
+            if not png_bytes:
+                logger.warning(
+                    "No image bytes for %s in %s — leaving without asset_path",
+                    figure_id,
+                    path.name,
+                )
+                figures.append(entry)
+                continue
+            asset_path = store.save(doc_key, figure_id, png_bytes, extension="png")
+            entry[ASSET_PATH_KEY] = str(asset_path)
+        except Exception as exc:
+            logger.warning(
+                "Failed to export Docling figure %s from %s: %s",
+                figure_id,
+                path.name,
+                exc,
+            )
+        figures.append(entry)
+
+    metadata = dict(document.metadata)
+    metadata["figures"] = figures
+    return document.model_copy(update={"metadata": metadata})
+
+
+def _load_docling_pictures(path: Path) -> list[tuple[_DoclingPicture, _DoclingDocument]]:
+    converter = _create_picture_converter()
+    try:
+        result = converter.convert(str(path))
+    except ConfigurationError:
+        raise
+    except Exception as exc:
+        raise DocumentLoadError(
+            f"Cannot convert {path.name} for figure asset extraction",
+            cause=exc,
+        ) from exc
+
+    status = getattr(result, "status", None)
+    if status is not None and getattr(status, "name", str(status)) == "FAILURE":
+        raise DocumentLoadError(f"Docling conversion failed for figure assets: {path}")
+
+    doc = result.document
+    return [(picture, doc) for picture in doc.pictures]
+
+
+def _picture_to_png_bytes(picture: _DoclingPicture, doc: _DoclingDocument) -> bytes | None:
+    image = picture.get_image(doc)
+    if image is None:
+        return None
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    data = buffer.getvalue()
+    return data or None
+
+
+def _create_picture_converter() -> _DoclingConverter:
+    try:
+        # Optional runtime dependency (same pattern as DoclingLayoutParser / OCR).
+        # Install separately: uv pip install docling
+        import importlib
+
+        base_models = importlib.import_module("docling.datamodel.base_models")
+        pipeline_options_mod = importlib.import_module("docling.datamodel.pipeline_options")
+        document_converter_mod = importlib.import_module("docling.document_converter")
+        input_format = base_models.InputFormat
+        pdf_pipeline_options = pipeline_options_mod.PdfPipelineOptions
+        document_converter = document_converter_mod.DocumentConverter
+        pdf_format_option = document_converter_mod.PdfFormatOption
+    except ImportError as exc:
+        raise ConfigurationError(
+            "Figure asset extraction for PDF/DOCX requires the docling package. "
+            "Install with: uv pip install docling"
+        ) from exc
+
+    pipeline_options = pdf_pipeline_options()
+    pipeline_options.generate_picture_images = True
+    return cast(
+        _DoclingConverter,
+        document_converter(
+            format_options={
+                input_format.PDF: pdf_format_option(pipeline_options=pipeline_options),
+            }
+        ),
+    )
