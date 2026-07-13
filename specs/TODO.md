@@ -2605,7 +2605,7 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Depends on stored figure assets from T-230. Prefer feature-flagged vision provider selection; keep ingest soft-fail when VLM is unavailable. Persist successful captions as `{stem}.caption.txt` sidecars next to assets so skip-path re-ingests reload without re-calling the VLM (caption chunk indexing remains T-232).
+- **Notes:** Depends on stored figure assets from T-230. Prefer feature-flagged vision provider selection; keep ingest soft-fail when VLM is unavailable. Persist successful captions as hash-bound `{stem}.caption.txt` sidecars next to assets so skip-path re-ingests reload without re-calling the VLM when bytes are unchanged (caption chunk indexing remains T-232).
 
 ---
 

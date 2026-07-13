@@ -1,7 +1,8 @@
-"""T-231 — VLM figure captioning at ingest."""
+"""T-231 — VLM figure captioning at ingesting."""
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -21,10 +22,12 @@ from src.rag.ingestion.figure_captioner import (
     apply_figure_captions,
     caption_sidecar_path,
 )
+from src.rag.ingestion.local_asset_store import LocalAssetStore
 from src.rag.pipelines.ingestion_pipeline import content_hash
 from tests.unit.ingestion_helpers import mock_ingestion_pipeline
 
 _INGEST_MOD = "src.rag.pipelines.ingestion_pipeline"
+_CAPTION_HEADER_PREFIX = "# caption-v1 asset-sha256="
 
 
 def _settings(
@@ -52,6 +55,44 @@ def _asset(tmp_path: Path, name: str = "figure-1.png", data: bytes = b"png-bytes
     path = tmp_path / name
     path.write_bytes(data)
     return path
+
+
+def _write_bound_sidecar(asset: Path, caption: str, *, digest: str | None = None) -> Path:
+    """Write a hash-bound sidecar matching the asset (or an explicit digest)."""
+    asset_digest = digest or hashlib.sha256(asset.read_bytes()).hexdigest()
+    sidecar = caption_sidecar_path(asset)
+    sidecar.write_text(f"{_CAPTION_HEADER_PREFIX}{asset_digest}\n{caption}", encoding="utf-8")
+    return sidecar
+
+
+def _sidecar_caption_body(asset: Path) -> str:
+    text = caption_sidecar_path(asset).read_text(encoding="utf-8")
+    first, _, rest = text.partition("\n")
+    assert first.startswith(_CAPTION_HEADER_PREFIX), f"missing caption header: {text!r}"
+    return rest.strip()
+
+
+def _single_figure_doc(asset: Path) -> Document:
+    return _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
+
+
+def _assert_sidecar_falls_through_to_vlm(
+    asset: Path,
+    *,
+    caption: str,
+    caplog: pytest.LogCaptureFixture,
+    log_snippets: str | tuple[str, ...],
+) -> MagicMock:
+    """Run captioning after an unusable sidecar; assert VLM caption + warning text."""
+    provider = MagicMock()
+    provider.caption_image.return_value = caption
+    with caplog.at_level("WARNING"):
+        result = apply_figure_captions(_single_figure_doc(asset), vision_provider=provider)
+    assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == caption
+    snippets = (log_snippets,) if isinstance(log_snippets, str) else log_snippets
+    assert any(snippet in caplog.text for snippet in snippets), caplog.text
+    provider.caption_image.assert_called_once_with(asset)
+    return provider
 
 
 class TestCaptionSidecarPath:
@@ -97,7 +138,7 @@ class TestApplyFigureCaptionsSuccess:
         assert result is not doc
         assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == "A bar chart of revenue"
         provider.caption_image.assert_called_once_with(asset)
-        assert caption_sidecar_path(asset).read_text(encoding="utf-8") == "A bar chart of revenue"
+        assert _sidecar_caption_body(asset) == "A bar chart of revenue"
 
     def test_overwrites_existing_caption(self, tmp_path: Path) -> None:
         asset = _asset(tmp_path)
@@ -115,7 +156,7 @@ class TestApplyFigureCaptionsSuccess:
 
         result = apply_figure_captions(doc, vision_provider=provider)
         assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == "vlm caption"
-        assert caption_sidecar_path(asset).read_text(encoding="utf-8") == "vlm caption"
+        assert _sidecar_caption_body(asset) == "vlm caption"
 
     def test_accepts_asset_path_alias(self, tmp_path: Path) -> None:
         asset = _asset(tmp_path)
@@ -156,7 +197,7 @@ class TestApplyFigureCaptionsSuccess:
 class TestApplyFigureCaptionsSidecar:
     def test_loads_sidecar_without_calling_vlm(self, tmp_path: Path) -> None:
         asset = _asset(tmp_path)
-        caption_sidecar_path(asset).write_text("cached caption", encoding="utf-8")
+        _write_bound_sidecar(asset, "cached caption")
         doc = _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
         provider = MagicMock()
 
@@ -167,7 +208,7 @@ class TestApplyFigureCaptionsSidecar:
 
     def test_matching_sidecar_is_noop(self, tmp_path: Path) -> None:
         asset = _asset(tmp_path)
-        caption_sidecar_path(asset).write_text("same", encoding="utf-8")
+        _write_bound_sidecar(asset, "same")
         doc = _document(
             [
                 {
@@ -184,28 +225,137 @@ class TestApplyFigureCaptionsSidecar:
         assert result is doc
         provider.caption_image.assert_not_called()
 
+    def test_stale_sidecar_after_asset_bytes_change_recaptions(self, tmp_path: Path) -> None:
+        """Sidecar must not win when LocalAssetStore overwrites the same path."""
+        asset = _asset(tmp_path, data=b"original-bytes")
+        _write_bound_sidecar(asset, "caption for original")
+        asset.write_bytes(b"replaced-figure-bytes")
+        doc = _document(
+            [
+                {
+                    FIGURE_ID_KEY: "figure-1",
+                    ASSET_PATH_KEY: str(asset),
+                    FIGURE_CAPTION_KEY: "caption for original",
+                }
+            ]
+        )
+        provider = MagicMock()
+        provider.caption_image.return_value = "caption for replacement"
+
+        result = apply_figure_captions(doc, vision_provider=provider)
+
+        assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == "caption for replacement"
+        provider.caption_image.assert_called_once_with(asset)
+        assert _sidecar_caption_body(asset) == "caption for replacement"
+
+    def test_store_overwrite_invalidates_then_recaptions(self, tmp_path: Path) -> None:
+        """Full dependency chain: store overwrite drops sidecar; captioner rebinds."""
+        store = LocalAssetStore(tmp_path / "assets")
+        asset = store.save("doc-key", "figure-1", b"v1-bytes", extension="png")
+        doc = _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
+        provider = MagicMock()
+        provider.caption_image.side_effect = ["caption-v1", "caption-v2"]
+
+        first = apply_figure_captions(doc, vision_provider=provider)
+        assert first.metadata["figures"][0][FIGURE_CAPTION_KEY] == "caption-v1"
+        assert caption_sidecar_path(asset).is_file()
+
+        store.save("doc-key", "figure-1", b"v2-bytes", extension="png")
+        assert not caption_sidecar_path(asset).exists()
+
+        second = apply_figure_captions(first, vision_provider=provider)
+        assert second.metadata["figures"][0][FIGURE_CAPTION_KEY] == "caption-v2"
+        assert _sidecar_caption_body(asset) == "caption-v2"
+        assert provider.caption_image.call_count == 2
+
+    def test_legacy_unbound_sidecar_falls_through_to_vlm(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        asset = _asset(tmp_path)
+        caption_sidecar_path(asset).write_text("legacy plain caption", encoding="utf-8")
+        _assert_sidecar_falls_through_to_vlm(
+            asset,
+            caption="rebound",
+            caplog=caplog,
+            log_snippets=("unbound", "sidecar asset hash"),
+        )
+
+    def test_empty_sidecar_body_after_header_falls_through(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        asset = _asset(tmp_path)
+        digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+        caption_sidecar_path(asset).write_text(
+            f"{_CAPTION_HEADER_PREFIX}{digest}\n   \n",
+            encoding="utf-8",
+        )
+        _assert_sidecar_falls_through_to_vlm(
+            asset,
+            caption="filled",
+            caplog=caplog,
+            log_snippets="sidecar empty",
+        )
+
+    def test_empty_sidecar_hash_falls_through(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        asset = _asset(tmp_path)
+        caption_sidecar_path(asset).write_text(
+            f"{_CAPTION_HEADER_PREFIX}\ncaption",
+            encoding="utf-8",
+        )
+        _assert_sidecar_falls_through_to_vlm(
+            asset,
+            caption="rebound",
+            caplog=caplog,
+            log_snippets="asset hash missing",
+        )
+
+    def test_unreadable_asset_skips_sidecar_and_write(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        asset = _asset(tmp_path)
+        _write_bound_sidecar(asset, "cached")
+        doc = _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
+        provider = MagicMock()
+        provider.caption_image.return_value = "fresh"
+
+        with (
+            patch.object(Path, "read_bytes", side_effect=OSError("locked")),
+            caplog.at_level("WARNING"),
+        ):
+            result = apply_figure_captions(doc, vision_provider=provider)
+
+        assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == "fresh"
+        assert "Figure asset unreadable" in caplog.text
+        provider.caption_image.assert_called_once_with(asset)
+        # write soft-skipped because digest could not be computed
+        assert (
+            caption_sidecar_path(asset)
+            .read_text(encoding="utf-8")
+            .startswith(_CAPTION_HEADER_PREFIX)
+        )
+        assert "cached" in caption_sidecar_path(asset).read_text(encoding="utf-8")
+
     def test_empty_sidecar_falls_through_to_vlm(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         asset = _asset(tmp_path)
         caption_sidecar_path(asset).write_text("   \n", encoding="utf-8")
-        doc = _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
-        provider = MagicMock()
-        provider.caption_image.return_value = "fresh"
-
-        with caplog.at_level("WARNING"):
-            result = apply_figure_captions(doc, vision_provider=provider)
-
-        assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == "fresh"
-        assert "sidecar empty" in caplog.text
-        assert caption_sidecar_path(asset).read_text(encoding="utf-8") == "fresh"
+        _assert_sidecar_falls_through_to_vlm(
+            asset,
+            caption="fresh",
+            caplog=caplog,
+            log_snippets="sidecar empty",
+        )
+        assert _sidecar_caption_body(asset) == "fresh"
 
     def test_unreadable_sidecar_falls_through_to_vlm(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         asset = _asset(tmp_path)
         sidecar = caption_sidecar_path(asset)
-        sidecar.write_text("stale", encoding="utf-8")
+        _write_bound_sidecar(asset, "stale")
         doc = _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
         provider = MagicMock()
         provider.caption_image.return_value = "recovered"
@@ -219,6 +369,7 @@ class TestApplyFigureCaptionsSidecar:
         assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == "recovered"
         assert "sidecar unreadable" in caplog.text
         provider.caption_image.assert_called_once_with(asset)
+        assert sidecar.is_file()
 
     def test_sidecar_write_failure_still_updates_metadata(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -329,7 +480,7 @@ class TestApplyFigureCaptionsSoftFail:
         result = apply_figure_captions(doc, vision_provider=provider)
         assert result.metadata["figures"][0][FIGURE_CAPTION_KEY] == "good caption"
         assert FIGURE_CAPTION_KEY not in result.metadata["figures"][1]
-        assert caption_sidecar_path(ok).read_text(encoding="utf-8") == "good caption"
+        assert _sidecar_caption_body(ok) == "good caption"
         assert not caption_sidecar_path(bad).exists()
 
     def test_configuration_error_from_factory_is_soft(
@@ -361,7 +512,7 @@ class TestApplyFigureCaptionsSoftFail:
 
     def test_misconfigured_provider_still_loads_sidecar(self, tmp_path: Path) -> None:
         asset = _asset(tmp_path)
-        caption_sidecar_path(asset).write_text("from disk", encoding="utf-8")
+        _write_bound_sidecar(asset, "from disk")
         doc = _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
 
         with patch(
@@ -375,7 +526,7 @@ class TestApplyFigureCaptionsSoftFail:
 
     def test_factory_none_with_sidecar_hydrates_caption(self, tmp_path: Path) -> None:
         asset = _asset(tmp_path)
-        caption_sidecar_path(asset).write_text("cached", encoding="utf-8")
+        _write_bound_sidecar(asset, "cached")
         doc = _document([{FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: str(asset)}])
 
         with patch("src.infrastructure.vision.get_vision_provider", return_value=None) as factory:
@@ -520,6 +671,6 @@ class TestIngestionPipelineCaptionWiring:
 
         assert first.skipped is True
         assert second.skipped is True
-        assert caption_sidecar_path(asset).read_text(encoding="utf-8") == "skip-path caption"
+        assert _sidecar_caption_body(asset) == "skip-path caption"
         assert provider.caption_image.call_count == 1
         service.prepare.assert_not_called()

@@ -4,17 +4,18 @@ When "parsing.figure_captions.enabled" is true, call the configured OpenAI or
 Gemini vision provider for each "figures[]" entry that has an "asset_path",
 and write the returned text into "figures[].caption".
 
-Successful VLM captions are also persisted as sidecar files next to the asset
-("{stem}.caption.txt"). On later full or skip-path re-ingesting the sidecar is
-loaded instead of re-calling the vision API, so unchanged documents keep
-captions even though the skip path does not reindex (caption chunk indexing is
-T-232). Soft-fails when the VLM is unavailable or a single figure fails, so
-ingest continues. Existing Docling captions are overwritten only when the VLM
-returns non-empty text (or a prior VLM sidecar is loaded).
+Successful VLM captions are persisted as sidecar files next to the asset
+("{stem}.caption.txt"), bound to the asset SHA-256 so a later overwrite of the
+same path (e.g. via LocalAssetStore.save) does not reuse a stale caption. On
+full or skip-path re-ingest a matching sidecar is loaded instead of re-calling
+the vision API. Soft-fails when the VLM is unavailable or a single figure
+fails, so ingest continues. Existing Docling captions are overwritten only when
+the VLM returns non-empty text (or a prior matching VLM sidecar is loaded).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from src.domain.repositories.vision_repository import VisionRepository
 logger = logging.getLogger(__name__)
 
 _CAPTION_SIDECAR_SUFFIX = ".caption.txt"
+_CAPTION_SIDECAR_HEADER_PREFIX = "# caption-v1 asset-sha256="
 
 
 def caption_sidecar_path(asset_path: Path) -> Path:
@@ -46,8 +48,8 @@ def apply_figure_captions(
     No-op when figure captions are disabled or no figures have an asset path.
     Soft-fails (logs and returns the best-effort document) on configuration /
     generation errors, so ingest continues. Persists successful VLM captions to
-    sidecars and reuses them on subsequent runs (including when the VLM is
-    later misconfigured).
+    hash-bound sidecars and reuses them on subsequent runs when the asset bytes
+    are unchanged (including when the VLM is later misconfigured).
     """
     cfg = _figure_caption_settings(app_settings)
     if not cfg.enabled and vision_provider is None:
@@ -139,13 +141,88 @@ def apply_figure_captions(
     return document.model_copy(update={"metadata": metadata})
 
 
+def _asset_sha256(asset_path: Path) -> str | None:
+    """Return the hex digest of asset bytes, or None when unreadable."""
+    try:
+        return hashlib.sha256(asset_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        logger.warning(
+            "Figure asset unreadable for caption binding at %s: %s",
+            asset_path,
+            exc,
+        )
+        return None
+
+
+def _format_caption_sidecar(digest: str, caption: str) -> str:
+    return f"{_CAPTION_SIDECAR_HEADER_PREFIX}{digest}\n{caption}"
+
+
+def _parse_caption_sidecar(
+    text: str,
+    *,
+    asset_digest: str,
+    figure_id: str,
+    sidecar: Path,
+) -> str | None:
+    """Validate a sidecar against *asset_digest*; return caption body or None."""
+    stripped = text.strip()
+    if not stripped:
+        logger.warning(
+            "Figure caption sidecar empty for %s at %s — will re-caption",
+            figure_id,
+            sidecar,
+        )
+        return None
+
+    first_line, sep, rest = stripped.partition("\n")
+    if not first_line.startswith(_CAPTION_SIDECAR_HEADER_PREFIX):
+        logger.warning(
+            "Figure caption sidecar unbound (missing asset hash) for %s at %s — will re-caption",
+            figure_id,
+            sidecar,
+        )
+        return None
+
+    stored_digest = first_line[len(_CAPTION_SIDECAR_HEADER_PREFIX) :].strip()
+    if not stored_digest:
+        logger.warning(
+            "Figure caption sidecar asset hash missing for %s at %s — will re-caption",
+            figure_id,
+            sidecar,
+        )
+        return None
+    if stored_digest != asset_digest:
+        logger.warning(
+            "Figure caption sidecar asset hash mismatch for %s at %s — will re-caption",
+            figure_id,
+            sidecar,
+        )
+        return None
+
+    caption = rest.strip() if sep else ""
+    if not caption:
+        logger.warning(
+            "Figure caption sidecar empty for %s at %s — will re-caption",
+            figure_id,
+            sidecar,
+        )
+        return None
+    return caption
+
+
 def _read_caption_sidecar(asset_path: Path, *, figure_id: str) -> str | None:
-    """Load a previously persisted VLM caption, or None when missing/unusable."""
+    """Load a previously persisted VLM caption when it still matches the asset."""
     sidecar = caption_sidecar_path(asset_path)
     if not sidecar.is_file():
         return None
+
+    asset_digest = _asset_sha256(asset_path)
+    if asset_digest is None:
+        return None
+
     try:
-        text = sidecar.read_text(encoding="utf-8").strip()
+        text = sidecar.read_text(encoding="utf-8")
     except OSError as exc:
         logger.warning(
             "Figure caption sidecar unreadable for %s at %s: %s",
@@ -154,21 +231,23 @@ def _read_caption_sidecar(asset_path: Path, *, figure_id: str) -> str | None:
             exc,
         )
         return None
-    if not text:
-        logger.warning(
-            "Figure caption sidecar empty for %s at %s — will re-caption",
-            figure_id,
-            sidecar,
-        )
-        return None
-    return text
+
+    return _parse_caption_sidecar(
+        text,
+        asset_digest=asset_digest,
+        figure_id=figure_id,
+        sidecar=sidecar,
+    )
 
 
 def _write_caption_sidecar(asset_path: Path, caption: str, *, figure_id: str) -> None:
     """Persist a VLM caption next to the asset; soft-fail on I/O errors."""
+    digest = _asset_sha256(asset_path)
+    if digest is None:
+        return
     sidecar = caption_sidecar_path(asset_path)
     try:
-        sidecar.write_text(caption, encoding="utf-8")
+        sidecar.write_text(_format_caption_sidecar(digest, caption), encoding="utf-8")
     except OSError as exc:
         logger.warning(
             "Figure caption sidecar write failed for %s at %s: %s",

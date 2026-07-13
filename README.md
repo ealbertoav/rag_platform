@@ -889,17 +889,17 @@ parsing:
 
 #### VLM Captioning at Ingest (T-231)
 
-When `parsing.figure_captions.enabled=true`, ingest calls a vision-language model after figure assets are stored and writes captions onto `figures[].caption`. Successful captions are also written next to the asset as `{stem}.caption.txt`; later full or skip-path re-ingests reload the sidecar instead of re-calling the VLM. Providers: OpenAI (`gpt-4o-mini` by default) or Gemini (`gemini-2.0-flash`). Off by default; soft-fails when the VLM is misconfigured or a single figure fails so ingest continues. Requires `figures[].asset_path` from T-230 and `uv sync --extra api-embeddings`.
+When `parsing.figure_captions.enabled=true`, ingest calls a vision-language model after figure assets are stored and writes captions onto `figures[].caption`. Successful captions are also written next to the asset as `{stem}.caption.txt`, bound to the asset SHA-256; later full or skip-path re-ingests reload a matching sidecar instead of re-calling the VLM, and overwritten assets at the same path re-caption. Providers: OpenAI (`gpt-4o-mini` by default) or Gemini (`gemini-2.0-flash`). Off by default; soft-fails when the VLM is misconfigured or a single figure fails so ingest continues. Requires `figures[].asset_path` from T-230 and `uv sync --extra api-embeddings`.
 
 ```mermaid
 flowchart TD
     ASSETS["apply_figure_assets()"] --> FLAG{"figure_captions.enabled?"}
     FLAG -->|no| CHUNK["chunk / embed"]
     FLAG -->|yes| LOOP["For each figures[] with asset_path"]
-    LOOP --> SIDE{"stem.caption.txt?"}
+    LOOP --> SIDE{"stem.caption.txt hash matches asset?"}
     SIDE -->|yes| META["figures.caption from sidecar"]
-    SIDE -->|no| VLM["caption_image(path)"]
-    VLM -->|ok| WRITE["write sidecar + figures.caption"]
+    SIDE -->|no / mismatch| VLM["caption_image(path)"]
+    VLM -->|ok| WRITE["write hash-bound sidecar + figures.caption"]
     VLM -->|fail / empty| KEEP["keep existing caption"]
     META --> CHUNK
     WRITE --> CHUNK
@@ -940,7 +940,7 @@ parsing:
 | Pipeline wiring | `IngestionPipeline.ingest_file` | Runs after `apply_figure_assets` on full + skip paths |
 | Config | `configs/parsing.yaml` + `FigureCaptionSettings` | `enabled`, `provider`, API keys — off by default |
 
-**Trade-offs:** Adds API latency/cost per figure on first caption (or after deleting the sidecar). Existing Docling captions are overwritten only when the VLM returns non-empty text. Skip-path re-ingests reuse sidecars so captions survive without reindex until T-232 indexes `type=caption` chunks.
+**Trade-offs:** Adds API latency/cost per figure on first caption (or after the asset bytes change / sidecar is deleted). Existing Docling captions are overwritten only when the VLM returns non-empty text. Skip-path re-ingests reuse hash-matching sidecars so captions survive without reindex until T-232 indexes `type=caption` chunks.
 
 **Tests:** `tests/unit/test_figure_captioner.py`; `tests/unit/test_vision_providers.py`.
 

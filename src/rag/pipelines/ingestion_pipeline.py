@@ -480,9 +480,10 @@ class IngestionPipeline:
 
         Figure assets (T-230) are refreshed on the skip path, so enabling
         "parsing.figure_assets" backfills disk assets without a content change.
-        VLM captions (T-231) also run here and persist to asset sidecars so
-        re-ingests do not re-call the vision API or lose captions when the
-        skip path skips reindex (caption chunk indexing is T-232).
+        VLM captions (T-231) also run here and persist to hash-bound asset
+        sidecars so re-ingests do not re-call the vision API when asset bytes
+        are unchanged, and captions are not lost when the skip path skips
+        reindex (caption chunk indexing is T-232).
         """
         document = apply_figure_assets(document, path)
         document = apply_figure_captions(document)

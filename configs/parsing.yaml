@@ -47,9 +47,10 @@ parsing:
     provider: openai            # openai | gemini
     # Requires figures[].asset_path from T-230. Writes figures[].caption via
     # apply_figure_captions() after apply_figure_assets(), and persists each
-    # successful caption next to the asset as {stem}.caption.txt so skip-path
-    # re-ingests reload without re-calling the VLM. Soft-fails when the VLM is
-    # unavailable or a single figure fails. Install: uv sync --extra api-embeddings
+    # successful caption next to the asset as {stem}.caption.txt bound to the
+    # asset SHA-256 so skip-path re-ingests reload without re-calling the VLM
+    # while overwritten assets cannot reuse a stale caption. Soft-fails when the
+    # VLM is unavailable or a single figure fails. Install: uv sync --extra api-embeddings
     openai:
       api_key: ""               # prefer PARSING__FIGURE_CAPTIONS__OPENAI__API_KEY
       model: gpt-4o-mini
