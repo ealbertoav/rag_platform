@@ -19,6 +19,7 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.rag.ingestion.figure_captioner import apply_figure_captions
 from src.rag.ingestion.figure_extractor import apply_figure_assets
 from src.rag.ingestion.ocr_fallback import apply_ocr_fallback, should_attempt_ocr
 from src.rag.ingestion.table_chunker import (
@@ -275,6 +276,7 @@ class IngestionPipeline:
             )
 
         document = apply_figure_assets(document, path)
+        document = apply_figure_captions(document)
 
         with self._bm25.deferred_rebuild():
             chunks = self._service.prepare(document)
@@ -478,8 +480,13 @@ class IngestionPipeline:
 
         Figure assets (T-230) are refreshed on the skip path, so enabling
         "parsing.figure_assets" backfills disk assets without a content change.
+        VLM captions (T-231) also run here and persist to hash-bound asset
+        sidecars so re-ingests do not re-call the vision API when asset bytes
+        are unchanged, and captions are not lost when the skip path skips
+        reindex (caption chunk indexing is T-232).
         """
         document = apply_figure_assets(document, path)
+        document = apply_figure_captions(document)
         empty_ocr_without_layout = (
             ocr_candidate and not document.content.strip() and not metadata_table_ids(document)
         )

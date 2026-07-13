@@ -21,7 +21,8 @@ excluding header/footer relationships. PPTX walks picture shapes
 recursively through group shapes.
 
 Soft-fails per figure when bytes cannot be exported. VLM captions are
-T-231; caption indexing is T-232.
+applied by :func:`~src.rag.ingestion.figure_captioner.apply_figure_captions`
+(T-231); caption indexing is T-232.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from src.core.constants import (
     CHUNK_SOURCE_KEY,
     CHUNK_TYPE_FIGURE,
     CHUNK_TYPE_KEY,
+    FIGURE_CAPTION_KEY,
     FIGURE_ID_KEY,
     MODALITY_FIGURE,
 )
@@ -121,7 +123,7 @@ def build_figure_chunks(document: Document) -> list[Chunk]:
         if not figure_id or not asset_path:
             continue
 
-        caption = raw_entry.get("caption")
+        caption = raw_entry.get(FIGURE_CAPTION_KEY) or raw_entry.get("caption")
         if isinstance(caption, str) and caption.strip():
             text = caption.strip()
         else:

@@ -11,6 +11,7 @@ from src.domain.repositories.vector_store_repository import (
     SearchResult,
     VectorStoreRepository,
 )
+from src.domain.repositories.vision_repository import VisionRepository
 
 __all__ = [
     "DenseVector",
@@ -22,4 +23,5 @@ __all__ = [
     "SearchResult",
     "SparseVector",
     "VectorStoreRepository",
+    "VisionRepository",
 ]

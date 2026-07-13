@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 from pathlib import Path
@@ -58,10 +59,24 @@ class LocalAssetStore:
         *,
         extension: str = "png",
     ) -> Path:
-        """Write *data* to the disk and return the absolute asset path."""
+        """Write *data* to the disk and return the absolute asset path.
+
+        When an existing file at the destination is replaced with different
+        bytes, any adjacent "{stem}.caption.txt" sidecar is removed so T-231
+        captioning cannot reuse a stale VLM caption for the new image.
+        """
         if not data:
             raise ValueError("Cannot store empty asset bytes")
         path = self.path_for(document_key, figure_id, extension=extension)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file():
+            try:
+                previous = path.read_bytes()
+            except OSError:
+                previous = None
+            if previous is not None and previous != data:
+                sidecar = path.with_name(f"{path.stem}.caption.txt")
+                with contextlib.suppress(OSError):
+                    sidecar.unlink(missing_ok=True)
         path.write_bytes(data)
         return path

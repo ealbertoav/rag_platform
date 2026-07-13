@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -86,3 +87,49 @@ class TestLocalAssetStore:
         path = store.save("doc key!!", "fig/1", b"x", extension="jpg")
         assert path.parent.name == "doc_key"
         assert path.name == "fig_1.jpg"
+
+    def test_save_replacing_bytes_removes_caption_sidecar(self, tmp_path: Path) -> None:
+        store = LocalAssetStore(tmp_path)
+        path = store.save("doc-key", "figure-1", b"original", extension="png")
+        sidecar = path.with_name("figure-1.caption.txt")
+        sidecar.write_text("stale caption", encoding="utf-8")
+
+        store.save("doc-key", "figure-1", b"replaced", extension="png")
+
+        assert path.read_bytes() == b"replaced"
+        assert not sidecar.exists()
+
+    def test_save_identical_bytes_keeps_caption_sidecar(self, tmp_path: Path) -> None:
+        store = LocalAssetStore(tmp_path)
+        path = store.save("doc-key", "figure-1", b"same-bytes", extension="png")
+        sidecar = path.with_name("figure-1.caption.txt")
+        sidecar.write_text("keep me", encoding="utf-8")
+
+        store.save("doc-key", "figure-1", b"same-bytes", extension="png")
+
+        assert sidecar.read_text(encoding="utf-8") == "keep me"
+
+    def test_save_unreadable_existing_still_writes(self, tmp_path: Path) -> None:
+        store = LocalAssetStore(tmp_path)
+        path = store.save("doc-key", "figure-1", b"original", extension="png")
+        sidecar = path.with_name("figure-1.caption.txt")
+        sidecar.write_text("maybe stale", encoding="utf-8")
+
+        with patch.object(Path, "read_bytes", side_effect=OSError("busy")):
+            result = store.save("doc-key", "figure-1", b"new-bytes", extension="png")
+
+        assert result.read_bytes() == b"new-bytes"
+        # Could not compare previous bytes → leave sidecar; captioner hash-binds
+        assert sidecar.is_file()
+
+    def test_save_sidecar_unlink_failure_still_writes(self, tmp_path: Path) -> None:
+        store = LocalAssetStore(tmp_path)
+        path = store.save("doc-key", "figure-1", b"original", extension="png")
+        sidecar = path.with_name("figure-1.caption.txt")
+        sidecar.write_text("stale", encoding="utf-8")
+
+        with patch.object(Path, "unlink", side_effect=OSError("denied")):
+            result = store.save("doc-key", "figure-1", b"replaced", extension="png")
+
+        assert result.read_bytes() == b"replaced"
+        assert sidecar.is_file()

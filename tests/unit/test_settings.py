@@ -168,6 +168,12 @@ class TestYamlDefaults:
         assert settings.parsing.table_chunks.enabled is False
         assert settings.parsing.figure_assets.enabled is False
         assert settings.parsing.figure_assets.store_dir == "data/assets"
+        assert settings.parsing.figure_captions.enabled is False
+        assert settings.parsing.figure_captions.provider == "openai"
+        assert settings.parsing.figure_captions.openai.api_key.get_secret_value() == ""
+        assert settings.parsing.figure_captions.openai.model == "gpt-4o-mini"
+        assert settings.parsing.figure_captions.gemini.api_key.get_secret_value() == ""
+        assert settings.parsing.figure_captions.gemini.model == "gemini-2.0-flash"
 
 
 class TestEnvVarOverride:
@@ -242,6 +248,21 @@ class TestEnvVarOverride:
         s = Settings()
         assert s.parsing.figure_assets.enabled is True
         assert s.parsing.figure_assets.store_dir == "/tmp/figures"
+
+    def test_parsing_figure_captions_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("PARSING__FIGURE_CAPTIONS__ENABLED", "true")
+        monkeypatch.setenv("PARSING__FIGURE_CAPTIONS__PROVIDER", "gemini")
+        monkeypatch.setenv("PARSING__FIGURE_CAPTIONS__OPENAI__API_KEY", "sk-test")
+        monkeypatch.setenv("PARSING__FIGURE_CAPTIONS__OPENAI__MODEL", "gpt-4o")
+        monkeypatch.setenv("PARSING__FIGURE_CAPTIONS__GEMINI__API_KEY", "gemini-secret")
+        monkeypatch.setenv("PARSING__FIGURE_CAPTIONS__GEMINI__MODEL", "gemini-1.5-flash")
+        s = Settings()
+        assert s.parsing.figure_captions.enabled is True
+        assert s.parsing.figure_captions.provider == "gemini"
+        assert s.parsing.figure_captions.openai.api_key.get_secret_value() == "sk-test"
+        assert s.parsing.figure_captions.openai.model == "gpt-4o"
+        assert s.parsing.figure_captions.gemini.api_key.get_secret_value() == "gemini-secret"
+        assert s.parsing.figure_captions.gemini.model == "gemini-1.5-flash"
 
 
 class TestValidation:
