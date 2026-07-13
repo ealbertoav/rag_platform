@@ -828,7 +828,7 @@ parsing:
 
 When `parsing.figure_assets.enabled=true`, the ingestion pipeline persists figure image bytes after OCR and before chunking. Sources:
 
-- **Docling PDF/DOCX** — re-exports layout `figures[]` via Docling `generate_picture_images` + `PictureItem.get_image()`
+- **Docling PDF/DOCX** — re-exports layout `figures[]` via Docling `generate_picture_images` (`PdfFormatOption` / `WordFormatOption` + `PaginatedPipelineOptions`) and `PictureItem.get_image()`; DOCX also backfills from embedded `python-docx` image parts when Docling returns no raster bytes
 - **PPTX** — extracts `MSO_SHAPE_TYPE.PICTURE` blobs from slides (builds `figures[]` when missing)
 
 Assets land under `{store_dir}/{document_key}/{figure_id}.{ext}` (default root `data/assets`, gitignored). Each successful export sets `figures[].asset_path`. `build_figure_chunks()` produces `Chunk` objects with `modality=figure`, `asset_path`, and `metadata.figure_id` (caption text when present; otherwise `[figure]`). Soft-fails per figure / whole-document so ingest continues. Caption VLM enrichment is T-231; indexing `type=caption` chunks is T-232.
@@ -838,7 +838,7 @@ flowchart TD
     LOAD["load_document + OCR"] --> FLAG{"figure_assets.enabled?"}
     FLAG -->|no| CHUNK["chunk / embed"]
     FLAG -->|yes| SRC{"source type"}
-    SRC -->|"PDF/DOCX + figures list"| DOC["Docling picture export<br/>generate_picture_images"]
+    SRC -->|"PDF/DOCX + figures list"| DOC["Docling picture export<br/>PDF: PdfFormatOption<br/>DOCX: WordFormatOption<br/>+ python-docx fallback"]
     SRC -->|PPTX| PPT["python-pptx picture blobs"]
     DOC --> STORE["LocalAssetStore.save()"]
     PPT --> STORE

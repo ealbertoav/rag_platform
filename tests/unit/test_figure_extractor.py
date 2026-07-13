@@ -24,7 +24,7 @@ from src.core.constants import (
     MODALITY_FIGURE,
 )
 from src.core.exceptions import ConfigurationError
-from src.core.settings import Settings
+from src.core.settings import FigureAssetSettings, ParsingSettings, Settings
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.rag.ingestion.figure_extractor import (
@@ -39,10 +39,10 @@ _EXTRACTOR = "src.rag.ingestion.figure_extractor"
 
 
 def _settings(*, enabled: bool = True, store_dir: str | None = None) -> Settings:
-    cfg: dict[str, Any] = {"enabled": enabled}
+    figure_assets = FigureAssetSettings(enabled=enabled)
     if store_dir is not None:
-        cfg["store_dir"] = store_dir
-    return Settings(parsing={"figure_assets": cfg})
+        figure_assets = figure_assets.model_copy(update={"store_dir": store_dir})
+    return Settings(parsing=ParsingSettings(figure_assets=figure_assets))
 
 
 def _png_bytes(color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
@@ -589,21 +589,34 @@ class TestApplyFigureAssetsEdgeCases:
         from src.rag.ingestion import figure_extractor as mod
 
         fake_converter = object()
-        fake_input = SimpleNamespace(PDF="pdf")
+        fake_input = SimpleNamespace(PDF="pdf", DOCX="docx")
 
         class FakePdfPipelineOptions:
             def __init__(self) -> None:
                 self.generate_picture_images = False
 
+        class FakePaginatedPipelineOptions:
+            def __init__(self) -> None:
+                self.generate_picture_images = False
+
         captured: dict[str, Any] = {}
 
-        def fake_converter_cls(*, format_options: Any) -> Any:
+        def fake_converter_cls(
+            *,
+            allowed_formats: Any = None,
+            format_options: Any = None,
+        ) -> Any:
+            captured["allowed_formats"] = allowed_formats
             captured["format_options"] = format_options
             return fake_converter
 
-        def fake_format_option(*, pipeline_options: Any) -> Any:
-            captured["pipeline_options"] = pipeline_options
-            return {"pipeline_options": pipeline_options}
+        def fake_pdf_format_option(*, pipeline_options: Any) -> Any:
+            captured["pdf_pipeline_options"] = pipeline_options
+            return {"kind": "pdf", "pipeline_options": pipeline_options}
+
+        def fake_word_format_option(*, pipeline_options: Any) -> Any:
+            captured["docx_pipeline_options"] = pipeline_options
+            return {"kind": "docx", "pipeline_options": pipeline_options}
 
         import sys
 
@@ -612,17 +625,24 @@ class TestApplyFigureAssetsEdgeCases:
             "docling.datamodel": MagicMock(),
             "docling.datamodel.base_models": SimpleNamespace(InputFormat=fake_input),
             "docling.datamodel.pipeline_options": SimpleNamespace(
-                PdfPipelineOptions=FakePdfPipelineOptions
+                PdfPipelineOptions=FakePdfPipelineOptions,
+                PaginatedPipelineOptions=FakePaginatedPipelineOptions,
             ),
             "docling.document_converter": SimpleNamespace(
                 DocumentConverter=fake_converter_cls,
-                PdfFormatOption=fake_format_option,
+                PdfFormatOption=fake_pdf_format_option,
+                WordFormatOption=fake_word_format_option,
             ),
         }
         with patch.dict(sys.modules, modules):
             result = mod._create_picture_converter()
         assert result is fake_converter
-        assert captured["pipeline_options"].generate_picture_images is True
+        assert captured["allowed_formats"] == ["pdf", "docx"]
+        assert captured["pdf_pipeline_options"].generate_picture_images is True
+        assert captured["docx_pipeline_options"].generate_picture_images is True
+        assert set(captured["format_options"]) == {"pdf", "docx"}
+        assert captured["format_options"]["pdf"]["kind"] == "pdf"
+        assert captured["format_options"]["docx"]["kind"] == "docx"
 
     def test_extract_pptx_import_error_directly(self, tmp_path: Path) -> None:
         from src.rag.ingestion import figure_extractor as mod
@@ -749,6 +769,286 @@ class TestApplyFigureAssetsEdgeCases:
                 tmp_path / "assets",
                 [],
                 convert_error=ConfigurationError("nested config"),
+            )
+        assert result is doc
+        assert "misconfigured" in caplog.text
+
+
+def _docx_with_picture(tmp_path: Path) -> Path:
+    """Build a minimal DOCX containing one embedded PNG."""
+    from docx import Document as DocxDocument
+    from docx.shared import Inches as DocxInches
+
+    png_path = tmp_path / "embed.png"
+    png_path.write_bytes(_png_bytes((0, 128, 255)))
+    docx_path = tmp_path / "report.docx"
+    document = DocxDocument()
+    document.add_paragraph("Figure below")
+    document.add_picture(str(png_path), width=DocxInches(1))
+    document.save(str(docx_path))
+    return docx_path
+
+
+def _figure_docx_document(
+    tmp_path: Path,
+    *,
+    figures: list[Any] | None = None,
+    with_picture: bool = True,
+) -> tuple[Path, Document]:
+    path = _docx_with_picture(tmp_path) if with_picture else (tmp_path / "plain.docx")
+    if not with_picture:
+        from docx import Document as DocxDocument
+
+        DocxDocument().save(str(path))
+    metadata: dict[str, Any] = {
+        "figures": figures if figures is not None else [{FIGURE_ID_KEY: "figure-1"}],
+        "loader": "docling",
+    }
+    return path, Document(source=str(path.resolve()), content="text", metadata=metadata)
+
+
+class TestDocxFigureFallback:
+    def test_docx_fallback_when_docling_has_no_image_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        picture = MagicMock()
+        picture.get_image.return_value = None
+        result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [picture])
+        figures = result.metadata["figures"]
+        assert ASSET_PATH_KEY in figures[0]
+        asset = Path(figures[0][ASSET_PATH_KEY])
+        assert asset.is_file()
+        assert asset.read_bytes()
+
+    def test_docx_fallback_when_docling_returns_no_pictures(
+        self, tmp_path: Path
+    ) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [])
+        assert ASSET_PATH_KEY in result.metadata["figures"][0]
+        assert Path(result.metadata["figures"][0][ASSET_PATH_KEY]).is_file()
+
+    def test_docx_fallback_mismatch_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path, doc = _figure_docx_document(
+            tmp_path,
+            figures=[{FIGURE_ID_KEY: "figure-1"}, {FIGURE_ID_KEY: "figure-2"}],
+        )
+        with caplog.at_level(logging.WARNING):
+            result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [])
+        assert ASSET_PATH_KEY in result.metadata["figures"][0]
+        assert ASSET_PATH_KEY not in result.metadata["figures"][1]
+        assert "DOCX embedded images returned 1 picture(s)" in caplog.text
+        assert "No Docling picture for figure-2" in caplog.text
+
+    def test_docx_open_failure_soft_falls_back_empty(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.core.exceptions import DocumentLoadError as DLE
+        from src.rag.ingestion import figure_extractor as mod
+
+        path = tmp_path / "broken.docx"
+        path.write_bytes(b"not-a-docx")
+        doc = Document(
+            source=str(path.resolve()),
+            content="x",
+            metadata={"figures": [{FIGURE_ID_KEY: "figure-1"}]},
+        )
+        with (
+            patch(f"{_EXTRACTOR}._load_docling_pictures", return_value=[]),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = apply_figure_assets(
+                doc,
+                path,
+                app_settings=_settings(enabled=True),
+                store=LocalAssetStore(tmp_path / "assets"),
+            )
+        assert result is doc
+        assert "DOCX embedded-image fallback unavailable" in caplog.text
+        assert "Docling returned no pictures" in caplog.text
+        with pytest.raises(DLE, match="Cannot open DOCX"):
+            mod._extract_docx_picture_bytes(path)
+
+    def test_extract_docx_import_error(self, tmp_path: Path) -> None:
+        from src.rag.ingestion import figure_extractor as mod
+
+        path = tmp_path / "x.docx"
+        path.write_bytes(b"x")
+        real_import = __import__
+
+        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "docx" or name.startswith("docx."):
+                raise ImportError("missing docx")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch("builtins.__import__", side_effect=fake_import),
+            pytest.raises(ConfigurationError, match="python-docx"),
+        ):
+            mod._extract_docx_picture_bytes(path)
+
+    def test_extract_docx_skips_unreadable_and_empty_parts(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.rag.ingestion import figure_extractor as mod
+
+        path = _docx_with_picture(tmp_path)
+
+        class BoomRel:
+            reltype = (
+                "http://schemas.openxmlformats.org/officeDocument/2006/"
+                "relationships/image"
+            )
+            rId = "rIdBoom"
+
+            @property
+            def target_part(self) -> object:
+                raise RuntimeError("bad part")
+
+        class EmptyRel:
+            reltype = (
+                "http://schemas.openxmlformats.org/officeDocument/2006/"
+                "relationships/image"
+            )
+            rId = "rIdEmpty"
+            target_part = SimpleNamespace(blob=b"", content_type="image/png")
+
+        class GoodRel:
+            reltype = (
+                "http://schemas.openxmlformats.org/officeDocument/2006/"
+                "relationships/image"
+            )
+            rId = "rIdGood"
+            target_part = SimpleNamespace(blob=_png_bytes(), content_type="image/jpeg")
+
+        class DupRel:
+            reltype = GoodRel.reltype
+            rId = "rIdGood"
+            target_part = SimpleNamespace(blob=_png_bytes((1, 2, 3)), content_type="image/png")
+
+        class NonImageRel:
+            reltype = (
+                "http://schemas.openxmlformats.org/officeDocument/2006/"
+                "relationships/hyperlink"
+            )
+            rId = "rIdLink"
+
+        fake_doc = SimpleNamespace(
+            part=SimpleNamespace(
+                rels={
+                    "a": BoomRel(),
+                    "b": EmptyRel(),
+                    "c": GoodRel(),
+                    "d": NonImageRel(),
+                    "e": DupRel(),
+                }
+            )
+        )
+        with (
+            patch("docx.Document", return_value=fake_doc),
+            caplog.at_level(logging.WARNING),
+        ):
+            pictures = mod._extract_docx_picture_bytes(path)
+        assert len(pictures) == 1
+        assert pictures[0][1] == "jpg"
+        assert "Skipping unreadable DOCX embedded image" in caplog.text
+
+    def test_extension_from_image_content_type_helpers(self) -> None:
+        from src.rag.ingestion.figure_extractor import _extension_from_image_content_type
+
+        assert _extension_from_image_content_type("image/png") == "png"
+        assert _extension_from_image_content_type("image/jpeg") == "jpg"
+        assert _extension_from_image_content_type("image/x-emf") == "emf"
+        assert _extension_from_image_content_type("image/x-icon") == "icon"
+        assert _extension_from_image_content_type("image/svg+xml") == "svg+xml"
+        assert _extension_from_image_content_type("") == "png"
+        assert _extension_from_image_content_type("application/octet-stream") == (
+            "octet-stream"
+        )
+        assert _extension_from_image_content_type("noslash") == "png"
+
+    def test_docx_fallback_blobs_ignores_non_docx(self, tmp_path: Path) -> None:
+        from src.rag.ingestion.figure_extractor import _docx_fallback_blobs
+
+        assert _docx_fallback_blobs(tmp_path / "doc.pdf") == []
+
+    def test_docx_fallback_unexpected_error_returns_empty(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.rag.ingestion import figure_extractor as mod
+
+        path = tmp_path / "report.docx"
+        path.write_bytes(b"x")
+        with (
+            patch(
+                f"{_EXTRACTOR}._extract_docx_picture_bytes",
+                side_effect=RuntimeError("surprise"),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            assert mod._docx_fallback_blobs(path) == []
+        assert "DOCX embedded-image fallback failed" in caplog.text
+
+    def test_docx_prefers_docling_bytes_over_fallback(self, tmp_path: Path) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        picture = MagicMock()
+        picture.get_image.return_value = _fake_pil_image()
+        result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [picture])
+        asset = Path(result.metadata["figures"][0][ASSET_PATH_KEY])
+        # Fake PIL writes the standard red PNG from _png_bytes(), not the embedded blue one.
+        assert asset.read_bytes() == _png_bytes()
+
+    def test_docx_fallback_after_docling_export_exception(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        picture = MagicMock()
+        picture.get_image.side_effect = RuntimeError("export failed")
+        with caplog.at_level(logging.WARNING):
+            result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [picture])
+        assert ASSET_PATH_KEY in result.metadata["figures"][0]
+        assert "Failed to export Docling figure" in caplog.text
+        assert Path(result.metadata["figures"][0][ASSET_PATH_KEY]).is_file()
+
+    def test_store_save_failure_after_docx_blob(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        store = MagicMock(spec=LocalAssetStore)
+        store.save.side_effect = OSError("disk full")
+        with (
+            patch(f"{_EXTRACTOR}._load_docling_pictures", return_value=[]),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = apply_figure_assets(
+                doc,
+                path,
+                app_settings=_settings(enabled=True),
+                store=store,
+            )
+        assert ASSET_PATH_KEY not in result.metadata["figures"][0]
+        assert "Failed to export Docling figure" in caplog.text
+
+    def test_docx_fallback_configuration_error_propagates(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        with (
+            patch(
+                f"{_EXTRACTOR}._extract_docx_picture_bytes",
+                side_effect=ConfigurationError("DOCX figure fallback requires python-docx"),
+            ),
+            patch(f"{_EXTRACTOR}._load_docling_pictures", return_value=[]),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = apply_figure_assets(
+                doc,
+                path,
+                app_settings=_settings(enabled=True),
+                store=LocalAssetStore(tmp_path / "assets"),
             )
         assert result is doc
         assert "misconfigured" in caplog.text

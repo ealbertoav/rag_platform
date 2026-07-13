@@ -4,8 +4,17 @@ When "parsing.figure_assets.enabled" is true, persist figure bytes from
 layout "figures[]" (Docling PDF/DOCX) or PPTX picture shapes under a
 :class:`~src.rag.ingestion.local_asset_store.LocalAssetStore`, then set
 "figures[].asset_path" and produce :class:`~src.domain.entities.chunk.Chunk`
-instances with "asset_path" / "figure_id". Soft-fails per figure when
-bytes cannot be exported. VLM captions are T-231; caption indexing is T-232.
+instances with "asset_path" / "figure_id".
+
+Docling picture export enables "generate_picture_images" for PDF
+(:class:`~docling.document_converter.PdfFormatOption`) and DOCX
+(:class:`~docling.document_converter.WordFormatOption` +
+"PaginatedPipelineOptions"). DOCX also falls back to embedded
+"python-docx" image parts when "PictureItem.get_image()" returns no
+bytes (common when layout metadata exists but ImageRef was not attached).
+
+Soft-fails per figure when bytes cannot be exported. VLM captions are
+T-231; caption indexing is T-232.
 """
 
 from __future__ import annotations
@@ -304,7 +313,9 @@ def _apply_docling_figures(
     figure_entries = [entry for entry in existing if isinstance(entry, dict)]
     expected_count = len(figure_entries)
     pictures = _load_docling_pictures(path)
-    if not pictures:
+    docx_blobs = _docx_fallback_blobs(path)
+
+    if not pictures and not docx_blobs:
         logger.warning(
             "Layout figures[] has %d entr%s for %s but Docling returned no pictures — "
             "continuing without asset_path",
@@ -314,47 +325,83 @@ def _apply_docling_figures(
         )
         return document
 
-    if expected_count > len(pictures):
-        logger.warning(
-            "Docling returned %d picture(s) for %s but layout figures[] has %d dict entr%s — "
-            "unmatched figures leave without asset_path",
-            len(pictures),
-            path.name,
-            expected_count,
-            "y" if expected_count == 1 else "ies",
-        )
+    # Docling pictures are primary; DOCX embedded parts only backfill missing rasters.
+    available = max(len(pictures), len(docx_blobs)) if docx_blobs else len(pictures)
+    if expected_count > available:
+        if docx_blobs and not pictures:
+            logger.warning(
+                "DOCX embedded images returned %d picture(s) for %s but layout figures[] "
+                "has %d dict entr%s — unmatched figures leave without asset_path",
+                len(docx_blobs),
+                path.name,
+                expected_count,
+                "y" if expected_count == 1 else "ies",
+            )
+        else:
+            logger.warning(
+                "Docling returned %d picture(s) for %s but layout figures[] has %d dict entr%s — "
+                "unmatched figures leave without asset_path",
+                len(pictures),
+                path.name,
+                expected_count,
+                "y" if expected_count == 1 else "ies",
+            )
 
     doc_key = document_asset_key(document.source)
     figures: list[dict[str, Any]] = []
     picture_index = 0
+    docx_index = 0
     for raw_entry in existing:
         if not isinstance(raw_entry, dict):
             continue
         entry = dict(raw_entry)
         figure_id = str(entry.get(FIGURE_ID_KEY) or f"figure-{len(figures) + 1}")
         entry[FIGURE_ID_KEY] = figure_id
-        if picture_index >= len(pictures):
-            logger.warning(
-                "No Docling picture for %s in %s — leaving without asset_path",
+
+        blob: bytes | None = None
+        extension = "png"
+        attempted_docling = False
+        if picture_index < len(pictures):
+            attempted_docling = True
+            picture, doc = pictures[picture_index]
+            picture_index += 1
+            try:
+                blob = _picture_to_png_bytes(picture, doc)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to export Docling figure %s from %s: %s",
+                    figure_id,
+                    path.name,
+                    exc,
+                )
+
+        if not blob and docx_index < len(docx_blobs):
+            blob, extension = docx_blobs[docx_index]
+            docx_index += 1
+            logger.debug(
+                "Using python-docx embedded image for %s in %s",
                 figure_id,
                 path.name,
             )
-            figures.append(entry)
-            continue
 
-        picture, doc = pictures[picture_index]
-        picture_index += 1
-        try:
-            png_bytes = _picture_to_png_bytes(picture, doc)
-            if not png_bytes:
+        if not blob:
+            if attempted_docling:
                 logger.warning(
                     "No image bytes for %s in %s — leaving without asset_path",
                     figure_id,
                     path.name,
                 )
-                figures.append(entry)
-                continue
-            asset_path = store.save(doc_key, figure_id, png_bytes, extension="png")
+            else:
+                logger.warning(
+                    "No Docling picture for %s in %s — leaving without asset_path",
+                    figure_id,
+                    path.name,
+                )
+            figures.append(entry)
+            continue
+
+        try:
+            asset_path = store.save(doc_key, figure_id, blob, extension=extension)
             entry[ASSET_PATH_KEY] = str(asset_path)
         except Exception as exc:
             logger.warning(
@@ -368,6 +415,101 @@ def _apply_docling_figures(
     metadata = dict(document.metadata)
     metadata["figures"] = figures
     return document.model_copy(update={"metadata": metadata})
+
+
+def _docx_fallback_blobs(path: Path) -> list[tuple[bytes, str]]:
+    """Return embedded DOCX image blobs for figure-asset fallback, else []."""
+    if path.suffix.lower() != ".docx":
+        return []
+    try:
+        return _extract_docx_picture_bytes(path)
+    except ConfigurationError:
+        raise
+    except DocumentLoadError as exc:
+        logger.warning(
+            "DOCX embedded-image fallback unavailable for %s: %s",
+            path.name,
+            exc,
+        )
+        return []
+    except Exception as exc:
+        logger.warning(
+            "DOCX embedded-image fallback failed for %s: %s",
+            path.name,
+            exc,
+        )
+        return []
+
+
+def _extension_from_image_content_type(content_type: str) -> str:
+    normalized = (content_type or "").lower().strip()
+    mapping = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/jpg": "jpg",
+        "image/gif": "gif",
+        "image/bmp": "bmp",
+        "image/tiff": "tiff",
+        "image/webp": "webp",
+        "image/x-emf": "emf",
+        "image/x-wmf": "wmf",
+    }
+    if normalized in mapping:
+        return mapping[normalized]
+    if "/" in normalized:
+        subtype = normalized.rsplit("/", 1)[-1]
+        if subtype.startswith("x-"):
+            subtype = subtype[2:]
+        if subtype:
+            return subtype
+    return "png"
+
+
+def _extract_docx_picture_bytes(path: Path) -> list[tuple[bytes, str]]:
+    """Extract embedded image parts from a DOCX via python-docx (document order)."""
+    try:
+        import docx as python_docx
+    except ImportError as exc:
+        raise ConfigurationError(
+            "DOCX figure fallback requires python-docx. "
+            "Install with: uv pip install python-docx"
+        ) from exc
+
+    try:
+        document = python_docx.Document(str(path))
+    except Exception as exc:
+        raise DocumentLoadError(
+            f"Cannot open DOCX for figure extraction: {path}",
+            cause=exc,
+        ) from exc
+
+    pictures: list[tuple[bytes, str]] = []
+    seen_rids: set[str] = set()
+    for rel in document.part.rels.values():
+        reltype = str(getattr(rel, "reltype", "") or "")
+        if "image" not in reltype.lower():
+            continue
+        rid = str(getattr(rel, "rId", "") or "")
+        if rid and rid in seen_rids:
+            continue
+        try:
+            target = rel.target_part
+            blob = bytes(getattr(target, "blob", b"") or b"")
+            content_type = str(getattr(target, "content_type", "") or "")
+            extension = _extension_from_image_content_type(content_type)
+        except Exception as exc:
+            logger.warning(
+                "Skipping unreadable DOCX embedded image in %s: %s",
+                path.name,
+                exc,
+            )
+            continue
+        if not blob:
+            continue
+        if rid:
+            seen_rids.add(rid)
+        pictures.append((blob, extension))
+    return pictures
 
 
 def _load_docling_pictures(path: Path) -> list[tuple[_DoclingPicture, _DoclingDocument]]:
@@ -412,21 +554,29 @@ def _create_picture_converter() -> _DoclingConverter:
         document_converter_mod = importlib.import_module("docling.document_converter")
         input_format = base_models.InputFormat
         pdf_pipeline_options = pipeline_options_mod.PdfPipelineOptions
+        paginated_pipeline_options = pipeline_options_mod.PaginatedPipelineOptions
         document_converter = document_converter_mod.DocumentConverter
         pdf_format_option = document_converter_mod.PdfFormatOption
+        word_format_option = document_converter_mod.WordFormatOption
     except ImportError as exc:
         raise ConfigurationError(
             "Figure asset extraction for PDF/DOCX requires the docling package. "
             "Install with: uv pip install docling"
         ) from exc
 
-    pipeline_options = pdf_pipeline_options()
-    pipeline_options.generate_picture_images = True
+    pdf_options = pdf_pipeline_options()
+    pdf_options.generate_picture_images = True
+    # DOCX uses SimplePipeline; PaginatedPipelineOptions carries generate_picture_images
+    # so PictureItem ImageRefs / get_image() can yield raster bytes when supported.
+    docx_options = paginated_pipeline_options()
+    docx_options.generate_picture_images = True
     return cast(
         _DoclingConverter,
         document_converter(
+            allowed_formats=[input_format.PDF, input_format.DOCX],
             format_options={
-                input_format.PDF: pdf_format_option(pipeline_options=pipeline_options),
-            }
+                input_format.PDF: pdf_format_option(pipeline_options=pdf_options),
+                input_format.DOCX: word_format_option(pipeline_options=docx_options),
+            },
         ),
     )
