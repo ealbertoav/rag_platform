@@ -2590,7 +2590,7 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Extract figures from layout `figures[]` (T-200) / PPTX (T-201); persist bytes under a local asset store and set `Chunk.asset_path` / `figure_id` (T-210 fields). No VLM captions yet — that is T-231. `LocalAssetStore` writes under `parsing.figure_assets.store_dir` (default `data/assets`); `apply_figure_assets` runs after OCR on full ingest and skip path; soft-fails per figure. `build_figure_chunks()` builds modality=figure chunks for T-231/T-232.
+- **Notes:** Extract figures from layout `figures[]` (T-200) / PPTX (T-201); persist bytes under a local asset store and set `Chunk.asset_path` / `figure_id` (T-210 fields). No VLM captions yet — that is T-231. `LocalAssetStore` writes under `parsing.figure_assets.store_dir` (default `data/assets`); `apply_figure_assets` runs after OCR on full ingest and skip path; soft-fails per figure. DOCX backfills via `python-docx` when Docling is unavailable, fails, or returns no raster bytes, aligning blobs to figure slots in document order (page/bbox, then remaining). PPTX walks nested group shapes. `build_figure_chunks()` builds modality=figure chunks for T-231/T-232.
 
 ---
 

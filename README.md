@@ -828,8 +828,8 @@ parsing:
 
 When `parsing.figure_assets.enabled=true`, the ingestion pipeline persists figure image bytes after OCR and before chunking. Sources:
 
-- **Docling PDF/DOCX** — re-exports layout `figures[]` via Docling `generate_picture_images` (`PdfFormatOption` / `WordFormatOption` + `PaginatedPipelineOptions`) and `PictureItem.get_image()`; DOCX also backfills from embedded `python-docx` image parts when Docling returns no raster bytes
-- **PPTX** — extracts `MSO_SHAPE_TYPE.PICTURE` blobs from slides (builds `figures[]` when missing)
+- **Docling PDF/DOCX** — re-exports layout `figures[]` via Docling `generate_picture_images` (`PdfFormatOption` / `WordFormatOption` + `PaginatedPipelineOptions`) and `PictureItem.get_image()`; DOCX also backfills from embedded `python-docx` image parts when Docling is unavailable, conversion fails, or `get_image()` returns no raster bytes, aligning each figure slot in document order (page/bbox match, then remaining order)
+- **PPTX** — extracts `MSO_SHAPE_TYPE.PICTURE` blobs from slides, including pictures nested in group shapes (builds `figures[]` when missing)
 
 Assets land under `{store_dir}/{document_key}/{figure_id}.{ext}` (default root `data/assets`, gitignored). Each successful export sets `figures[].asset_path`. `build_figure_chunks()` produces `Chunk` objects with `modality=figure`, `asset_path`, and `metadata.figure_id` (caption text when present; otherwise `[figure]`). Soft-fails per figure / whole-document so ingest continues. Caption VLM enrichment is T-231; indexing `type=caption` chunks is T-232.
 
@@ -838,8 +838,8 @@ flowchart TD
     LOAD["load_document + OCR"] --> FLAG{"figure_assets.enabled?"}
     FLAG -->|no| CHUNK["chunk / embed"]
     FLAG -->|yes| SRC{"source type"}
-    SRC -->|"PDF/DOCX + figures list"| DOC["Docling picture export<br/>PDF: PdfFormatOption<br/>DOCX: WordFormatOption<br/>+ python-docx fallback"]
-    SRC -->|PPTX| PPT["python-pptx picture blobs"]
+    SRC -->|"PDF/DOCX + figures list"| DOC["Docling picture export<br/>PDF: PdfFormatOption<br/>DOCX: WordFormatOption<br/>+ python-docx fallback<br/>(slot-aligned)"]
+    SRC -->|PPTX| PPT["python-pptx pictures<br/>(incl. nested groups)"]
     DOC --> STORE["LocalAssetStore.save()"]
     PPT --> STORE
     STORE --> META["figures.asset_path"]
@@ -874,7 +874,7 @@ parsing:
 
 **Trade-offs:** PDF/DOCX asset export re-converts with Docling picture images (extra latency; requires `docling`). PPTX extraction is cheap. Assets are not yet indexed as retrieval points — use `build_figure_chunks()` for downstream T-231/T-232 work.
 
-**Tests:** `tests/unit/test_local_asset_store.py`; `tests/unit/test_figure_extractor.py` (PPTX/Docling paths, soft-fail, chunk builders).
+**Tests:** `tests/unit/test_local_asset_store.py`; `tests/unit/test_figure_extractor.py` (PPTX incl. nested groups, Docling/DOCX fallback + slot alignment, soft-fail, chunk builders).
 
 **Next steps:** T-231 VLM captions at ingest, then T-232 `type=caption` chunks — see [specs/TODO.md](specs/TODO.md).
 
