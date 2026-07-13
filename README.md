@@ -52,7 +52,9 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Azure Document Intelligence OCR (T-222):** Optional cloud OCR via `parsing.ocr.provider=azure_di` — REST `prebuilt-read`, credentials under `parsing.ocr.azure_di` / `PARSING__OCR__AZURE_DI__*`. Factory caches by Azure DI identity and disposes the previous `httpx` client on credential/config rotation. See [docs/ocr-providers.md](docs/ocr-providers.md).
 
-> **Figure asset extraction (T-230):** When `parsing.figure_assets.enabled=true`, ingest persists figure bytes from layout `figures[]` (Docling PDF/DOCX) or PPTX picture shapes under `store_dir` (default `data/assets`), sets `figures[].asset_path`, and exposes `build_figure_chunks()` with `Chunk.asset_path` / `figure_id`. Off by default; soft-fails per figure. VLM captions (T-231) write `figures[].caption` when `parsing.figure_captions.enabled=true`. See [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230) and [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231).
+> **Figure asset extraction (T-230):** When `parsing.figure_assets.enabled=true`, ingest persists figure bytes from layout `figures[]` (Docling PDF/DOCX) or PPTX picture shapes under `store_dir` (default `data/assets`), sets `figures[].asset_path`, and exposes `build_figure_chunks()` with `Chunk.asset_path` / `figure_id`. Off by default; soft-fails per figure. See [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230).
+
+> **VLM captioning at ingest (T-231):** When `parsing.figure_captions.enabled=true` (requires T-230 assets), OpenAI or Gemini writes `figures[].caption` and hash-bound `{stem}.caption.txt` sidecars for skip-path reuse. Off by default; soft-fails per figure. Caption chunk indexing is T-232. See [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231).
 
 ---
 
@@ -365,7 +367,7 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
 
-# Multimodal parsing (layout parser off by default; OCR T-220–T-223; figure assets T-230)
+# Multimodal parsing (layout parser off by default; OCR T-220–T-223; figure assets T-230; VLM captions T-231)
 PARSING__LAYOUT_PARSER__ENABLED=false   # Docling layout parser for .pdf/.docx (T-200)
 PARSING__LAYOUT_PARSER__PROVIDER=docling
 PARSING__TABLE_CHUNKS__ENABLED=false    # structured type=table chunks at ingest (T-202)
@@ -504,7 +506,8 @@ Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptiv
 | Hierarchical summaries (T-125) | `chunking.hierarchical` | Qdrant only (`type=summary` + `type=detail`) | Two-stage summary→detail dense search → RRF source |
 | Structured table chunks (T-202) | `parsing.table_chunks` | Qdrant + BM25 (`type=table`) | Standard dense/BM25 (same as passage chunks) |
 | Scanned-PDF OCR fallback (T-223) | `parsing.ocr` | Replaces document text before chunk/embed | Standard dense/BM25 (OCR text becomes passage chunks) |
-| Figure assets (T-230) | `parsing.figure_assets` | Local files under `store_dir` + `figures[].asset_path` | Not indexed yet (`build_figure_chunks` for T-231/T-232) |
+| Figure assets (T-230) | `parsing.figure_assets` | Local files under `store_dir` + `figures[].asset_path` | Not indexed yet (`build_figure_chunks` for T-232+) |
+| VLM figure captions (T-231) | `parsing.figure_captions` | Writes `figures[].caption` + hash-bound sidecars | Metadata / sidecars only until T-232 indexes `type=caption` |
 
 ##### Contextual Chunk Headers (T-120)
 
@@ -614,7 +617,7 @@ CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 #### Multimodal Parsing Contracts (T-190)
 
-Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented. The OCR factory (`get_ocr_provider()`, T-220) returns Docling-backed self-hosted providers when enabled (T-221) or Azure Document Intelligence (`azure_di`, T-222); scanned-PDF ingest fallback is T-223. Figure asset extraction (T-230) persists layout/PPTX figure bytes locally. See [docs/ocr-providers.md](docs/ocr-providers.md).
+Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented. The OCR factory (`get_ocr_provider()`, T-220) returns Docling-backed self-hosted providers when enabled (T-221) or Azure Document Intelligence (`azure_di`, T-222); scanned-PDF ingest fallback is T-223. Figure asset extraction (T-230) persists layout/PPTX figure bytes locally; VLM captioning (T-231) enriches `figures[].caption` when enabled. See [docs/ocr-providers.md](docs/ocr-providers.md).
 
 ```mermaid
 flowchart TB
@@ -629,6 +632,7 @@ flowchart TB
         LPSET["layout_parser.enabled=false<br/>provider=docling"]
         TCSET["table_chunks.enabled=false"]
         FASET["figure_assets.enabled=false<br/>store_dir=data/assets"]
+        FCSET["figure_captions.enabled=false<br/>provider=openai|gemini"]
         OCRSET["ocr.enabled=false<br/>provider=tesseract|easyocr|docling|azure_di<br/>min_chars=50 · azure_di.*"]
     end
 
@@ -642,7 +646,7 @@ flowchart TB
         T222["T-222 Azure DI OCR ✅"]
         T223["T-223 Scanned-PDF OCR fallback ✅"]
         T230["T-230 Figure assets ✅"]
-        T231["T-231 VLM captions ← next"]
+        T231["T-231 VLM captions ✅"]
     end
 
     LPR --> PD
@@ -651,6 +655,7 @@ flowchart TB
     CONFIG -.->|gates| T220
     CONFIG -.->|gates| T223
     CONFIG -.->|gates| T230
+    CONFIG -.->|gates| T231
     T200 -.->|implements| LPR
     T220 -.->|implements| OCR
     T221 -.->|implements| OCR
@@ -662,6 +667,7 @@ flowchart TB
     T221 --> T223
     T222 --> T223
     T210 -.->|asset_path / figure_id| T230
+    T230 -.->|asset_path| T231
     CONST -.->|metadata keys for| T202
     CONST -.->|modality labels for| T210
 ```
@@ -686,6 +692,9 @@ parsing:
   figure_assets:
     enabled: false              # T-230 local figure asset store (off by default)
     store_dir: data/assets
+  figure_captions:
+    enabled: false              # T-231 VLM captions (requires figure assets)
+    provider: openai            # openai | gemini
   ocr:
     enabled: false              # T-220–T-223 OCR factory + scanned-PDF fallback
     provider: tesseract         # tesseract | easyocr | docling | azure_di
@@ -695,7 +704,7 @@ parsing:
       api_key: ""
 ```
 
-**OCR factory (T-220 / T-221 / T-222):** `get_ocr_provider()` in `src/infrastructure/ocr/` uses shared `EnabledProviderCache` — keyed by `(enabled, provider, identity)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` uses Azure Document Intelligence REST (`prebuilt-read`) with credentials under `parsing.ocr.azure_di`; the identity fingerprint includes endpoint, API key, API version, model ID, timeout, and poll interval so credential/config rotations rebuild the client and call `close()` on the previous instance — see [docs/ocr-providers.md](docs/ocr-providers.md). Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223). Figure assets are [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230). **Next multimodal work:** T-231 VLM captions.
+**OCR factory (T-220 / T-221 / T-222):** `get_ocr_provider()` in `src/infrastructure/ocr/` uses shared `EnabledProviderCache` — keyed by `(enabled, provider, identity)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` uses Azure Document Intelligence REST (`prebuilt-read`) with credentials under `parsing.ocr.azure_di`; the identity fingerprint includes endpoint, API key, API version, model ID, timeout, and poll interval so credential/config rotations rebuild the client and call `close()` on the previous instance — see [docs/ocr-providers.md](docs/ocr-providers.md). Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223). Figure assets are [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230); VLM captions are [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231). **Next multimodal work:** T-232 `type=caption` chunks.
 
 **Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
 
@@ -840,7 +849,7 @@ When `parsing.figure_assets.enabled=true`, the ingestion pipeline persists figur
 - **Docling PDF/DOCX** — re-exports layout `figures[]` via Docling `generate_picture_images` (`PdfFormatOption` / `WordFormatOption` + `PaginatedPipelineOptions`) and `PictureItem.get_image()`; DOCX also backfills from embedded `python-docx` image parts when Docling is unavailable, conversion fails, or `get_image()` returns no raster bytes, aligning each figure slot in document order (page/bbox match, then remaining order)
 - **PPTX** — extracts `MSO_SHAPE_TYPE.PICTURE` blobs from slides, including pictures nested in group shapes (builds `figures[]` when missing)
 
-Assets land under `{store_dir}/{document_key}/{figure_id}.{ext}` (default root `data/assets`, gitignored). Each successful export sets `figures[].asset_path`. `build_figure_chunks()` produces `Chunk` objects with `modality=figure`, `asset_path`, and `metadata.figure_id` (caption text when present; otherwise `[figure]`). Soft-fails per figure / whole-document so ingest continues. Caption VLM enrichment is T-231; indexing `type=caption` chunks is T-232.
+Assets land under `{store_dir}/{document_key}/{figure_id}.{ext}` (default root `data/assets`, gitignored). Each successful export sets `figures[].asset_path`. `build_figure_chunks()` produces `Chunk` objects with `modality=figure`, `asset_path`, and `metadata.figure_id` (caption text when present; otherwise `[figure]`). Soft-fails per figure / whole-document so ingest continues. Caption VLM enrichment (T-231) runs after assets are stored when enabled; indexing `type=caption` chunks is T-232.
 
 ```mermaid
 flowchart TD
@@ -881,7 +890,7 @@ parsing:
 | Pipeline wiring | `IngestionPipeline.ingest_file` | Runs after OCR on full ingest and skip path |
 | Config | `configs/parsing.yaml` + `FigureAssetSettings` | `enabled`, `store_dir` — off by default |
 
-**Trade-offs:** PDF/DOCX asset export re-converts with Docling picture images (extra latency; requires `docling`). PPTX extraction is cheap. Assets are not yet indexed as retrieval points — use `build_figure_chunks()` for downstream T-231/T-232 work.
+**Trade-offs:** PDF/DOCX asset export re-converts with Docling picture images (extra latency; requires `docling`). PPTX extraction is cheap. Assets are not yet indexed as retrieval points — use `build_figure_chunks()` / T-232 caption chunks for retrieval.
 
 **Tests:** `tests/unit/test_local_asset_store.py`; `tests/unit/test_figure_extractor.py` (PPTX incl. nested groups, Docling/DOCX fallback + slot alignment, soft-fail, chunk builders).
 
@@ -1025,7 +1034,7 @@ flowchart LR
 
 **Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
 
-**Next steps:** Phase 23 (**T-230–T-232**) figure assets and caption chunks.
+**Next steps:** T-232 `type=caption` chunks (T-230/T-231 complete) — see [specs/TODO.md](specs/TODO.md).
 
 ### Start the API Server
 

@@ -2605,7 +2605,7 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Depends on stored figure assets from T-230. Prefer feature-flagged vision provider selection; keep ingest soft-fail when VLM is unavailable. Persist successful captions as hash-bound `{stem}.caption.txt` sidecars next to assets so skip-path re-ingests reload without re-calling the VLM when bytes are unchanged (caption chunk indexing remains T-232).
+- **Notes:** Depends on stored figure assets from T-230. Prefer feature-flagged vision provider selection; keep ingest soft-fail when VLM is unavailable. `VisionRepository` + OpenAI/Gemini providers under `src/infrastructure/vision/`; `apply_figure_captions` in `figure_captioner.py` runs after `apply_figure_assets` on full + skip paths. Persist successful captions as hash-bound `{stem}.caption.txt` sidecars next to assets so skip-path re-ingests reload without re-calling the VLM when bytes are unchanged (caption chunk indexing remains T-232).
 
 ---
 
