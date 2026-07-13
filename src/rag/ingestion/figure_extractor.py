@@ -80,7 +80,7 @@ class _DoclingConverter(Protocol):
 
 
 def figure_chunk_id(source: str, figure_id: str) -> str:
-    """Stable chunk ID for a figure asset at *source*."""
+    """Stable chunk ID for a figure asset at a *source*."""
     return str(uuid.uuid5(_FIGURE_CHUNK_NAMESPACE, f"{source}:{figure_id}"))
 
 
@@ -143,8 +143,8 @@ def apply_figure_assets(
 ) -> Document:
     """Persist figure bytes and attach "asset_path" onto "figures[]" metadata.
 
-    No-op when figure assets are disabled. Soft-fails (logs + returns the
-    original document) on configuration / conversion errors so ingest continues.
+    No-op when figure assets are disabled. Soft-fails (logs and returns the
+    original document) on configuration / conversion errors, so ingest continues.
     """
     cfg = _figure_asset_settings(app_settings)
     if not cfg.enabled:
@@ -190,18 +190,40 @@ def _figure_asset_settings(app_settings: Settings | None) -> FigureAssetSettings
     return app_settings.parsing.figure_assets
 
 
+def _figure_entry_needs_asset(entry: dict[str, Any]) -> bool:
+    """Return True when a figures[] dict has an id but no persisted asset_path."""
+    if not entry.get(FIGURE_ID_KEY):
+        return False
+    asset_path = entry.get(ASSET_PATH_KEY) or entry.get("asset_path")
+    return not asset_path
+
+
 def _apply_pptx_figures(
     document: Document,
     path: Path,
     store: LocalAssetStore,
 ) -> Document:
     extracted = _extract_pptx_picture_bytes(path)
+    existing = document.metadata.get("figures")
     if not extracted:
+        pending = 0
+        if isinstance(existing, list):
+            pending = sum(
+                1
+                for entry in existing
+                if isinstance(entry, dict) and _figure_entry_needs_asset(entry)
+            )
+        if pending:
+            logger.warning(
+                "PPTX %s has %d figure(s) without asset_path but no extractable pictures — "
+                "continuing without assets",
+                path.name,
+                pending,
+            )
         return document
 
     doc_key = document_asset_key(document.source)
     figures: list[dict[str, Any]] = []
-    existing = document.metadata.get("figures")
     existing_by_id: dict[str, dict[str, Any]] = {}
     if isinstance(existing, list):
         for entry in existing:
@@ -279,23 +301,49 @@ def _apply_docling_figures(
         logger.debug("No layout figures[] for %s — skipping Docling asset export", path.name)
         return document
 
+    figure_entries = [entry for entry in existing if isinstance(entry, dict)]
+    expected_count = len(figure_entries)
     pictures = _load_docling_pictures(path)
     if not pictures:
+        logger.warning(
+            "Layout figures[] has %d entr%s for %s but Docling returned no pictures — "
+            "continuing without asset_path",
+            expected_count,
+            "y" if expected_count == 1 else "ies",
+            path.name,
+        )
         return document
+
+    if expected_count > len(pictures):
+        logger.warning(
+            "Docling returned %d picture(s) for %s but layout figures[] has %d dict entr%s — "
+            "unmatched figures leave without asset_path",
+            len(pictures),
+            path.name,
+            expected_count,
+            "y" if expected_count == 1 else "ies",
+        )
 
     doc_key = document_asset_key(document.source)
     figures: list[dict[str, Any]] = []
-    for index, raw_entry in enumerate(existing):
+    picture_index = 0
+    for raw_entry in existing:
         if not isinstance(raw_entry, dict):
             continue
         entry = dict(raw_entry)
-        figure_id = str(entry.get(FIGURE_ID_KEY) or f"figure-{index + 1}")
+        figure_id = str(entry.get(FIGURE_ID_KEY) or f"figure-{len(figures) + 1}")
         entry[FIGURE_ID_KEY] = figure_id
-        if index >= len(pictures):
+        if picture_index >= len(pictures):
+            logger.warning(
+                "No Docling picture for %s in %s — leaving without asset_path",
+                figure_id,
+                path.name,
+            )
             figures.append(entry)
             continue
 
-        picture, doc = pictures[index]
+        picture, doc = pictures[picture_index]
+        picture_index += 1
         try:
             png_bytes = _picture_to_png_bytes(picture, doc)
             if not png_bytes:
@@ -339,7 +387,8 @@ def _load_docling_pictures(path: Path) -> list[tuple[_DoclingPicture, _DoclingDo
         raise DocumentLoadError(f"Docling conversion failed for figure assets: {path}")
 
     doc = result.document
-    return [(picture, doc) for picture in doc.pictures]
+    pictures = getattr(doc, "pictures", None) or []
+    return [(picture, doc) for picture in pictures]
 
 
 def _picture_to_png_bytes(picture: _DoclingPicture, doc: _DoclingDocument) -> bytes | None:

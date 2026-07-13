@@ -320,7 +320,9 @@ class TestApplyDoclingFigures:
         )
         assert result is doc
 
-    def test_persists_docling_picture(self, tmp_path: Path) -> None:
+    def test_persists_docling_picture(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         path, doc = _figure_pdf_document(
             tmp_path,
             figures=[
@@ -337,16 +339,45 @@ class TestApplyDoclingFigures:
         )
         picture = MagicMock()
         picture.get_image.return_value = _fake_pil_image()
-        result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [picture])
+        with caplog.at_level(logging.WARNING):
+            result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [picture])
 
         figures = [f for f in result.metadata["figures"] if isinstance(f, dict)]
         assert figures[0][ASSET_PATH_KEY]
         assert Path(figures[0][ASSET_PATH_KEY]).is_file()
         # Second valid figure has no matching picture → no asset_path
         assert ASSET_PATH_KEY not in figures[1]
+        assert "Docling returned 1 picture(s)" in caplog.text
+        assert "No Docling picture for figure-2" in caplog.text
         chunks = build_figure_chunks(result)
         assert len(chunks) == 1
         assert chunks[0].text == "Plot"
+
+    def test_aligns_pictures_past_non_dict_figure_entries(self, tmp_path: Path) -> None:
+        path, doc = _figure_pdf_document(
+            tmp_path,
+            figures=[
+                {FIGURE_ID_KEY: "figure-1"},
+                "skip-me",
+                {FIGURE_ID_KEY: "figure-2"},
+            ],
+        )
+        first = MagicMock()
+        first.get_image.return_value = SimpleNamespace(
+            save=lambda fp, *_a, **_k: fp.write(_png_bytes((255, 0, 0)))
+        )
+        second = MagicMock()
+        second.get_image.return_value = SimpleNamespace(
+            save=lambda fp, *_a, **_k: fp.write(_png_bytes((0, 255, 0)))
+        )
+        result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [first, second])
+        figures = [f for f in result.metadata["figures"] if isinstance(f, dict)]
+        assert ASSET_PATH_KEY in figures[0]
+        assert ASSET_PATH_KEY in figures[1]
+        assert (
+            Path(figures[0][ASSET_PATH_KEY]).read_bytes()
+            != Path(figures[1][ASSET_PATH_KEY]).read_bytes()
+        )
 
     def test_handles_missing_image_bytes(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -422,10 +453,50 @@ class TestApplyDoclingFigures:
         assert result is doc
         assert "misconfigured" in caplog.text
 
-    def test_empty_pictures_list(self, tmp_path: Path) -> None:
-        path, doc = _figure_pdf_document(tmp_path)
-        result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [])
+    def test_empty_pictures_list(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        path, doc = _figure_pdf_document(
+            tmp_path,
+            figures=[{FIGURE_ID_KEY: "figure-1"}, {FIGURE_ID_KEY: "figure-2"}],
+        )
+        with caplog.at_level(logging.WARNING):
+            result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [])
         assert result is doc
+        assert ASSET_PATH_KEY not in doc.metadata["figures"][0]
+        assert "Layout figures[] has 2 entries" in caplog.text
+        assert "Docling returned no pictures" in caplog.text
+        assert "continuing without asset_path" in caplog.text
+
+    def test_empty_pictures_list_singular_wording(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path, doc = _figure_pdf_document(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [])
+        assert result is doc
+        assert "Layout figures[] has 1 entry" in caplog.text
+        assert "Docling returned no pictures" in caplog.text
+
+    def test_none_pictures_attribute_treated_as_empty(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path, doc = _figure_pdf_document(tmp_path)
+        converter = MagicMock()
+        converter.convert.return_value = SimpleNamespace(
+            status=SimpleNamespace(name="SUCCESS"),
+            document=SimpleNamespace(pictures=None),
+        )
+        with (
+            patch(f"{_EXTRACTOR}._create_picture_converter", return_value=converter),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = apply_figure_assets(
+                doc,
+                path,
+                app_settings=_settings(enabled=True),
+                store=LocalAssetStore(tmp_path / "assets"),
+            )
+        assert result is doc
+        assert "Docling returned no pictures" in caplog.text
 
 
 class TestApplyFigureAssetsEdgeCases:
@@ -596,6 +667,52 @@ class TestApplyFigureAssetsEdgeCases:
             store=LocalAssetStore(tmp_path / "assets"),
         )
         assert result is doc
+
+    def test_pptx_warns_when_figures_exist_but_no_pictures(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pptx_path = tmp_path / "text-only.pptx"
+        presentation = python_pptx.Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1)).text = "Hello"
+        presentation.save(str(pptx_path))
+        doc = Document(
+            source=str(pptx_path.resolve()),
+            content="Hello",
+            metadata={
+                "figures": [
+                    {FIGURE_ID_KEY: "figure-1"},
+                    {"caption": "no-id-ignored"},
+                    {FIGURE_ID_KEY: "figure-2", ASSET_PATH_KEY: "/already/there.png"},
+                    "bad-entry",
+                ]
+            },
+        )
+        with caplog.at_level(logging.WARNING):
+            result = apply_figure_assets(
+                doc,
+                pptx_path,
+                app_settings=_settings(enabled=True),
+                store=LocalAssetStore(tmp_path / "assets"),
+            )
+        assert result is doc
+        assert "1 figure(s) without asset_path" in caplog.text
+        assert "no extractable pictures" in caplog.text
+        assert "continuing without assets" in caplog.text
+
+    def test_figure_entry_needs_asset_helpers(self) -> None:
+        from src.rag.ingestion.figure_extractor import _figure_entry_needs_asset
+
+        assert _figure_entry_needs_asset({}) is False
+        assert _figure_entry_needs_asset({FIGURE_ID_KEY: "figure-1"}) is True
+        assert (
+            _figure_entry_needs_asset({FIGURE_ID_KEY: "figure-1", ASSET_PATH_KEY: "/a/f.png"})
+            is False
+        )
+        assert (
+            _figure_entry_needs_asset({FIGURE_ID_KEY: "figure-1", "asset_path": "/a/f.png"})
+            is False
+        )
 
     def test_docling_assigns_default_figure_id(self, tmp_path: Path) -> None:
         path, doc = _figure_pdf_document(tmp_path, figures=[{"caption": "No id"}])
