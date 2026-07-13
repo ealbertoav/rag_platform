@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import io
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pptx as python_pptx
@@ -77,6 +78,31 @@ def _pptx_with_picture(tmp_path: Path) -> Path:
     return pptx_path
 
 
+def _pptx_with_grouped_picture(tmp_path: Path) -> Path:
+    png_path = tmp_path / "grouped.png"
+    png_path.write_bytes(_png_bytes((0, 0, 255)))
+    pptx_path = tmp_path / "grouped.pptx"
+    presentation = python_pptx.Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    group = slide.shapes.add_group_shape()
+    group.shapes.add_picture(str(png_path), Inches(0.2), Inches(0.2), width=Inches(0.8))
+    presentation.save(str(pptx_path))
+    return pptx_path
+
+
+def _pptx_with_nested_group_picture(tmp_path: Path) -> Path:
+    png_path = tmp_path / "nested.png"
+    png_path.write_bytes(_png_bytes((1, 2, 3)))
+    pptx_path = tmp_path / "nested.pptx"
+    presentation = python_pptx.Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    outer = slide.shapes.add_group_shape()
+    inner = outer.shapes.add_group_shape()
+    inner.shapes.add_picture(str(png_path), Inches(0.1), Inches(0.1), width=Inches(0.5))
+    presentation.save(str(pptx_path))
+    return pptx_path
+
+
 def _pptx_text_only(tmp_path: Path) -> Path:
     pptx_path = tmp_path / "text-only.pptx"
     presentation = python_pptx.Presentation()
@@ -84,6 +110,19 @@ def _pptx_text_only(tmp_path: Path) -> Path:
     slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1)).text = "Hello"
     presentation.save(str(pptx_path))
     return pptx_path
+
+
+def _apply_enabled_pptx_figures(tmp_path: Path, pptx_path: Path) -> list[dict[str, Any]]:
+    """Run apply_figure_assets on a PPTX with assets enabled; return figures[]."""
+    result = apply_figure_assets(
+        Document(source=str(pptx_path.resolve()), content="slide text"),
+        pptx_path,
+        app_settings=_settings(enabled=True),
+        store=LocalAssetStore(tmp_path / "assets"),
+    )
+    figures = result.metadata.get("figures")
+    assert isinstance(figures, list)
+    return figures
 
 
 def _figure_pdf_document(
@@ -259,6 +298,16 @@ class TestApplyPptxFigures:
         assert result.metadata["figures"][0]["caption"] == "Existing caption"
         assert ASSET_PATH_KEY in result.metadata["figures"][0]
 
+    def test_persists_grouped_picture(self, tmp_path: Path) -> None:
+        figures = _apply_enabled_pptx_figures(tmp_path, _pptx_with_grouped_picture(tmp_path))
+        assert len(figures) == 1
+        assert Path(figures[0][ASSET_PATH_KEY]).read_bytes() == _png_bytes((0, 0, 255))
+
+    def test_persists_nested_group_picture(self, tmp_path: Path) -> None:
+        figures = _apply_enabled_pptx_figures(tmp_path, _pptx_with_nested_group_picture(tmp_path))
+        assert len(figures) == 1
+        assert Path(figures[0][ASSET_PATH_KEY]).read_bytes() == _png_bytes((1, 2, 3))
+
     def test_soft_fails_store_error(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         pptx_path = _pptx_with_picture(tmp_path)
         store = MagicMock(spec=LocalAssetStore)
@@ -387,6 +436,38 @@ class TestApplyDoclingFigures:
             Path(figures[0][ASSET_PATH_KEY]).read_bytes()
             != Path(figures[1][ASSET_PATH_KEY]).read_bytes()
         )
+
+    def test_matches_pictures_by_page_and_bbox_when_order_differs(self, tmp_path: Path) -> None:
+        path, doc = _figure_pdf_document(
+            tmp_path,
+            figures=[
+                {
+                    FIGURE_ID_KEY: "figure-1",
+                    CHUNK_PAGE_KEY: 1,
+                    BBOX_KEY: [0.0, 0.0, 10.0, 10.0],
+                },
+                {
+                    FIGURE_ID_KEY: "figure-2",
+                    CHUNK_PAGE_KEY: 2,
+                    BBOX_KEY: [1.0, 2.0, 3.0, 4.0],
+                },
+            ],
+        )
+        first = MagicMock()
+        first.prov = [SimpleNamespace(page_no=2, bbox=SimpleNamespace(l=1, t=2, r=3, b=4))]
+        first.get_image.return_value = SimpleNamespace(
+            save=lambda fp, *_a, **_k: fp.write(_png_bytes((0, 255, 0)))
+        )
+        second = MagicMock()
+        second.prov = [SimpleNamespace(page_no=1, bbox=SimpleNamespace(l=0, t=0, r=10, b=10))]
+        second.get_image.return_value = SimpleNamespace(
+            save=lambda fp, *_a, **_k: fp.write(_png_bytes((255, 0, 0)))
+        )
+        # Intentionally reversed Docling picture order vs. layout figures[].
+        result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [first, second])
+        figures = result.metadata["figures"]
+        assert Path(figures[0][ASSET_PATH_KEY]).read_bytes() == _png_bytes((255, 0, 0))
+        assert Path(figures[1][ASSET_PATH_KEY]).read_bytes() == _png_bytes((0, 255, 0))
 
     def test_handles_missing_image_bytes(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -580,80 +661,28 @@ class TestApplyFigureAssetsEdgeCases:
         assert result is doc
         assert "misconfigured" in caplog.text
 
-    def test_create_picture_converter_import_error(self) -> None:
+    def test_create_picture_converter_delegates_to_layout_converter(self) -> None:
         from src.rag.ingestion import figure_extractor as mod
 
-        real_import = __import__
+        sentinel = object()
+        with patch(
+            "src.infrastructure.parsers.docling_parser.create_docling_converter",
+            return_value=sentinel,
+        ) as create:
+            assert mod._create_picture_converter() is sentinel
+        create.assert_called_once_with()
 
-        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name.startswith("docling"):
-                raise ImportError("missing")
-            return real_import(name, *args, **kwargs)
+    def test_create_picture_converter_propagates_configuration_error(self) -> None:
+        from src.rag.ingestion import figure_extractor as mod
 
         with (
-            patch("builtins.__import__", side_effect=fake_import),
+            patch(
+                "src.infrastructure.parsers.docling_parser.create_docling_converter",
+                side_effect=ConfigurationError("missing docling"),
+            ),
             pytest.raises(ConfigurationError, match="docling"),
         ):
             mod._create_picture_converter()
-
-    def test_create_picture_converter_success(self) -> None:
-        from src.rag.ingestion import figure_extractor as mod
-
-        fake_converter = object()
-        fake_input = SimpleNamespace(PDF="pdf", DOCX="docx")
-
-        class FakePdfPipelineOptions:
-            def __init__(self) -> None:
-                self.generate_picture_images = False
-
-        class FakePaginatedPipelineOptions:
-            def __init__(self) -> None:
-                self.generate_picture_images = False
-
-        captured: dict[str, Any] = {}
-
-        def fake_converter_cls(
-            *,
-            allowed_formats: Any = None,
-            format_options: Any = None,
-        ) -> Any:
-            captured["allowed_formats"] = allowed_formats
-            captured["format_options"] = format_options
-            return fake_converter
-
-        def fake_pdf_format_option(*, pipeline_options: Any) -> Any:
-            captured["pdf_pipeline_options"] = pipeline_options
-            return {"kind": "pdf", "pipeline_options": pipeline_options}
-
-        def fake_word_format_option(*, pipeline_options: Any) -> Any:
-            captured["docx_pipeline_options"] = pipeline_options
-            return {"kind": "docx", "pipeline_options": pipeline_options}
-
-        import sys
-
-        modules = {
-            "docling": MagicMock(),
-            "docling.datamodel": MagicMock(),
-            "docling.datamodel.base_models": SimpleNamespace(InputFormat=fake_input),
-            "docling.datamodel.pipeline_options": SimpleNamespace(
-                PdfPipelineOptions=FakePdfPipelineOptions,
-                PaginatedPipelineOptions=FakePaginatedPipelineOptions,
-            ),
-            "docling.document_converter": SimpleNamespace(
-                DocumentConverter=fake_converter_cls,
-                PdfFormatOption=fake_pdf_format_option,
-                WordFormatOption=fake_word_format_option,
-            ),
-        }
-        with patch.dict(sys.modules, modules):
-            result = mod._create_picture_converter()
-        assert result is fake_converter
-        assert captured["allowed_formats"] == ["pdf", "docx"]
-        assert captured["pdf_pipeline_options"].generate_picture_images is True
-        assert captured["docx_pipeline_options"].generate_picture_images is True
-        assert set(captured["format_options"]) == {"pdf", "docx"}
-        assert captured["format_options"]["pdf"]["kind"] == "pdf"
-        assert captured["format_options"]["docx"]["kind"] == "docx"
 
     def test_extract_pptx_import_error_directly(self, tmp_path: Path) -> None:
         from src.rag.ingestion import figure_extractor as mod
@@ -951,14 +980,26 @@ class TestDocxFigureFallback:
     def test_extract_docx_skips_unreadable_and_empty_parts(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
+        from docx.oxml.ns import qn
+
         from src.rag.ingestion import figure_extractor as mod
 
         path = _docx_with_picture(tmp_path)
         image_reltype = "officeDocument/relationships/image"
+        embed_attr = qn("r:embed")
+        blip_tag = qn("a:blip")
+
+        class FakeBlip:
+            def __init__(self, rid: str | None) -> None:
+                self._rid = rid
+
+            def get(self, attr: str) -> str | None:
+                if attr == embed_attr:
+                    return self._rid
+                return None
 
         class BoomRel:
             reltype = image_reltype
-            rId = "rIdBoom"
 
             def __getattr__(self, name: str) -> object:
                 if name == "target_part":
@@ -967,42 +1008,84 @@ class TestDocxFigureFallback:
 
         class EmptyRel:
             reltype = image_reltype
-            rId = "rIdEmpty"
             target_part = SimpleNamespace(blob=b"", content_type="image/png")
 
         class GoodRel:
             reltype = image_reltype
-            rId = "rIdGood"
             target_part = SimpleNamespace(blob=_png_bytes(), content_type="image/jpeg")
-
-        class DupRel:
-            reltype = image_reltype
-            rId = "rIdGood"
-            target_part = SimpleNamespace(blob=_png_bytes((1, 2, 3)), content_type="image/png")
 
         class NonImageRel:
             reltype = "officeDocument/relationships/hyperlink"
-            rId = "rIdLink"
+            target_part = SimpleNamespace(blob=_png_bytes((9, 9, 9)), content_type="image/png")
+
+        class FakeBody:
+            @staticmethod
+            def iter(tag: str) -> list[FakeBlip]:
+                assert tag == blip_tag
+                return [
+                    FakeBlip("rIdBoom"),
+                    FakeBlip("rIdEmpty"),
+                    FakeBlip("rIdMissing"),
+                    FakeBlip(None),
+                    FakeBlip("rIdLink"),
+                    FakeBlip("rIdGood"),
+                    FakeBlip("rIdGood"),  # repeated embed still yields a slot
+                ]
 
         fake_doc = SimpleNamespace(
+            element=SimpleNamespace(body=FakeBody()),
             part=SimpleNamespace(
                 rels={
-                    "a": BoomRel(),
-                    "b": EmptyRel(),
-                    "c": GoodRel(),
-                    "d": NonImageRel(),
-                    "e": DupRel(),
+                    "rIdBoom": BoomRel(),
+                    "rIdEmpty": EmptyRel(),
+                    "rIdLink": NonImageRel(),
+                    "rIdGood": GoodRel(),
                 }
-            )
+            ),
         )
         with (
             patch("docx.Document", return_value=fake_doc),
             caplog.at_level(logging.WARNING),
         ):
             pictures = mod._extract_docx_picture_bytes(path)
-        assert len(pictures) == 1
+        assert len(pictures) == 2
         assert pictures[0][1] == "jpg"
+        assert pictures[1][1] == "jpg"
         assert "Skipping unreadable DOCX embedded image" in caplog.text
+        assert "missing relationship" in caplog.text
+
+    def test_extract_docx_returns_empty_without_body(self, tmp_path: Path) -> None:
+        from src.rag.ingestion import figure_extractor as mod
+
+        path = tmp_path / "nobody.docx"
+        path.write_bytes(b"x")
+        fake_doc = SimpleNamespace(
+            element=SimpleNamespace(body=None),
+            part=SimpleNamespace(rels={}),
+        )
+        with patch("docx.Document", return_value=fake_doc):
+            assert mod._extract_docx_picture_bytes(path) == []
+
+    def test_extract_docx_uses_body_order_not_rels_order(self, tmp_path: Path) -> None:
+        from docx import Document as DocxDocument
+        from docx.shared import Inches as DocxInches
+
+        from src.rag.ingestion import figure_extractor as mod
+
+        first = tmp_path / "first.png"
+        second = tmp_path / "second.png"
+        first.write_bytes(_png_bytes((10, 20, 30)))
+        second.write_bytes(_png_bytes((40, 50, 60)))
+        docx_path = tmp_path / "ordered.docx"
+        document = DocxDocument()
+        document.add_picture(str(first), width=DocxInches(0.5))
+        document.add_picture(str(second), width=DocxInches(0.5))
+        document.save(str(docx_path))
+
+        pictures = mod._extract_docx_picture_bytes(docx_path)
+        assert len(pictures) == 2
+        assert pictures[0][0] == _png_bytes((10, 20, 30))
+        assert pictures[1][0] == _png_bytes((40, 50, 60))
 
     def test_extension_from_image_content_type_helpers(self) -> None:
         from src.rag.ingestion.figure_extractor import _extension_from_image_content_type
@@ -1013,7 +1096,7 @@ class TestDocxFigureFallback:
         assert _extension_from_image_content_type("image/x-icon") == "icon"
         assert _extension_from_image_content_type("image/svg+xml") == "svg+xml"
         assert _extension_from_image_content_type("") == "png"
-        assert _extension_from_image_content_type("application/octet-stream") == ("octet-stream")
+        assert _extension_from_image_content_type("application/octet-stream") == "octet-stream"
         assert _extension_from_image_content_type("noslash") == "png"
 
     def test_docx_fallback_blobs_ignores_non_docx(self, tmp_path: Path) -> None:
@@ -1098,3 +1181,113 @@ class TestDocxFigureFallback:
             )
         assert result is doc
         assert "misconfigured" in caplog.text
+
+
+class TestPictureMatchingHelpers:
+    def test_picture_page_and_bbox_edge_cases(self) -> None:
+        from src.rag.ingestion.figure_extractor import _picture_bbox, _picture_page
+
+        picture_page = cast(Callable[[object], int | None], _picture_page)
+        picture_bbox = cast(Callable[[object], list[float] | None], _picture_bbox)
+
+        assert picture_page(SimpleNamespace(prov=None)) is None
+        assert picture_page(SimpleNamespace(prov=[])) is None
+        assert picture_page(SimpleNamespace(prov=[SimpleNamespace()])) is None
+        assert picture_page(SimpleNamespace(prov=[SimpleNamespace(page_no="bad")])) is None
+        assert picture_page(SimpleNamespace(prov=[SimpleNamespace(page_no=3)])) == 3
+
+        assert picture_bbox(SimpleNamespace(prov=None)) is None
+        assert picture_bbox(SimpleNamespace(prov=[])) is None
+        assert picture_bbox(SimpleNamespace(prov=[SimpleNamespace(bbox=None)])) is None
+        assert picture_bbox(SimpleNamespace(prov=[object()])) is None
+        assert (
+            picture_bbox(SimpleNamespace(prov=[SimpleNamespace(bbox=SimpleNamespace(l="x"))]))
+            is None
+        )
+        assert picture_bbox(
+            SimpleNamespace(prov=[SimpleNamespace(bbox=SimpleNamespace(l=1, t=2, r=3, b=4))])
+        ) == [1.0, 2.0, 3.0, 4.0]
+
+    def test_bboxes_equal_and_match_picture_index(self) -> None:
+        from src.rag.ingestion.figure_extractor import _bboxes_equal, _match_picture_index
+
+        match_picture_index = cast(
+            Callable[
+                [dict[str, Any], list[tuple[object, object]], set[int], int],
+                int | None,
+            ],
+            _match_picture_index,
+        )
+
+        assert _bboxes_equal([0, 0, 1, 1], [0, 0, 1, 1]) is True
+        assert _bboxes_equal([0, 0, 1], [0, 0, 1, 1]) is False
+        assert _bboxes_equal([0, 0, 1, 1], [0, 0, 1, 2]) is False
+
+        first = SimpleNamespace(
+            prov=[SimpleNamespace(page_no=1, bbox=SimpleNamespace(l=0, t=0, r=1, b=1))]
+        )
+        second = SimpleNamespace(
+            prov=[SimpleNamespace(page_no=2, bbox=SimpleNamespace(l=5, t=5, r=6, b=6))]
+        )
+        pictures: list[tuple[object, object]] = [(first, object()), (second, object())]
+
+        assert match_picture_index({}, [], set(), 0) is None
+        assert (
+            match_picture_index(
+                {CHUNK_PAGE_KEY: 2, BBOX_KEY: [5, 5, 6, 6]},
+                pictures,
+                set(),
+                0,
+            )
+            == 1
+        )
+        # Provenance hit already consumed → skip and fall back to unused slot.
+        assert (
+            match_picture_index(
+                {CHUNK_PAGE_KEY: 2, BBOX_KEY: [5, 5, 6, 6]},
+                pictures,
+                {1},
+                0,
+            )
+            == 0
+        )
+        # Page matches, but bbox does not → fall back.
+        assert (
+            match_picture_index(
+                {CHUNK_PAGE_KEY: 2, BBOX_KEY: [9, 9, 9, 9]},
+                pictures,
+                set(),
+                0,
+            )
+            == 0
+        )
+        # No page match → fall back to document order.
+        assert (
+            match_picture_index(
+                {CHUNK_PAGE_KEY: 99, BBOX_KEY: [5, 5, 6, 6]},
+                pictures,
+                set(),
+                0,
+            )
+            == 0
+        )
+        # Invalid provenance falls back to document-order slot.
+        assert (
+            match_picture_index(
+                {CHUNK_PAGE_KEY: "bad", BBOX_KEY: [5, 5, 6, 6]},
+                pictures,
+                set(),
+                0,
+            )
+            == 0
+        )
+        # When preferred fallback is already used, take the next unused index.
+        assert match_picture_index({}, pictures, {0}, 0) == 1
+        assert match_picture_index({}, pictures, {0, 1}, 0) is None
+
+    def test_iter_pptx_shapes_skips_group_without_shapes(self) -> None:
+        from src.rag.ingestion.figure_extractor import _iter_pptx_shapes
+
+        group = SimpleNamespace(shape_type=MSO_SHAPE_TYPE.GROUP, shapes=None)
+        picture = SimpleNamespace(shape_type=MSO_SHAPE_TYPE.PICTURE)
+        assert list(_iter_pptx_shapes([group, picture])) == [picture]

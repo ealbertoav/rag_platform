@@ -184,7 +184,7 @@ class DoclingLayoutParser(LayoutParserRepository):
 
         try:
             if self._converter is None:
-                self._converter = _create_converter()
+                self._converter = create_docling_converter()
             result = self._converter.convert(str(path))
             status = getattr(result, "status", None)
             if status is not None and getattr(status, "name", str(status)) == "FAILURE":
@@ -211,12 +211,46 @@ class DoclingLayoutParser(LayoutParserRepository):
             raise DocumentLoadError(f"Cannot parse with Docling: {path}", cause=exc) from exc
 
 
-def _create_converter() -> _DoclingConverter:
+def create_docling_converter() -> _DoclingConverter:
+    """Create a Docling converter with picture rasterization enabled.
+
+    Shared by :class:`DoclingLayoutParser` and figure-asset extraction so layout
+    "figures[]" metadata and "PictureItem.get_image()" rasters come from the
+    same pipeline options (PDF "PdfPipelineOptions" / DOCX
+    "PaginatedPipelineOptions" with "generate_picture_images=True").
+    """
     try:
-        from docling.document_converter import DocumentConverter
+        # Optional runtime dependency — install separately: uv pip install docling
+        import importlib
+
+        base_models = importlib.import_module("docling.datamodel.base_models")
+        pipeline_options_mod = importlib.import_module("docling.datamodel.pipeline_options")
+        document_converter_mod = importlib.import_module("docling.document_converter")
+        input_format = base_models.InputFormat
+        pdf_pipeline_options = pipeline_options_mod.PdfPipelineOptions
+        paginated_pipeline_options = pipeline_options_mod.PaginatedPipelineOptions
+        document_converter = document_converter_mod.DocumentConverter
+        pdf_format_option = document_converter_mod.PdfFormatOption
+        word_format_option = document_converter_mod.WordFormatOption
     except ImportError as exc:
         raise ConfigurationError(
             "Layout parser 'docling' requires the docling package. "
             "Install with: uv pip install docling"
         ) from exc
-    return cast(_DoclingConverter, DocumentConverter())
+
+    pdf_options = pdf_pipeline_options()
+    pdf_options.generate_picture_images = True
+    # DOCX uses SimplePipeline; PaginatedPipelineOptions carries generate_picture_images
+    # so PictureItem ImageRefs / get_image() can yield raster bytes when supported.
+    docx_options = paginated_pipeline_options()
+    docx_options.generate_picture_images = True
+    return cast(
+        _DoclingConverter,
+        document_converter(
+            allowed_formats=[input_format.PDF, input_format.DOCX],
+            format_options={
+                input_format.PDF: pdf_format_option(pipeline_options=pdf_options),
+                input_format.DOCX: word_format_option(pipeline_options=docx_options),
+            },
+        ),
+    )

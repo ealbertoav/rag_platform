@@ -58,7 +58,7 @@ docling_extract_figures = cast(
     Callable[[object], list[dict[str, Any]]],
     _internal("_extract_figures"),
 )
-docling_create_converter = cast(Callable[[], object], _internal("_create_converter"))
+docling_create_converter = cast(Callable[[], object], _internal("create_docling_converter"))
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -327,31 +327,69 @@ class TestDoclingLayoutParser:
         assert result.content == "ok"
 
     def test_create_converter_returns_document_converter(self) -> None:
-        mock_converter_cls = MagicMock(return_value="converter-instance")
-        doc_converter_mod = MagicMock()
-        doc_converter_mod.DocumentConverter = mock_converter_cls
-        with patch.dict(
-            "sys.modules",
-            {
-                "docling": MagicMock(),
-                "docling.document_converter": doc_converter_mod,
-            },
-        ):
-            assert docling_create_converter() == "converter-instance"
-        mock_converter_cls.assert_called_once()
+        fake_converter = object()
+        fake_input = SimpleNamespace(PDF="pdf", DOCX="docx")
+
+        class FakePdfPipelineOptions:
+            def __init__(self) -> None:
+                self.generate_picture_images = False
+
+        class FakePaginatedPipelineOptions:
+            def __init__(self) -> None:
+                self.generate_picture_images = False
+
+        captured: dict[str, Any] = {}
+
+        def fake_converter_cls(
+            *,
+            allowed_formats: Any = None,
+            format_options: Any = None,
+        ) -> Any:
+            captured["allowed_formats"] = allowed_formats
+            captured["format_options"] = format_options
+            return fake_converter
+
+        def fake_pdf_format_option(*, pipeline_options: Any) -> Any:
+            captured["pdf_pipeline_options"] = pipeline_options
+            return {"kind": "pdf", "pipeline_options": pipeline_options}
+
+        def fake_word_format_option(*, pipeline_options: Any) -> Any:
+            captured["docx_pipeline_options"] = pipeline_options
+            return {"kind": "docx", "pipeline_options": pipeline_options}
+
+        import sys
+
+        modules = {
+            "docling": MagicMock(),
+            "docling.datamodel": MagicMock(),
+            "docling.datamodel.base_models": SimpleNamespace(InputFormat=fake_input),
+            "docling.datamodel.pipeline_options": SimpleNamespace(
+                PdfPipelineOptions=FakePdfPipelineOptions,
+                PaginatedPipelineOptions=FakePaginatedPipelineOptions,
+            ),
+            "docling.document_converter": SimpleNamespace(
+                DocumentConverter=fake_converter_cls,
+                PdfFormatOption=fake_pdf_format_option,
+                WordFormatOption=fake_word_format_option,
+            ),
+        }
+        with patch.dict(sys.modules, modules):
+            assert docling_create_converter() is fake_converter
+        assert captured["allowed_formats"] == ["pdf", "docx"]
+        assert captured["pdf_pipeline_options"].generate_picture_images is True
+        assert captured["docx_pipeline_options"].generate_picture_images is True
+        assert set(captured["format_options"]) == {"pdf", "docx"}
 
     def test_create_converter_raises_when_docling_missing(self) -> None:
-        import builtins
+        real_import_module = importlib.import_module
 
-        real_import = builtins.__import__
-
-        def _blocked(name, *args, **kwargs):
-            if name == "docling.document_converter" or name.startswith("docling"):
+        def _blocked(name: str, package: str | None = None) -> Any:
+            if name.startswith("docling"):
                 raise ImportError("blocked")
-            return real_import(name, *args, **kwargs)
+            return real_import_module(name, package)
 
         with (
-            patch("builtins.__import__", side_effect=_blocked),
+            patch("importlib.import_module", side_effect=_blocked),
             pytest.raises(ConfigurationError, match="uv pip install docling"),
         ):
             docling_create_converter()
@@ -361,7 +399,8 @@ class TestDoclingLayoutParser:
         path.write_bytes(b"%PDF-1.4")
         with (
             patch(
-                f"{_DOCLING_PARSER}._create_converter", side_effect=ConfigurationError("missing")
+                f"{_DOCLING_PARSER}.create_docling_converter",
+                side_effect=ConfigurationError("missing"),
             ),
             pytest.raises(DocumentLoadError, match="not configured") as exc_info,
         ):
@@ -373,7 +412,7 @@ class TestDoclingLayoutParser:
         path.write_bytes(b"%PDF-1.4")
         doc = _make_docling_doc(markdown="once")
         converter = _make_converter(doc)
-        with patch(f"{_DOCLING_PARSER}._create_converter", return_value=converter) as create:
+        with patch(f"{_DOCLING_PARSER}.create_docling_converter", return_value=converter) as create:
             parser = DoclingLayoutParser()
             parser.parse(path)
             parser.parse(path)

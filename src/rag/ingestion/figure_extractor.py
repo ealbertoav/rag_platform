@@ -6,15 +6,19 @@ layout "figures[]" (Docling PDF/DOCX) or PPTX picture shapes under a
 "figures[].asset_path" and produce :class:`~src.domain.entities.chunk.Chunk`
 instances with "asset_path" / "figure_id".
 
-Docling picture export enables "generate_picture_images" for PDF
-(:class:`~docling.document_converter.PdfFormatOption`) and DOCX
-(:class:`~docling.document_converter.WordFormatOption` +
-"PaginatedPipelineOptions"). DOCX also falls back to embedded
-"python-docx" image parts when Docling conversion fails, Docling is
-unavailable, or "PictureItem.get_image()" returns no bytes (common when
-layout metadata exists but ImageRef was not attached). Figure slot N uses
-Docling picture N with DOCX embedded image N as backfill so assets stay
-aligned in document order.
+Docling picture export reuses the layout parser's picture-enabled
+:class:`~docling.document_converter.DocumentConverter` so PDF/DOCX
+"figures[]" and rasterized "pictures" share the same pipeline options.
+Pictures are matched to layout entries by page and bbox provenance when
+present, then by remaining document order — not by blind list index —
+so a second conversion cannot silently attach the wrong asset.
+
+DOCX falls back to embedded "python-docx" image parts when Docling
+conversion fails, Docling is unavailable, or "PictureItem.get_image()"
+returns no bytes. Fallback blobs are collected from body "a:blip"
+embeds in document reading order (not "part.rels" iteration order),
+excluding header/footer relationships. PPTX walks picture shapes
+recursively through group shapes.
 
 Soft-fails per figure when bytes cannot be exported. VLM captions are
 T-231; caption indexing is T-232.
@@ -264,6 +268,20 @@ def _apply_pptx_figures(
     return document.model_copy(update={"metadata": metadata})
 
 
+def _iter_pptx_shapes(shapes: Any) -> Any:
+    """Yield shapes depth-first, descending into group shapes."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    for shape in shapes:
+        shape_type = getattr(shape, "shape_type", None)
+        if shape_type == MSO_SHAPE_TYPE.GROUP:
+            nested = getattr(shape, "shapes", None)
+            if nested is not None:
+                yield from _iter_pptx_shapes(nested)
+            continue
+        yield shape
+
+
 def _extract_pptx_picture_bytes(path: Path) -> list[tuple[bytes, str, int]]:
     try:
         import pptx as python_pptx
@@ -283,7 +301,7 @@ def _extract_pptx_picture_bytes(path: Path) -> list[tuple[bytes, str, int]]:
 
     pictures: list[tuple[bytes, str, int]] = []
     for slide_index, slide in enumerate(presentation.slides, start=1):
-        for shape in slide.shapes:
+        for shape in _iter_pptx_shapes(slide.shapes):
             if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
                 continue
             try:
@@ -328,8 +346,8 @@ def _apply_docling_figures(
         )
         return document
 
-    # Docling pictures are primary; DOCX embedded parts only backfill missing rasters.
-    # Both lists are document-order aligned: figure slot N uses pictures[N] / docx_blobs[N].
+    # Docling pictures are primary (matched by page+bbox, then remaining order).
+    # DOCX embedded body images backfill missing rasters by figure slot index.
     available = max(len(pictures), len(docx_blobs)) if docx_blobs else len(pictures)
     if expected_count > available:
         if docx_blobs and not pictures:
@@ -353,6 +371,7 @@ def _apply_docling_figures(
 
     doc_key = document_asset_key(document.source)
     figures: list[dict[str, Any]] = []
+    used_picture_indexes: set[int] = set()
     slot = 0
     for raw_entry in existing:
         if not isinstance(raw_entry, dict):
@@ -364,9 +383,11 @@ def _apply_docling_figures(
         blob: bytes | None = None
         extension = "png"
         attempted_docling = False
-        if slot < len(pictures):
+        picture_index = _match_picture_index(entry, pictures, used_picture_indexes, slot)
+        if picture_index is not None:
             attempted_docling = True
-            picture, doc = pictures[slot]
+            used_picture_indexes.add(picture_index)
+            picture, doc = pictures[picture_index]
             try:
                 blob = _picture_to_png_bytes(picture, doc)
             except Exception as exc:
@@ -420,6 +441,80 @@ def _apply_docling_figures(
     return document.model_copy(update={"metadata": metadata})
 
 
+def _picture_page(picture: _DoclingPicture) -> int | None:
+    prov = getattr(picture, "prov", None)
+    if not prov:
+        return None
+    try:
+        return int(prov[0].page_no)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+
+
+def _picture_bbox(picture: _DoclingPicture) -> list[float] | None:
+    prov = getattr(picture, "prov", None)
+    if not prov:
+        return None
+    try:
+        box = prov[0].bbox
+    except (AttributeError, IndexError, TypeError):
+        return None
+    if box is None:
+        return None
+    try:
+        return [float(box.l), float(box.t), float(box.r), float(box.b)]
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _bboxes_equal(left: list[float], right: list[float], *, tol: float = 1e-3) -> bool:
+    if len(left) != 4 or len(right) != 4:
+        return False
+    return all(abs(a - b) <= tol for a, b in zip(left, right, strict=True))
+
+
+def _match_picture_index(
+    entry: dict[str, Any],
+    pictures: list[tuple[_DoclingPicture, _DoclingDocument]],
+    used: set[int],
+    fallback_index: int,
+) -> int | None:
+    """Map a layout figure entry to a Docling picture index.
+
+    Prefer page + bbox provenance equality so a second Docling conversion with a
+    different picture order still attaches the correct raster. Fall back to the
+    next unused document-order slot.
+    """
+    if not pictures:
+        return None
+
+    page = entry.get(CHUNK_PAGE_KEY)
+    bbox = entry.get(BBOX_KEY)
+    if page is not None and isinstance(bbox, list) and len(bbox) == 4:
+        try:
+            page_int = int(page)
+            bbox_floats = [float(value) for value in bbox]
+        except (TypeError, ValueError):
+            page_int = None
+            bbox_floats = None
+        if page_int is not None and bbox_floats is not None:
+            for index, (picture, _) in enumerate(pictures):
+                if index in used:
+                    continue
+                if _picture_page(picture) != page_int:
+                    continue
+                picture_bbox = _picture_bbox(picture)
+                if picture_bbox is not None and _bboxes_equal(picture_bbox, bbox_floats):
+                    return index
+
+    if fallback_index < len(pictures) and fallback_index not in used:
+        return fallback_index
+    for index in range(len(pictures)):
+        if index not in used:
+            return index
+    return None
+
+
 def _docx_fallback_blobs(path: Path) -> list[tuple[bytes, str]]:
     """Return embedded DOCX image blobs for figure-asset fallback, else []."""
     if path.suffix.lower() != ".docx":
@@ -469,9 +564,16 @@ def _extension_from_image_content_type(content_type: str) -> str:
 
 
 def _extract_docx_picture_bytes(path: Path) -> list[tuple[bytes, str]]:
-    """Extract embedded image parts from a DOCX via python-docx (document order)."""
+    """Extract body-embedded image parts from a DOCX in document reading order.
+
+    Walks "a:blip" embeds under the document body, so order matches layout
+    figures and header/footer relationships on "part.rels" are ignored.
+    Repeated "rId" references are kept as separate slots (the same bytes may
+    backfill multiple figure entries).
+    """
     try:
         import docx as python_docx
+        from docx.oxml.ns import qn
     except ImportError as exc:
         raise ConfigurationError(
             "DOCX figure fallback requires python-docx. Install with: uv pip install python-docx"
@@ -485,14 +587,29 @@ def _extract_docx_picture_bytes(path: Path) -> list[tuple[bytes, str]]:
             cause=exc,
         ) from exc
 
+    body = getattr(getattr(document, "element", None), "body", None)
+    if body is None:
+        return []
+
+    embed_attr = qn("r:embed")
+    blip_tag = qn("a:blip")
+    rels = document.part.rels
     pictures: list[tuple[bytes, str]] = []
-    seen_rids: set[str] = set()
-    for rel in document.part.rels.values():
+    for blip in body.iter(blip_tag):
+        rid = blip.get(embed_attr)
+        if not rid:
+            continue
+        try:
+            rel = rels[rid]
+        except KeyError:
+            logger.warning(
+                "Skipping DOCX image with missing relationship %s in %s",
+                rid,
+                path.name,
+            )
+            continue
         reltype = str(getattr(rel, "reltype", "") or "")
         if "image" not in reltype.lower():
-            continue
-        rid = str(getattr(rel, "rId", "") or "")
-        if rid and rid in seen_rids:
             continue
         try:
             target = rel.target_part
@@ -508,8 +625,6 @@ def _extract_docx_picture_bytes(path: Path) -> list[tuple[bytes, str]]:
             continue
         if not blob:
             continue
-        if rid:
-            seen_rids.add(rid)
         pictures.append((blob, extension))
     return pictures
 
@@ -520,7 +635,7 @@ def _load_docling_pictures_or_empty(
     """Load Docling pictures, soft-failing so DOCX embedded-image fallback can run.
 
     "DocumentLoadError" always soft-fails to an empty list. "ConfigurationError"
-    (e.g. missing Docling) soft-fails only for ".docx", where python-docx can still
+    (e.g., missing Docling) soft-fails only for ".docx", where python-docx can still
     supply bytes; for other types it re-raises so ingest reports misconfiguration.
     """
     try:
@@ -575,39 +690,7 @@ def _picture_to_png_bytes(picture: _DoclingPicture, doc: _DoclingDocument) -> by
 
 
 def _create_picture_converter() -> _DoclingConverter:
-    try:
-        # Optional runtime dependency (same pattern as DoclingLayoutParser / OCR).
-        # Install separately: uv pip install docling
-        import importlib
+    """Build the same picture-enabled Docling converter used by the layout parser."""
+    from src.infrastructure.parsers.docling_parser import create_docling_converter
 
-        base_models = importlib.import_module("docling.datamodel.base_models")
-        pipeline_options_mod = importlib.import_module("docling.datamodel.pipeline_options")
-        document_converter_mod = importlib.import_module("docling.document_converter")
-        input_format = base_models.InputFormat
-        pdf_pipeline_options = pipeline_options_mod.PdfPipelineOptions
-        paginated_pipeline_options = pipeline_options_mod.PaginatedPipelineOptions
-        document_converter = document_converter_mod.DocumentConverter
-        pdf_format_option = document_converter_mod.PdfFormatOption
-        word_format_option = document_converter_mod.WordFormatOption
-    except ImportError as exc:
-        raise ConfigurationError(
-            "Figure asset extraction for PDF/DOCX requires the docling package. "
-            "Install with: uv pip install docling"
-        ) from exc
-
-    pdf_options = pdf_pipeline_options()
-    pdf_options.generate_picture_images = True
-    # DOCX uses SimplePipeline; PaginatedPipelineOptions carries generate_picture_images
-    # so PictureItem ImageRefs / get_image() can yield raster bytes when supported.
-    docx_options = paginated_pipeline_options()
-    docx_options.generate_picture_images = True
-    return cast(
-        _DoclingConverter,
-        document_converter(
-            allowed_formats=[input_format.PDF, input_format.DOCX],
-            format_options={
-                input_format.PDF: pdf_format_option(pipeline_options=pdf_options),
-                input_format.DOCX: word_format_option(pipeline_options=docx_options),
-            },
-        ),
-    )
+    return cast(_DoclingConverter, create_docling_converter())
