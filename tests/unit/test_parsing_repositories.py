@@ -29,6 +29,7 @@ from src.core.constants import (
     CHUNK_TYPE_PAGE,
     CHUNK_TYPE_TABLE,
     CHUNK_TYPE_TO_MODALITY,
+    FIGURE_CAPTION_KEY,
     FIGURE_ID_KEY,
     KNOWN_MODALITIES,
     LAYOUT_DOCUMENT_METADATA_KEYS,
@@ -41,7 +42,7 @@ from src.core.constants import (
     TABLE_ID_KEY,
 )
 from src.domain.entities.parsed_document import ParsedDocument
-from src.domain.repositories import LayoutParserRepository, OcrRepository
+from src.domain.repositories import LayoutParserRepository, OcrRepository, VisionRepository
 
 
 def _assert_abstract_instantiation_fails(cls: type) -> None:
@@ -71,6 +72,11 @@ class _LayoutParser(LayoutParserRepository):
 class _Ocr(OcrRepository):
     def ocr(self, path: Path) -> str:
         return f"ocr:{path.name}"
+
+
+class _Vision(VisionRepository):
+    def caption_image(self, path: Path, *, prompt: str | None = None) -> str:
+        return f"caption:{path.name}:{prompt or ''}"
 
 
 # ── ParsedDocument ─────────────────────────────────────────────────────────────
@@ -151,6 +157,28 @@ class TestOcrRepository:
         assert _Ocr().ocr(path) == "ocr:scan.png"
 
 
+# ── VisionRepository ───────────────────────────────────────────────────────────
+
+
+class TestVisionRepository:
+    def test_abc_cannot_be_instantiated(self) -> None:
+        _assert_abstract_instantiation_fails(VisionRepository)
+
+    def test_incomplete_subclass_cannot_be_instantiated(self) -> None:
+        class _Incomplete(VisionRepository, ABC):  # pyright: ignore[reportAbstractUsage]
+            pass
+
+        _assert_abstract_instantiation_fails(_Incomplete)
+
+    def test_complete_subclass_instantiates(self) -> None:
+        assert isinstance(_Vision(), VisionRepository)
+
+    def test_caption_image_returns_str(self) -> None:
+        path = Path("data/assets/figure-1.png")
+        assert _Vision().caption_image(path) == "caption:figure-1.png:"
+        assert _Vision().caption_image(path, prompt="brief") == "caption:figure-1.png:brief"
+
+
 # ── Multimodal chunk constants ─────────────────────────────────────────────────
 
 
@@ -164,6 +192,7 @@ class TestMultimodalConstants:
             ("CHUNK_TYPE_PAGE", CHUNK_TYPE_PAGE),
             ("TABLE_ID_KEY", TABLE_ID_KEY),
             ("FIGURE_ID_KEY", FIGURE_ID_KEY),
+            ("FIGURE_CAPTION_KEY", FIGURE_CAPTION_KEY),
             ("BBOX_KEY", BBOX_KEY),
             ("ASSET_PATH_KEY", ASSET_PATH_KEY),
             ("CHUNK_PAGE_KEY", CHUNK_PAGE_KEY),
@@ -199,6 +228,7 @@ class TestMultimodalConstants:
         keys = [
             TABLE_ID_KEY,
             FIGURE_ID_KEY,
+            FIGURE_CAPTION_KEY,
             BBOX_KEY,
             ASSET_PATH_KEY,
             CHUNK_PAGE_KEY,
@@ -228,6 +258,7 @@ class TestNoDomainInfraLeak:
         from src.domain.repositories import (  # noqa: F401
             LayoutParserRepository,
             OcrRepository,
+            VisionRepository,
         )
 
     @pytest.mark.parametrize(
@@ -235,6 +266,7 @@ class TestNoDomainInfraLeak:
         [
             "src.domain.repositories.layout_parser_repository",
             "src.domain.repositories.ocr_repository",
+            "src.domain.repositories.vision_repository",
             "src.domain.entities.parsed_document",
             "src.domain.entities.source_reference",
         ],

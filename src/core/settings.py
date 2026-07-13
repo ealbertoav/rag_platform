@@ -363,7 +363,7 @@ class LayoutParserSettings(BaseModel):
 class AzureDiOcrConfig(BaseModel):
     """Azure Document Intelligence credentials (T-222).
 
-    Required when "parsing.ocr.provider=azure_di" and OCR is enabled.
+    Required when "parsing.ocr.provider=azure_di" and OCR are enabled.
     """
 
     endpoint: str = ""
@@ -395,11 +395,31 @@ class FigureAssetSettings(BaseModel):
     store_dir: str = "data/assets"
 
 
+class OpenAIVisionConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "gpt-4o-mini"
+
+
+class GeminiVisionConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "gemini-2.0-flash"
+
+
+class FigureCaptionSettings(BaseModel):
+    """VLM captions for stored figure assets at ingesting (T-231)."""
+
+    enabled: bool = False
+    provider: str = "openai"  # openai | gemini
+    openai: OpenAIVisionConfig = Field(default_factory=OpenAIVisionConfig)
+    gemini: GeminiVisionConfig = Field(default_factory=GeminiVisionConfig)
+
+
 class ParsingSettings(BaseModel):
     layout_parser: LayoutParserSettings = Field(default_factory=LayoutParserSettings)
     ocr: OcrSettings = Field(default_factory=OcrSettings)
     table_chunks: TableChunkSettings = Field(default_factory=TableChunkSettings)
     figure_assets: FigureAssetSettings = Field(default_factory=FigureAssetSettings)
+    figure_captions: FigureCaptionSettings = Field(default_factory=FigureCaptionSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────

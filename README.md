@@ -52,7 +52,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Azure Document Intelligence OCR (T-222):** Optional cloud OCR via `parsing.ocr.provider=azure_di` — REST `prebuilt-read`, credentials under `parsing.ocr.azure_di` / `PARSING__OCR__AZURE_DI__*`. Factory caches by Azure DI identity and disposes the previous `httpx` client on credential/config rotation. See [docs/ocr-providers.md](docs/ocr-providers.md).
 
-> **Figure asset extraction (T-230):** When `parsing.figure_assets.enabled=true`, ingest persists figure bytes from layout `figures[]` (Docling PDF/DOCX) or PPTX picture shapes under `store_dir` (default `data/assets`), sets `figures[].asset_path`, and exposes `build_figure_chunks()` with `Chunk.asset_path` / `figure_id`. Off by default; soft-fails per figure. VLM captions are T-231. See [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230).
+> **Figure asset extraction (T-230):** When `parsing.figure_assets.enabled=true`, ingest persists figure bytes from layout `figures[]` (Docling PDF/DOCX) or PPTX picture shapes under `store_dir` (default `data/assets`), sets `figures[].asset_path`, and exposes `build_figure_chunks()` with `Chunk.asset_path` / `figure_id`. Off by default; soft-fails per figure. VLM captions (T-231) write `figures[].caption` when `parsing.figure_captions.enabled=true`. See [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230) and [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231).
 
 ---
 
@@ -71,6 +71,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Layout-Aware Parsing (T-200)](#layout-aware-parsing-t-200)
     - [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223)
     - [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230)
+    - [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231)
     - [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202)
     - [Multimodal Domain Model (T-210)](#multimodal-domain-model-t-210)
   - [Start the API Server](#start-the-api-server)
@@ -124,7 +125,8 @@ flowchart LR
         D["Documents<br/>.pdf .docx .html .md"] --> L[Document Loader]
         L --> OCR["OCR Fallback<br/>Tesseract / EasyOCR / Docling / Azure DI<br/>(optional · T-221–T-223)"]
         OCR --> FIG["Figure Assets<br/>(optional · T-230)"]
-        FIG --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
+        FIG --> CAP["VLM Captions<br/>(optional · T-231)"]
+        CAP --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
         C --> E["BGE-M3<br/>Dense 1024-dim + Sparse Lexical"]
         E --> Q[("Qdrant<br/>HNSW Index")]
         E --> B[("BM25<br/>memory | disk<br/>(T-165)")]
@@ -369,6 +371,10 @@ PARSING__LAYOUT_PARSER__PROVIDER=docling
 PARSING__TABLE_CHUNKS__ENABLED=false    # structured type=table chunks at ingest (T-202)
 PARSING__FIGURE_ASSETS__ENABLED=false   # persist figure bytes + asset_path (T-230)
 PARSING__FIGURE_ASSETS__STORE_DIR=data/assets
+PARSING__FIGURE_CAPTIONS__ENABLED=false # VLM captions for stored figures (T-231)
+PARSING__FIGURE_CAPTIONS__PROVIDER=openai  # openai | gemini
+# PARSING__FIGURE_CAPTIONS__OPENAI__API_KEY=
+# PARSING__FIGURE_CAPTIONS__GEMINI__API_KEY=
 PARSING__OCR__ENABLED=false             # OCR factory + scanned-PDF fallback (T-220/T-223)
 PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
 PARSING__OCR__MIN_CHARS=50              # OCR when extractable text is below this many non-whitespace chars
@@ -393,7 +399,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
-| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), figure assets (T-230), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
+| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), figure assets (T-230), VLM figure captions (T-231), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -438,15 +444,18 @@ flowchart LR
     LP -->|parsing.layout_parser.enabled| PARSE["DoclingLayoutParser<br/>→ ParsedDocument<br/>→ Document"]
     PARSE --> DEDUP{"Unchanged?<br/>content_hash or<br/>source_file_hash"}
     LD --> DEDUP
-    DEDUP -->|skip · preserve index| SKIP["Skip path<br/>table backfill · T-202<br/>figure assets · T-230"]
+    DEDUP -->|skip · preserve index| SKIP["Skip path<br/>table backfill · T-202<br/>figure assets · T-230<br/>VLM captions · T-231"]
     DEDUP -->|new / changed| OCR{"OCR fallback?<br/>(optional · T-223)"}
     OCR -->|low-text PDF + enabled| OCRSEL{"get_ocr_provider()<br/>tesseract · easyocr · docling · azure_di"}
     OCRSEL --> OCRRUN["ocr(path) → replace content<br/>ocr_applied=true"]
     OCR -->|born-digital / disabled / fail| FIG{"Figure assets?<br/>(optional · T-230)"}
     OCRRUN --> FIG
     FIG -->|enabled| FAS["apply_figure_assets()<br/>LocalAssetStore"]
-    FIG -->|disabled| CL["Text Cleaning"]
-    FAS --> CL
+    FIG -->|disabled| CAP{"VLM captions?<br/>(optional · T-231)"}
+    FAS --> CAP
+    CAP -->|enabled| VLMC["apply_figure_captions()<br/>OpenAI / Gemini"]
+    CAP -->|disabled| CL["Text Cleaning"]
+    VLMC --> CL
     CL --> CM["chunk_metadata()<br/>filter doc-level keys<br/>promote section"]
     CM --> CH{"Chunking<br/>Strategy"}
     CH -->|recursive| RC["Recursive<br/>Splitter"]
@@ -876,7 +885,64 @@ parsing:
 
 **Tests:** `tests/unit/test_local_asset_store.py`; `tests/unit/test_figure_extractor.py` (PPTX incl. nested groups, Docling/DOCX fallback + slot alignment, soft-fail, chunk builders).
 
-**Next steps:** T-231 VLM captions at ingest, then T-232 `type=caption` chunks — see [specs/TODO.md](specs/TODO.md).
+**Next steps:** T-232 `type=caption` chunks — see [specs/TODO.md](specs/TODO.md).
+
+#### VLM Captioning at Ingest (T-231)
+
+When `parsing.figure_captions.enabled=true`, ingest calls a vision-language model after figure assets are stored and writes captions onto `figures[].caption`. Providers: OpenAI (`gpt-4o-mini` by default) or Gemini (`gemini-2.0-flash`). Off by default; soft-fails when the VLM is misconfigured or a single figure fails so ingest continues. Requires `figures[].asset_path` from T-230 and `uv sync --extra api-embeddings`.
+
+```mermaid
+flowchart TD
+    ASSETS["apply_figure_assets()"] --> FLAG{"figure_captions.enabled?"}
+    FLAG -->|no| CHUNK["chunk / embed"]
+    FLAG -->|yes| FACTORY["get_vision_provider()<br/>openai | gemini"]
+    FACTORY --> LOOP["For each figures[] with asset_path"]
+    LOOP --> VLM["caption_image(path)"]
+    VLM -->|ok| META["figures.caption"]
+    VLM -->|fail / empty| KEEP["keep existing caption"]
+    META --> CHUNK
+    KEEP --> CHUNK
+```
+
+```bash
+PARSING__FIGURE_ASSETS__ENABLED=true
+PARSING__FIGURE_CAPTIONS__ENABLED=true
+PARSING__FIGURE_CAPTIONS__PROVIDER=openai
+PARSING__FIGURE_CAPTIONS__OPENAI__API_KEY=sk-...
+# or:
+# PARSING__FIGURE_CAPTIONS__PROVIDER=gemini
+# PARSING__FIGURE_CAPTIONS__GEMINI__API_KEY=...
+
+make ingest SOURCE=data/raw/
+```
+
+```yaml
+# configs/parsing.yaml
+parsing:
+  figure_captions:
+    enabled: false              # T-231 VLM captions
+    provider: openai            # openai | gemini
+    openai:
+      api_key: ""
+      model: gpt-4o-mini
+    gemini:
+      api_key: ""
+      model: gemini-2.0-flash
+```
+
+| Component | Location | Role |
+|---|---|---|
+| `VisionRepository` | `src/domain/repositories/vision_repository.py` | ABC: `caption_image(path) -> str` |
+| OpenAI / Gemini providers | `src/infrastructure/vision/` | Chat/vision API clients + factory |
+| `apply_figure_captions` | `src/rag/ingestion/figure_captioner.py` | Soft-fail caption enrichment |
+| Pipeline wiring | `IngestionPipeline.ingest_file` | Runs after `apply_figure_assets` on full + skip paths |
+| Config | `configs/parsing.yaml` + `FigureCaptionSettings` | `enabled`, `provider`, API keys — off by default |
+
+**Trade-offs:** Adds API latency/cost per figure. Existing Docling captions are overwritten only when the VLM returns non-empty text. Caption chunk indexing is T-232.
+
+**Tests:** `tests/unit/test_figure_captioner.py`; `tests/unit/test_vision_providers.py`.
+
+**Next steps:** T-232 `type=caption` chunks — see [specs/TODO.md](specs/TODO.md).
 
 #### Structured Table Chunks at Ingest (T-202)
 

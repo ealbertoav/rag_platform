@@ -41,4 +41,16 @@ parsing:
     # Extracts figures from layout figures[] (Docling PDF/DOCX) or PPTX picture
     # shapes, writes PNG/JPEG bytes under store_dir, and sets figures[].asset_path
     # plus Chunk.asset_path / figure_id via build_figure_chunks(). Soft-fails per
-    # figure when bytes cannot be exported. VLM captions are T-231.
+    # figure when bytes cannot be exported.
+  figure_captions:
+    enabled: false              # T-231 VLM captions for stored figure assets; off by default
+    provider: openai            # openai | gemini
+    # Requires figures[].asset_path from T-230. Writes figures[].caption via
+    # apply_figure_captions() after apply_figure_assets(). Soft-fails when the
+    # VLM is unavailable or a single figure fails. Install: uv sync --extra api-embeddings
+    openai:
+      api_key: ""               # prefer PARSING__FIGURE_CAPTIONS__OPENAI__API_KEY
+      model: gpt-4o-mini
+    gemini:
+      api_key: ""               # prefer PARSING__FIGURE_CAPTIONS__GEMINI__API_KEY
+      model: gemini-2.0-flash

@@ -19,6 +19,7 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.rag.ingestion.figure_captioner import apply_figure_captions
 from src.rag.ingestion.figure_extractor import apply_figure_assets
 from src.rag.ingestion.ocr_fallback import apply_ocr_fallback, should_attempt_ocr
 from src.rag.ingestion.table_chunker import (
@@ -275,6 +276,7 @@ class IngestionPipeline:
             )
 
         document = apply_figure_assets(document, path)
+        document = apply_figure_captions(document)
 
         with self._bm25.deferred_rebuild():
             chunks = self._service.prepare(document)
@@ -480,6 +482,7 @@ class IngestionPipeline:
         "parsing.figure_assets" backfills disk assets without a content change.
         """
         document = apply_figure_assets(document, path)
+        document = apply_figure_captions(document)
         empty_ocr_without_layout = (
             ocr_candidate and not document.content.strip() and not metadata_table_ids(document)
         )
