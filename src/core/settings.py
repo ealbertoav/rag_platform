@@ -388,10 +388,18 @@ class TableChunkSettings(BaseModel):
     enabled: bool = False
 
 
+class FigureAssetSettings(BaseModel):
+    """Persist extracted figure bytes under a local asset store (T-230)."""
+
+    enabled: bool = False
+    store_dir: str = "data/assets"
+
+
 class ParsingSettings(BaseModel):
     layout_parser: LayoutParserSettings = Field(default_factory=LayoutParserSettings)
     ocr: OcrSettings = Field(default_factory=OcrSettings)
     table_chunks: TableChunkSettings = Field(default_factory=TableChunkSettings)
+    figure_assets: FigureAssetSettings = Field(default_factory=FigureAssetSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────
