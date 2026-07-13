@@ -1,13 +1,16 @@
 """VLM figure captioning at ingest (T-231).
 
-When ``parsing.figure_captions.enabled`` is true, call the configured OpenAI or
-Gemini vision provider for each ``figures[]`` entry that has an ``asset_path``,
-and write the returned text into ``figures[].caption``.
+When "parsing.figure_captions.enabled" is true, call the configured OpenAI or
+Gemini vision provider for each "figures[]" entry that has an "asset_path",
+and write the returned text into "figures[].caption".
 
-Depends on stored figure assets from T-230. Soft-fails when the VLM is
-unavailable or a single figure fails so ingest continues. Existing Docling
-captions are overwritten only when the VLM returns non-empty text.
-Caption chunk indexing is T-232.
+Successful VLM captions are also persisted as sidecar files next to the asset
+("{stem}.caption.txt"). On later full or skip-path re-ingesting the sidecar is
+loaded instead of re-calling the vision API, so unchanged documents keep
+captions even though the skip path does not reindex (caption chunk indexing is
+T-232). Soft-fails when the VLM is unavailable or a single figure fails, so
+ingest continues. Existing Docling captions are overwritten only when the VLM
+returns non-empty text (or a prior VLM sidecar is loaded).
 """
 
 from __future__ import annotations
@@ -24,6 +27,13 @@ from src.domain.repositories.vision_repository import VisionRepository
 
 logger = logging.getLogger(__name__)
 
+_CAPTION_SIDECAR_SUFFIX = ".caption.txt"
+
+
+def caption_sidecar_path(asset_path: Path) -> Path:
+    """Return the sidecar path for a figure asset ("stem.caption.txt")."""
+    return asset_path.with_name(f"{asset_path.stem}{_CAPTION_SIDECAR_SUFFIX}")
+
 
 def apply_figure_captions(
     document: Document,
@@ -31,11 +41,13 @@ def apply_figure_captions(
     app_settings: Settings | None = None,
     vision_provider: VisionRepository | None = None,
 ) -> Document:
-    """Caption stored figure assets and attach text onto ``figures[]`` metadata.
+    """Caption stored figure assets and attach text onto "figures[]" metadata.
 
     No-op when figure captions are disabled or no figures have an asset path.
     Soft-fails (logs and returns the best-effort document) on configuration /
-    generation errors so ingest continues.
+    generation errors, so ingest continues. Persists successful VLM captions to
+    sidecars and reuses them on subsequent runs (including when the VLM is
+    later misconfigured).
     """
     cfg = _figure_caption_settings(app_settings)
     if not cfg.enabled and vision_provider is None:
@@ -46,10 +58,7 @@ def apply_figure_captions(
         return document
 
     provider = vision_provider
-    if provider is None:
-        provider = _resolve_vision_provider(app_settings)
-        if provider is None:
-            return document
+    provider_resolved = vision_provider is not None
 
     updated_figures: list[Any] = []
     changed = False
@@ -72,6 +81,21 @@ def apply_figure_captions(
                 figure_id,
                 path,
             )
+            updated_figures.append(entry)
+            continue
+
+        cached = _read_caption_sidecar(path, figure_id=figure_id)
+        if cached is not None:
+            if entry.get(FIGURE_CAPTION_KEY) != cached:
+                entry[FIGURE_CAPTION_KEY] = cached
+                changed = True
+            updated_figures.append(entry)
+            continue
+
+        if not provider_resolved:
+            provider = _resolve_vision_provider(app_settings)
+            provider_resolved = True
+        if provider is None:
             updated_figures.append(entry)
             continue
 
@@ -103,6 +127,7 @@ def apply_figure_captions(
             continue
 
         entry[FIGURE_CAPTION_KEY] = caption
+        _write_caption_sidecar(path, caption, figure_id=figure_id)
         changed = True
         updated_figures.append(entry)
 
@@ -112,6 +137,45 @@ def apply_figure_captions(
     metadata = dict(document.metadata)
     metadata["figures"] = updated_figures
     return document.model_copy(update={"metadata": metadata})
+
+
+def _read_caption_sidecar(asset_path: Path, *, figure_id: str) -> str | None:
+    """Load a previously persisted VLM caption, or None when missing/unusable."""
+    sidecar = caption_sidecar_path(asset_path)
+    if not sidecar.is_file():
+        return None
+    try:
+        text = sidecar.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning(
+            "Figure caption sidecar unreadable for %s at %s: %s",
+            figure_id,
+            sidecar,
+            exc,
+        )
+        return None
+    if not text:
+        logger.warning(
+            "Figure caption sidecar empty for %s at %s — will re-caption",
+            figure_id,
+            sidecar,
+        )
+        return None
+    return text
+
+
+def _write_caption_sidecar(asset_path: Path, caption: str, *, figure_id: str) -> None:
+    """Persist a VLM caption next to the asset; soft-fail on I/O errors."""
+    sidecar = caption_sidecar_path(asset_path)
+    try:
+        sidecar.write_text(caption, encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "Figure caption sidecar write failed for %s at %s: %s",
+            figure_id,
+            sidecar,
+            exc,
+        )
 
 
 def _resolve_vision_provider(app_settings: Settings | None) -> VisionRepository | None:
