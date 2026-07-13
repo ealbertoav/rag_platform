@@ -23,7 +23,7 @@ from src.core.constants import (
     FIGURE_ID_KEY,
     MODALITY_FIGURE,
 )
-from src.core.exceptions import ConfigurationError
+from src.core.exceptions import ConfigurationError, DocumentLoadError
 from src.core.settings import FigureAssetSettings, ParsingSettings, Settings
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
@@ -73,6 +73,15 @@ def _pptx_with_picture(tmp_path: Path) -> Path:
     presentation = python_pptx.Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     slide.shapes.add_picture(str(png_path), Inches(0.5), Inches(0.5), width=Inches(1))
+    presentation.save(str(pptx_path))
+    return pptx_path
+
+
+def _pptx_text_only(tmp_path: Path) -> Path:
+    pptx_path = tmp_path / "text-only.pptx"
+    presentation = python_pptx.Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1)).text = "Hello"
     presentation.save(str(pptx_path))
     return pptx_path
 
@@ -412,7 +421,8 @@ class TestApplyDoclingFigures:
                 doc, path, tmp_path / "assets", [], status_name="FAILURE"
             )
         assert result is doc or result.metadata.get("figures") == doc.metadata["figures"]
-        assert "Figure asset extraction failed" in caplog.text
+        assert "Docling figure conversion failed" in caplog.text
+        assert "Docling returned no pictures" in caplog.text
 
     def test_convert_raises_document_load_error(
         self,
@@ -429,7 +439,8 @@ class TestApplyDoclingFigures:
                 convert_error=RuntimeError("boom"),
             )
         assert result is doc
-        assert "Figure asset extraction failed" in caplog.text
+        assert "Docling figure conversion failed" in caplog.text
+        assert "Docling returned no pictures" in caplog.text
 
     def test_configuration_error_soft_fails(
         self,
@@ -674,11 +685,7 @@ class TestApplyFigureAssetsEdgeCases:
         assert "No image bytes" in caplog.text
 
     def test_pptx_without_pictures(self, tmp_path: Path) -> None:
-        pptx_path = tmp_path / "text-only.pptx"
-        presentation = python_pptx.Presentation()
-        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
-        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1)).text = "Hello"
-        presentation.save(str(pptx_path))
+        pptx_path = _pptx_text_only(tmp_path)
         doc = Document(source=str(pptx_path.resolve()), content="Hello")
         result = apply_figure_assets(
             doc,
@@ -691,11 +698,7 @@ class TestApplyFigureAssetsEdgeCases:
     def test_pptx_warns_when_figures_exist_but_no_pictures(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        pptx_path = tmp_path / "text-only.pptx"
-        presentation = python_pptx.Presentation()
-        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
-        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1)).text = "Hello"
-        presentation.save(str(pptx_path))
+        pptx_path = _pptx_text_only(tmp_path)
         doc = Document(
             source=str(pptx_path.resolve()),
             content="Hello",
@@ -808,9 +811,7 @@ def _figure_docx_document(
 
 
 class TestDocxFigureFallback:
-    def test_docx_fallback_when_docling_has_no_image_bytes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_docx_fallback_when_docling_has_no_image_bytes(self, tmp_path: Path) -> None:
         path, doc = _figure_docx_document(tmp_path)
         picture = MagicMock()
         picture.get_image.return_value = None
@@ -821,9 +822,67 @@ class TestDocxFigureFallback:
         assert asset.is_file()
         assert asset.read_bytes()
 
-    def test_docx_fallback_when_docling_returns_no_pictures(
-        self, tmp_path: Path
+    def test_docx_aligns_fallback_blobs_by_figure_slot(self, tmp_path: Path) -> None:
+        """After a successful Docling export, DOCX fallback must use the same slot index."""
+        path, doc = _figure_docx_document(
+            tmp_path,
+            figures=[{FIGURE_ID_KEY: "figure-1"}, {FIGURE_ID_KEY: "figure-2"}],
+        )
+        first = MagicMock()
+        first.get_image.return_value = _fake_pil_image()
+        second = MagicMock()
+        second.get_image.return_value = None
+        blob_a = _png_bytes((10, 20, 30))
+        blob_b = _png_bytes((40, 50, 60))
+        with patch(
+            f"{_EXTRACTOR}._docx_fallback_blobs",
+            return_value=[(blob_a, "png"), (blob_b, "png")],
+        ):
+            result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [first, second])
+        figures = result.metadata["figures"]
+        assert Path(figures[0][ASSET_PATH_KEY]).read_bytes() == _png_bytes()
+        assert Path(figures[1][ASSET_PATH_KEY]).read_bytes() == blob_b
+
+    def test_docx_fallback_when_docling_conversion_fails(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            result = _apply_with_docling_pictures(
+                doc,
+                path,
+                tmp_path / "assets",
+                [],
+                convert_error=RuntimeError("boom"),
+            )
+        assert ASSET_PATH_KEY in result.metadata["figures"][0]
+        assert Path(result.metadata["figures"][0][ASSET_PATH_KEY]).is_file()
+        assert "Docling figure conversion failed" in caplog.text
+        assert "trying embedded-image fallback" in caplog.text
+
+    def test_docx_fallback_when_docling_unavailable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path, doc = _figure_docx_document(tmp_path)
+        with (
+            patch(
+                f"{_EXTRACTOR}._create_picture_converter",
+                side_effect=ConfigurationError("missing docling"),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = apply_figure_assets(
+                doc,
+                path,
+                app_settings=_settings(enabled=True),
+                store=LocalAssetStore(tmp_path / "assets"),
+            )
+        assert ASSET_PATH_KEY in result.metadata["figures"][0]
+        assert Path(result.metadata["figures"][0][ASSET_PATH_KEY]).is_file()
+        assert "Docling unavailable" in caplog.text
+        assert "python-docx embedded-image fallback" in caplog.text
+
+    def test_docx_fallback_when_docling_returns_no_pictures(self, tmp_path: Path) -> None:
         path, doc = _figure_docx_document(tmp_path)
         result = _apply_with_docling_pictures(doc, path, tmp_path / "assets", [])
         assert ASSET_PATH_KEY in result.metadata["figures"][0]
@@ -846,7 +905,6 @@ class TestDocxFigureFallback:
     def test_docx_open_failure_soft_falls_back_empty(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from src.core.exceptions import DocumentLoadError as DLE
         from src.rag.ingestion import figure_extractor as mod
 
         path = tmp_path / "broken.docx"
@@ -869,7 +927,7 @@ class TestDocxFigureFallback:
         assert result is doc
         assert "DOCX embedded-image fallback unavailable" in caplog.text
         assert "Docling returned no pictures" in caplog.text
-        with pytest.raises(DLE, match="Cannot open DOCX"):
+        with pytest.raises(DocumentLoadError, match="Cannot open DOCX"):
             mod._extract_docx_picture_bytes(path)
 
     def test_extract_docx_import_error(self, tmp_path: Path) -> None:
@@ -896,44 +954,34 @@ class TestDocxFigureFallback:
         from src.rag.ingestion import figure_extractor as mod
 
         path = _docx_with_picture(tmp_path)
+        image_reltype = "officeDocument/relationships/image"
 
         class BoomRel:
-            reltype = (
-                "http://schemas.openxmlformats.org/officeDocument/2006/"
-                "relationships/image"
-            )
+            reltype = image_reltype
             rId = "rIdBoom"
 
-            @property
-            def target_part(self) -> object:
-                raise RuntimeError("bad part")
+            def __getattr__(self, name: str) -> object:
+                if name == "target_part":
+                    raise RuntimeError("bad part")
+                raise AttributeError(name)
 
         class EmptyRel:
-            reltype = (
-                "http://schemas.openxmlformats.org/officeDocument/2006/"
-                "relationships/image"
-            )
+            reltype = image_reltype
             rId = "rIdEmpty"
             target_part = SimpleNamespace(blob=b"", content_type="image/png")
 
         class GoodRel:
-            reltype = (
-                "http://schemas.openxmlformats.org/officeDocument/2006/"
-                "relationships/image"
-            )
+            reltype = image_reltype
             rId = "rIdGood"
             target_part = SimpleNamespace(blob=_png_bytes(), content_type="image/jpeg")
 
         class DupRel:
-            reltype = GoodRel.reltype
+            reltype = image_reltype
             rId = "rIdGood"
             target_part = SimpleNamespace(blob=_png_bytes((1, 2, 3)), content_type="image/png")
 
         class NonImageRel:
-            reltype = (
-                "http://schemas.openxmlformats.org/officeDocument/2006/"
-                "relationships/hyperlink"
-            )
+            reltype = "officeDocument/relationships/hyperlink"
             rId = "rIdLink"
 
         fake_doc = SimpleNamespace(
@@ -965,9 +1013,7 @@ class TestDocxFigureFallback:
         assert _extension_from_image_content_type("image/x-icon") == "icon"
         assert _extension_from_image_content_type("image/svg+xml") == "svg+xml"
         assert _extension_from_image_content_type("") == "png"
-        assert _extension_from_image_content_type("application/octet-stream") == (
-            "octet-stream"
-        )
+        assert _extension_from_image_content_type("application/octet-stream") == ("octet-stream")
         assert _extension_from_image_content_type("noslash") == "png"
 
     def test_docx_fallback_blobs_ignores_non_docx(self, tmp_path: Path) -> None:

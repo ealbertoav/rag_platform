@@ -10,8 +10,11 @@ Docling picture export enables "generate_picture_images" for PDF
 (:class:`~docling.document_converter.PdfFormatOption`) and DOCX
 (:class:`~docling.document_converter.WordFormatOption` +
 "PaginatedPipelineOptions"). DOCX also falls back to embedded
-"python-docx" image parts when "PictureItem.get_image()" returns no
-bytes (common when layout metadata exists but ImageRef was not attached).
+"python-docx" image parts when Docling conversion fails, Docling is
+unavailable, or "PictureItem.get_image()" returns no bytes (common when
+layout metadata exists but ImageRef was not attached). Figure slot N uses
+Docling picture N with DOCX embedded image N as backfill so assets stay
+aligned in document order.
 
 Soft-fails per figure when bytes cannot be exported. VLM captions are
 T-231; caption indexing is T-232.
@@ -312,7 +315,7 @@ def _apply_docling_figures(
 
     figure_entries = [entry for entry in existing if isinstance(entry, dict)]
     expected_count = len(figure_entries)
-    pictures = _load_docling_pictures(path)
+    pictures = _load_docling_pictures_or_empty(path)
     docx_blobs = _docx_fallback_blobs(path)
 
     if not pictures and not docx_blobs:
@@ -326,6 +329,7 @@ def _apply_docling_figures(
         return document
 
     # Docling pictures are primary; DOCX embedded parts only backfill missing rasters.
+    # Both lists are document-order aligned: figure slot N uses pictures[N] / docx_blobs[N].
     available = max(len(pictures), len(docx_blobs)) if docx_blobs else len(pictures)
     if expected_count > available:
         if docx_blobs and not pictures:
@@ -349,8 +353,7 @@ def _apply_docling_figures(
 
     doc_key = document_asset_key(document.source)
     figures: list[dict[str, Any]] = []
-    picture_index = 0
-    docx_index = 0
+    slot = 0
     for raw_entry in existing:
         if not isinstance(raw_entry, dict):
             continue
@@ -361,10 +364,9 @@ def _apply_docling_figures(
         blob: bytes | None = None
         extension = "png"
         attempted_docling = False
-        if picture_index < len(pictures):
+        if slot < len(pictures):
             attempted_docling = True
-            picture, doc = pictures[picture_index]
-            picture_index += 1
+            picture, doc = pictures[slot]
             try:
                 blob = _picture_to_png_bytes(picture, doc)
             except Exception as exc:
@@ -375,14 +377,15 @@ def _apply_docling_figures(
                     exc,
                 )
 
-        if not blob and docx_index < len(docx_blobs):
-            blob, extension = docx_blobs[docx_index]
-            docx_index += 1
+        if not blob and slot < len(docx_blobs):
+            blob, extension = docx_blobs[slot]
             logger.debug(
                 "Using python-docx embedded image for %s in %s",
                 figure_id,
                 path.name,
             )
+
+        slot += 1
 
         if not blob:
             if attempted_docling:
@@ -471,8 +474,7 @@ def _extract_docx_picture_bytes(path: Path) -> list[tuple[bytes, str]]:
         import docx as python_docx
     except ImportError as exc:
         raise ConfigurationError(
-            "DOCX figure fallback requires python-docx. "
-            "Install with: uv pip install python-docx"
+            "DOCX figure fallback requires python-docx. Install with: uv pip install python-docx"
         ) from exc
 
     try:
@@ -510,6 +512,35 @@ def _extract_docx_picture_bytes(path: Path) -> list[tuple[bytes, str]]:
             seen_rids.add(rid)
         pictures.append((blob, extension))
     return pictures
+
+
+def _load_docling_pictures_or_empty(
+    path: Path,
+) -> list[tuple[_DoclingPicture, _DoclingDocument]]:
+    """Load Docling pictures, soft-failing so DOCX embedded-image fallback can run.
+
+    "DocumentLoadError" always soft-fails to an empty list. "ConfigurationError"
+    (e.g. missing Docling) soft-fails only for ".docx", where python-docx can still
+    supply bytes; for other types it re-raises so ingest reports misconfiguration.
+    """
+    try:
+        return _load_docling_pictures(path)
+    except DocumentLoadError as exc:
+        logger.warning(
+            "Docling figure conversion failed for %s: %s — "
+            "trying embedded-image fallback if available",
+            path.name,
+            exc,
+        )
+        return []
+    except ConfigurationError:
+        if path.suffix.lower() != ".docx":
+            raise
+        logger.warning(
+            "Docling unavailable for %s — trying python-docx embedded-image fallback",
+            path.name,
+        )
+        return []
 
 
 def _load_docling_pictures(path: Path) -> list[tuple[_DoclingPicture, _DoclingDocument]]:
