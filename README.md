@@ -54,7 +54,9 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Figure asset extraction (T-230):** When `parsing.figure_assets.enabled=true`, ingest persists figure bytes from layout `figures[]` (Docling PDF/DOCX) or PPTX picture shapes under `store_dir` (default `data/assets`), sets `figures[].asset_path`, and exposes `build_figure_chunks()` with `Chunk.asset_path` / `figure_id`. Off by default; soft-fails per figure. See [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230).
 
-> **VLM captioning at ingest (T-231):** When `parsing.figure_captions.enabled=true` (requires T-230 assets), OpenAI or Gemini writes `figures[].caption` and hash-bound `{stem}.caption.txt` sidecars for skip-path reuse. Off by default; soft-fails per figure. Caption chunk indexing is T-232. See [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231).
+> **VLM captioning at ingest (T-231):** When `parsing.figure_captions.enabled=true` (requires T-230 assets), OpenAI or Gemini writes `figures[].caption` and hash-bound `{stem}.caption.txt` sidecars for skip-path reuse. Off by default; soft-fails per figure. See [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231).
+
+> **Image caption chunks (T-232):** When `parsing.caption_chunks.enabled=true`, ingest indexes `type=caption` chunks from `figures[].caption` (stable UUIDv5 IDs, skip-path backfill like T-202 tables). Off by default. See [Image Caption Chunks (T-232)](#image-caption-chunks-t-232).
 
 ---
 
@@ -74,6 +76,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223)
     - [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230)
     - [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231)
+    - [Image Caption Chunks (T-232)](#image-caption-chunks-t-232)
     - [Structured Table Chunks at Ingest (T-202)](#structured-table-chunks-at-ingest-t-202)
     - [Multimodal Domain Model (T-210)](#multimodal-domain-model-t-210)
   - [Start the API Server](#start-the-api-server)
@@ -128,7 +131,8 @@ flowchart LR
         L --> OCR["OCR Fallback<br/>Tesseract / EasyOCR / Docling / Azure DI<br/>(optional · T-221–T-223)"]
         OCR --> FIG["Figure Assets<br/>(optional · T-230)"]
         FIG --> CAP["VLM Captions<br/>(optional · T-231)"]
-        CAP --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
+        CAP --> CAPCHK["Caption Chunks<br/>(optional · T-232)"]
+        CAPCHK --> C["Chunker<br/>Recursive / Semantic / Parent-Child"]
         C --> E["BGE-M3<br/>Dense 1024-dim + Sparse Lexical"]
         E --> Q[("Qdrant<br/>HNSW Index")]
         E --> B[("BM25<br/>memory | disk<br/>(T-165)")]
@@ -367,10 +371,11 @@ NEO4J__EXTRACT_ENTITIES_ON_INGEST=true
 METADATA__ENABLED=true
 METADATA__DB_PATH=data/processed/metadata.db
 
-# Multimodal parsing (layout parser off by default; OCR T-220–T-223; figure assets T-230; VLM captions T-231)
+# Multimodal parsing (layout parser off by default; OCR T-220–T-223; figure assets T-230; VLM captions T-231; caption chunks T-232)
 PARSING__LAYOUT_PARSER__ENABLED=false   # Docling layout parser for .pdf/.docx (T-200)
 PARSING__LAYOUT_PARSER__PROVIDER=docling
 PARSING__TABLE_CHUNKS__ENABLED=false    # structured type=table chunks at ingest (T-202)
+PARSING__CAPTION_CHUNKS__ENABLED=false  # structured type=caption chunks at ingest (T-232)
 PARSING__FIGURE_ASSETS__ENABLED=false   # persist figure bytes + asset_path (T-230)
 PARSING__FIGURE_ASSETS__STORE_DIR=data/assets
 PARSING__FIGURE_CAPTIONS__ENABLED=false # VLM captions for stored figures (T-231)
@@ -401,7 +406,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
-| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), figure assets (T-230), VLM figure captions (T-231), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
+| `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), caption chunks (T-232), figure assets (T-230), VLM figure captions (T-231), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -427,7 +432,7 @@ uv run python scripts/ingest.py --list
 # Supported formats: .pdf, .docx, .html, .htm, .md, .markdown
 ```
 
-Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a hash stored in the SQLite metadata store (`data/processed/metadata.db` by default) — normally a text `content_hash`, or for PDFs that went through OCR a `source_file_hash` of the file bytes (T-223 dual-hash contract). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync table chunks on the skip path — backfilling missing/updated tables and purging stale ones (T-202), including when OCR is skipped or fails but layout `tables[]` still carry text.
+Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a hash stored in the SQLite metadata store (`data/processed/metadata.db` by default) — normally a text `content_hash`, or for PDFs that went through OCR a `source_file_hash` of the file bytes (T-223 dual-hash contract). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and/or `parsing.caption_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync structured chunks on the skip path — backfilling missing/updated tables (T-202) and captions (T-232) and purging stale ones, including when OCR is skipped or fails but layout metadata still carries table/caption text.
 
 With `chunking.strategy: parent_child`, both parent and child chunks are indexed in Qdrant and BM25. At query time, retrieval matches on child embeddings; enable `retrieval.parent_context` to substitute parent text into the LLM context (see [Parent Context on Retrieve (T-124)](#parent-context-on-retrieve-t-124)).
 
@@ -446,7 +451,7 @@ flowchart LR
     LP -->|parsing.layout_parser.enabled| PARSE["DoclingLayoutParser<br/>→ ParsedDocument<br/>→ Document"]
     PARSE --> DEDUP{"Unchanged?<br/>content_hash or<br/>source_file_hash"}
     LD --> DEDUP
-    DEDUP -->|skip · preserve index| SKIP["Skip path<br/>table backfill · T-202<br/>figure assets · T-230<br/>VLM captions · T-231"]
+    DEDUP -->|skip · preserve index| SKIP["Skip path<br/>table backfill · T-202<br/>figure assets · T-230<br/>VLM captions · T-231<br/>caption chunks · T-232"]
     DEDUP -->|new / changed| OCR{"OCR fallback?<br/>(optional · T-223)"}
     OCR -->|low-text PDF + enabled| OCRSEL{"get_ocr_provider()<br/>tesseract · easyocr · docling · azure_di"}
     OCRSEL --> OCRRUN["ocr(path) → replace content<br/>ocr_applied=true"]
@@ -472,19 +477,22 @@ flowchart LR
     EM --> HYPE{"HyPE<br/>Questions?<br/>(T-122)"}
     EM --> HIER{"Hierarchical<br/>Summaries?<br/>(T-125)"}
     EM --> TBL{"Table chunks?<br/>(T-202)"}
+    EM --> CAPC{"Caption chunks?<br/>(T-232)"}
     AUG -->|enabled| SQ["LLM → N questions/chunk<br/>embed · Qdrant + BM25"]
     HYPE -->|enabled| HY["LLM → N questions/chunk<br/>embed · Qdrant only"]
     HIER -->|enabled| HS["LLM → doc summary<br/>tag details · Qdrant only"]
     TBL -->|enabled| TC["TableChunker<br/>layout tables → type=table<br/>stable UUIDv5 IDs"]
+    CAPC -->|enabled| CAPIDX["CaptionChunker<br/>figures[].caption → type=caption<br/>stable UUIDv5 IDs"]
     AUG -->|disabled| IDX
     EM --> IDX
     SQ --> IDX
     HY --> IDX
     HS --> IDX
     TC --> IDX
+    CAPIDX --> IDX
     SKIP --> META
     IDX["Upsert indexes"] --> QD[("Qdrant<br/>HNSW + Sparse")]
-    IDX --> BM[("BM25<br/>memory | disk<br/>excludes HyPE + summaries<br/>includes table chunks")]
+    IDX --> BM[("BM25<br/>memory | disk<br/>excludes HyPE + summaries<br/>includes table + caption chunks")]
     IDX --> META[("SQLite<br/>metadata.db")]
     EM -->|neo4j.enabled| GR["Entity Extractor<br/>→ Neo4j"]
     QD & BM & META --> DONE["✅ Indexed"]
@@ -505,9 +513,10 @@ Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptiv
 | HyPE (T-122) | `retrieval.hype` | Qdrant only (`type=hype_question`) | Dedicated question→question dense search → RRF source |
 | Hierarchical summaries (T-125) | `chunking.hierarchical` | Qdrant only (`type=summary` + `type=detail`) | Two-stage summary→detail dense search → RRF source |
 | Structured table chunks (T-202) | `parsing.table_chunks` | Qdrant + BM25 (`type=table`) | Standard dense/BM25 (same as passage chunks) |
+| Image caption chunks (T-232) | `parsing.caption_chunks` | Qdrant + BM25 (`type=caption`) | Standard dense/BM25 (linked via `figure_id`) |
 | Scanned-PDF OCR fallback (T-223) | `parsing.ocr` | Replaces document text before chunk/embed | Standard dense/BM25 (OCR text becomes passage chunks) |
-| Figure assets (T-230) | `parsing.figure_assets` | Local files under `store_dir` + `figures[].asset_path` | Not indexed yet (`build_figure_chunks` for T-232+) |
-| VLM figure captions (T-231) | `parsing.figure_captions` | Writes `figures[].caption` + hash-bound sidecars | Metadata / sidecars only until T-232 indexes `type=caption` |
+| Figure assets (T-230) | `parsing.figure_assets` | Local files under `store_dir` + `figures[].asset_path` | Assets on disk; use T-232 caption chunks for retrieval |
+| VLM figure captions (T-231) | `parsing.figure_captions` | Writes `figures[].caption` + hash-bound sidecars | Feeds T-232 `type=caption` indexing when enabled |
 
 ##### Contextual Chunk Headers (T-120)
 
@@ -617,7 +626,7 @@ CHUNKING__HIERARCHICAL__SUMMARY_TOP_K=3
 
 #### Multimodal Parsing Contracts (T-190)
 
-Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented. The OCR factory (`get_ocr_provider()`, T-220) returns Docling-backed self-hosted providers when enabled (T-221) or Azure Document Intelligence (`azure_di`, T-222); scanned-PDF ingest fallback is T-223. Figure asset extraction (T-230) persists layout/PPTX figure bytes locally; VLM captioning (T-231) enriches `figures[].caption` when enabled. See [docs/ocr-providers.md](docs/ocr-providers.md).
+Phase 19 defines **domain contracts** for multimodal ingestion (Phases 20–28 in [specs/TODO.md](specs/TODO.md)). Layout parsing (T-200), PPTX loading (T-201), structured table chunks (T-202), and the multimodal domain model (T-210) are implemented. The OCR factory (`get_ocr_provider()`, T-220) returns Docling-backed self-hosted providers when enabled (T-221) or Azure Document Intelligence (`azure_di`, T-222); scanned-PDF ingest fallback is T-223. Figure asset extraction (T-230) persists layout/PPTX figure bytes locally; VLM captioning (T-231) enriches `figures[].caption` when enabled; caption chunk indexing (T-232) emits `type=caption` points when `parsing.caption_chunks` is enabled. See [docs/ocr-providers.md](docs/ocr-providers.md).
 
 ```mermaid
 flowchart TB
@@ -631,6 +640,7 @@ flowchart TB
     subgraph CONFIG["configs/parsing.yaml"]
         LPSET["layout_parser.enabled=false<br/>provider=docling"]
         TCSET["table_chunks.enabled=false"]
+        CCSET["caption_chunks.enabled=false"]
         FASET["figure_assets.enabled=false<br/>store_dir=data/assets"]
         FCSET["figure_captions.enabled=false<br/>provider=openai|gemini"]
         OCRSET["ocr.enabled=false<br/>provider=tesseract|easyocr|docling|azure_di<br/>min_chars=50 · azure_di.*"]
@@ -647,6 +657,7 @@ flowchart TB
         T223["T-223 Scanned-PDF OCR fallback ✅"]
         T230["T-230 Figure assets ✅"]
         T231["T-231 VLM captions ✅"]
+        T232["T-232 Caption chunks ✅"]
     end
 
     LPR --> PD
@@ -656,6 +667,7 @@ flowchart TB
     CONFIG -.->|gates| T223
     CONFIG -.->|gates| T230
     CONFIG -.->|gates| T231
+    CONFIG -.->|gates| T232
     T200 -.->|implements| LPR
     T220 -.->|implements| OCR
     T221 -.->|implements| OCR
@@ -668,6 +680,7 @@ flowchart TB
     T222 --> T223
     T210 -.->|asset_path / figure_id| T230
     T230 -.->|asset_path| T231
+    T231 -.->|figures[].caption| T232
     CONST -.->|metadata keys for| T202
     CONST -.->|modality labels for| T210
 ```
@@ -689,6 +702,8 @@ parsing:
     provider: docling
   table_chunks:
     enabled: false              # T-202 structured type=table chunks (off by default)
+  caption_chunks:
+    enabled: false              # T-232 structured type=caption chunks (off by default)
   figure_assets:
     enabled: false              # T-230 local figure asset store (off by default)
     store_dir: data/assets
@@ -849,7 +864,7 @@ When `parsing.figure_assets.enabled=true`, the ingestion pipeline persists figur
 - **Docling PDF/DOCX** — re-exports layout `figures[]` via Docling `generate_picture_images` (`PdfFormatOption` / `WordFormatOption` + `PaginatedPipelineOptions`) and `PictureItem.get_image()`; DOCX also backfills from embedded `python-docx` image parts when Docling is unavailable, conversion fails, or `get_image()` returns no raster bytes, aligning each figure slot in document order (page/bbox match, then remaining order)
 - **PPTX** — extracts `MSO_SHAPE_TYPE.PICTURE` blobs from slides, including pictures nested in group shapes (builds `figures[]` when missing)
 
-Assets land under `{store_dir}/{document_key}/{figure_id}.{ext}` (default root `data/assets`, gitignored). Each successful export sets `figures[].asset_path`. `build_figure_chunks()` produces `Chunk` objects with `modality=figure`, `asset_path`, and `metadata.figure_id` (caption text when present; otherwise `[figure]`). Soft-fails per figure / whole-document so ingest continues. Caption VLM enrichment (T-231) runs after assets are stored when enabled; indexing `type=caption` chunks is T-232.
+Assets land under `{store_dir}/{document_key}/{figure_id}.{ext}` (default root `data/assets`, gitignored). Each successful export sets `figures[].asset_path`. `build_figure_chunks()` produces `Chunk` objects with `modality=figure`, `asset_path`, and `metadata.figure_id` (caption text when present; otherwise `[figure]`). Soft-fails per figure / whole-document so ingest continues. Caption VLM enrichment (T-231) runs after assets are stored when enabled; indexing `type=caption` chunks is [Image Caption Chunks (T-232)](#image-caption-chunks-t-232).
 
 ```mermaid
 flowchart TD
@@ -890,11 +905,11 @@ parsing:
 | Pipeline wiring | `IngestionPipeline.ingest_file` | Runs after OCR on full ingest and skip path |
 | Config | `configs/parsing.yaml` + `FigureAssetSettings` | `enabled`, `store_dir` — off by default |
 
-**Trade-offs:** PDF/DOCX asset export re-converts with Docling picture images (extra latency; requires `docling`). PPTX extraction is cheap. Assets are not yet indexed as retrieval points — use `build_figure_chunks()` / T-232 caption chunks for retrieval.
+**Trade-offs:** PDF/DOCX asset export re-converts with Docling picture images (extra latency; requires `docling`). PPTX extraction is cheap. Assets are storage-only until caption chunks (T-232) or multimodal embeddings (T-250+) index them for retrieval.
 
 **Tests:** `tests/unit/test_local_asset_store.py`; `tests/unit/test_figure_extractor.py` (PPTX incl. nested groups, Docling/DOCX fallback + slot alignment, soft-fail, chunk builders).
 
-**Next steps:** T-232 `type=caption` chunks — see [specs/TODO.md](specs/TODO.md).
+**Next steps:** Phase 24 structure-aware chunking (T-240+) — see [specs/TODO.md](specs/TODO.md).
 
 #### VLM Captioning at Ingest (T-231)
 
@@ -949,11 +964,65 @@ parsing:
 | Pipeline wiring | `IngestionPipeline.ingest_file` | Runs after `apply_figure_assets` on full + skip paths |
 | Config | `configs/parsing.yaml` + `FigureCaptionSettings` | `enabled`, `provider`, API keys — off by default |
 
-**Trade-offs:** Adds API latency/cost per figure on first caption (or after the asset bytes change / sidecar is deleted). Existing Docling captions are overwritten only when the VLM returns non-empty text. Skip-path re-ingests reuse hash-matching sidecars so captions survive without reindex until T-232 indexes `type=caption` chunks.
+**Trade-offs:** Adds API latency/cost per figure on first caption (or after the asset bytes change / sidecar is deleted). Existing Docling captions are overwritten only when the VLM returns non-empty text. Skip-path re-ingests reuse hash-matching sidecars so captions survive without re-calling the VLM; enable T-232 to index them as retrieval points.
 
 **Tests:** `tests/unit/test_figure_captioner.py`; `tests/unit/test_vision_providers.py`.
 
-**Next steps:** T-232 `type=caption` chunks — see [specs/TODO.md](specs/TODO.md).
+**Next steps:** Enable [Image Caption Chunks (T-232)](#image-caption-chunks-t-232) to index captions.
+
+#### Image Caption Chunks (T-232)
+
+When `parsing.caption_chunks.enabled=true`, the ingestion pipeline emits dedicated `type=caption` chunks (with `figure_id`, optional `page`/`bbox`/`asset_path`, `modality=caption`) from non-empty `figures[].caption` values produced by T-231 (or layout captions). Caption chunks are indexed in **both** Qdrant and BM25, mirroring T-202 table chunks.
+
+Chunk IDs are **stable UUIDv5** values derived from `source:figure_id` (resolved file path), so re-ingests and skip-path backfills upsert the same points instead of creating duplicates. Removing a caption purges the prior caption point; embedding failures retain previously indexed caption IDs.
+
+```mermaid
+flowchart TD
+    DOC["Document<br/>figures[] with caption"] --> BUILD["build_caption_chunks()"]
+    BUILD --> EMB["CaptionChunker.index()<br/>embed_both()"]
+    EMB -->|full ingest| UPSERT["Upsert Qdrant + BM25<br/>retain prior captions on embed failure"]
+    EMB -->|unchanged content<br/>skip path| SYNC{"caption_chunks_needing_upsert<br/>+ stale_caption_ids_safe_to_purge"}
+    SYNC -->|new / updated text| BF["Backfill upsert"]
+    SYNC -->|stale + sync OK| PURGE["Purge stale caption IDs"]
+    SYNC -->|embed/build failed| KEEP["Keep existing caption IDs<br/>merged_caption_chunk_ids()"]
+    UPSERT --> META[("SQLite chunk_ids")]
+    BF --> META
+    PURGE --> META
+    KEEP --> META
+```
+
+```bash
+# Captions from T-231 (or layout) + index as type=caption
+PARSING__FIGURE_ASSETS__ENABLED=true
+PARSING__FIGURE_CAPTIONS__ENABLED=true
+PARSING__CAPTION_CHUNKS__ENABLED=true
+
+make ingest SOURCE=data/raw/
+# Unchanged docs backfill missing caption chunks on re-ingest
+```
+
+```yaml
+# configs/parsing.yaml
+parsing:
+  caption_chunks:
+    enabled: false              # T-232 structured type=caption chunks
+```
+
+| Component | Location | Role |
+|---|---|---|
+| `build_caption_chunks` / `CaptionChunker` | `src/rag/ingestion/caption_chunker.py` | Build + embed `CHUNK_TYPE_CAPTION` points; stable `caption_chunk_id()` |
+| Shared sync helpers | `src/rag/ingestion/structured_chunk_sync.py` | Shared build/embed/upsert helpers for tables + captions |
+| Caption sync wrappers | `src/rag/ingestion/caption_chunker.py` | `caption_chunks_needing_upsert`, `retained_caption_chunk_ids_on_embed_failure`, `merged_caption_chunk_ids`, `stale_caption_ids_safe_to_purge` |
+| Pipeline wiring | `src/rag/pipelines/ingestion_pipeline.py` | `_build_caption_chunker()`, full-path index + `_backfill_caption_chunks_on_skip()` |
+| Config | `configs/parsing.yaml` + `CaptionChunkSettings` | `parsing.caption_chunks.enabled` — off by default |
+
+**Skip-path behavior:** When content hash is unchanged and no LLM enrichers force a full reindex, the pipeline still builds/embeds caption chunks, upserts only new or text-changed captions, and purges stale caption IDs only after a successful build+embed sync. Failed embeds retain previously indexed caption points. Figures without captions are skipped (not treated as build failures); caption removal purges the prior caption point when sync succeeds.
+
+**Trade-offs:** Adds one embedded point per captioned figure (Qdrant + BM25). Requires captions to exist first (T-231 recommended). Skip-path backfill is skipped when LLM enrichers are enabled (those require a full `prepare()`). Re-ingest after enabling — unchanged documents backfill missing caption chunks automatically.
+
+**Tests:** `tests/unit/test_caption_chunker.py` (chunk building, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline integration).
+
+**Next steps:** Phase 24 structure-aware chunking (T-240+) — see [specs/TODO.md](specs/TODO.md).
 
 #### Structured Table Chunks at Ingest (T-202)
 
@@ -995,7 +1064,8 @@ parsing:
 | Component | Location | Role |
 |---|---|---|
 | `TableChunker` / `build_table_chunks()` | `src/rag/ingestion/table_chunker.py` | Builds and embeds `CHUNK_TYPE_TABLE` index points; stable `table_chunk_id()` |
-| Sync helpers | `src/rag/ingestion/table_chunker.py` | `table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge` |
+| Shared sync helpers | `src/rag/ingestion/structured_chunk_sync.py` | Shared build/embed/upsert helpers for tables + captions |
+| Table sync wrappers | `src/rag/ingestion/table_chunker.py` | `table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge` |
 | Pipeline wiring | `src/rag/pipelines/ingestion_pipeline.py` | `_build_table_chunker()`, full-path index + `_backfill_table_chunks_on_skip()` |
 | Docling table text | `src/infrastructure/parsers/docling_parser.py` | `tables[].text` via `export_to_markdown()` |
 | Config | `configs/parsing.yaml` + `TableChunkSettings` | `parsing.table_chunks.enabled` — off by default |
@@ -1034,7 +1104,7 @@ flowchart LR
 
 **Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
 
-**Next steps:** T-232 `type=caption` chunks (T-230/T-231 complete) — see [specs/TODO.md](specs/TODO.md).
+**Next steps:** Phase 24 structure-aware chunking (T-240+) — see [specs/TODO.md](specs/TODO.md).
 
 ### Start the API Server
 
@@ -2419,7 +2489,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
-│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR T-220–T-223; T-210 domain note
+│   ├── parsing.yaml            # Layout parser (T-200), table/caption chunks (T-202/T-232), figure assets/captions (T-230/T-231), OCR T-220–T-223; T-210 domain note
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
@@ -2518,13 +2588,13 @@ rag_implementation/
 │   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
-│   │   └── ingestion/          # ocr_fallback (T-223) · figure_extractor + local_asset_store (T-230) · table_chunker (T-202) · GraphIndexer
+│   │   └── ingestion/          # ocr_fallback (T-223) · figure_extractor + local_asset_store (T-230) · figure_captioner (T-231) · table_chunker (T-202) · caption_chunker (T-232) · structured_chunk_sync · GraphIndexer
 │   ├── type_regression/        # Typed smoke modules for mypy regression detection (T-171)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_figure_extractor / test_local_asset_store T-230, test_ocr_fallback T-223, test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
+│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_caption_chunker T-232, test_figure_captioner / test_vision_providers T-231, test_figure_extractor / test_local_asset_store T-230, test_ocr_fallback T-223, test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
 ├── .dockerignore
 ├── .env.example
 ├── .github/

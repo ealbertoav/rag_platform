@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 23 in progress — **T-230** ✅ · **T-231** ✅ · **T-232** ← next. Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 24 — **T-240** ← next (Phase 23 complete: T-230–T-232 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2341,7 +2341,7 @@
 > | **20** | 10 | T-200 → T-202 | Phase 19 | T-200 ✅ · T-201 ✅ · T-202 ✅ |
 > | **21** | 11 | T-210 | Phases 19–20 | T-210 ✅ |
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | ✅ complete — T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅ |
-> | **23** | 13 | T-230 → T-232 | Phases 20–21 | **in progress** — T-230 ✅ → T-231 ✅ → T-232 ← next |
+> | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
@@ -2442,7 +2442,8 @@
 - **Inputs:** T-200, T-190, T-015
 - **Outputs:** Table chunks in Qdrant+BM25; skip-path backfill/purge for unchanged documents; embed-failure retention
 - **Files:**
-  - `src/rag/ingestion/table_chunker.py` — `TableChunker`, `build_table_chunks()`, `table_chunk_id()` (UUIDv5 on `source:table_id`), `is_table_chunk()`, sync helpers (`table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge`, `existing_table_chunk_ids`) _(done)_
+  - `src/rag/ingestion/table_chunker.py` — `TableChunker`, `build_table_chunks()`, `table_chunk_id()` (UUIDv5 on `source:table_id`), `is_table_chunk()`, table-specific sync wrappers (`table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge`, `existing_table_chunk_ids`) _(done)_
+  - `src/rag/ingestion/structured_chunk_sync.py` — shared build/embed/upsert helpers reused by caption chunks (T-232) _(done)_
   - `src/infrastructure/parsers/docling_parser.py` — table `text` in metadata via `export_to_markdown()` _(done)_
   - `src/rag/pipelines/ingestion_pipeline.py` — `_build_table_chunker()`, full-path index, `_backfill_table_chunks_on_skip()`, retention on purge _(done)_
   - `src/core/settings.py` — `TableChunkSettings` _(done)_
@@ -2456,7 +2457,7 @@
   - [x] Stable chunk IDs keyed on `source` (not ephemeral `document.id`) for idempotent reindex
   - [x] Unchanged documents backfill missing/updated table chunks and purge stale ones when sync succeeds
   - [x] Failed table embed/build retains previously indexed table points
-- **Notes:** Disabled by default. Best results with T-200 layout `tables[]` (markdown pipe-table fallback when layout text is missing). Table chunks go to Qdrant **and** BM25 (unlike HyPE/summary extras). Skip-path sync is skipped when LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex via `_requires_full_reindex_on_skip()`. Stale purge only runs after successful build+embed (`table_sync_succeeded`).
+- **Notes:** Disabled by default. Best results with T-200 layout `tables[]` (markdown pipe-table fallback when layout text is missing). Table chunks go to Qdrant **and** BM25 (unlike HyPE/summary extras). Skip-path sync is skipped when LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex via `_requires_full_reindex_on_skip()`. Stale purge only runs after successful build+embed (`table_sync_succeeded`). Shared skip-path primitives live in `structured_chunk_sync.py` (also used by T-232).
 
 ---
 
@@ -2576,7 +2577,9 @@
 >
 > **Preconditions:** Phases 20–21
 >
-> **Status:** **in progress** — T-230 ✅ → T-231 ✅ → T-232 ← next
+> **Status:** **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅
+>
+> **Next:** Phase 24 (T-240)
 
 ---
 
@@ -2605,22 +2608,30 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Depends on stored figure assets from T-230. Prefer feature-flagged vision provider selection; keep ingest soft-fail when VLM is unavailable. `VisionRepository` + OpenAI/Gemini providers under `src/infrastructure/vision/`; `apply_figure_captions` in `figure_captioner.py` runs after `apply_figure_assets` on full + skip paths. Persist successful captions as hash-bound `{stem}.caption.txt` sidecars next to assets so skip-path re-ingests reload without re-calling the VLM when bytes are unchanged (caption chunk indexing remains T-232).
+- **Notes:** Depends on stored figure assets from T-230. Prefer feature-flagged vision provider selection; keep ingest soft-fail when VLM is unavailable. `VisionRepository` + OpenAI/Gemini providers under `src/infrastructure/vision/`; `apply_figure_captions` in `figure_captioner.py` runs after `apply_figure_assets` on full + skip paths. Persist successful captions as hash-bound `{stem}.caption.txt` sidecars next to assets so skip-path re-ingests reload without re-calling the VLM when bytes are unchanged. Caption chunk indexing is T-232 (`parsing.caption_chunks`).
 
 ---
 
 
 ### T-232 · Image Caption Chunks
-- **Status:** `[ ]` ← **start here**
+- **Status:** `[x]`
 - **Goal:** Index `type=caption` chunks.
 - **Inputs:** T-231, T-202, T-015
-- **Outputs:** Caption chunks
-- **Files:** `caption_chunker.py`, tests
+- **Outputs:** Caption chunks in Qdrant+BM25; skip-path backfill/purge for unchanged documents; embed-failure retention
+- **Files:**
+  - `src/rag/ingestion/caption_chunker.py` — `CaptionChunker`, `build_caption_chunks()`, `caption_chunk_id()` (UUIDv5 on `source:figure_id`), caption sync wrappers _(done)_
+  - `src/rag/ingestion/structured_chunk_sync.py` — shared build/embed/upsert helpers with table chunks _(done)_
+  - `src/rag/pipelines/ingestion_pipeline.py` — `_build_caption_chunker()`, full-path index, `_backfill_caption_chunks_on_skip()`, shared skip backfill helper _(done)_
+  - `src/core/settings.py` — `CaptionChunkSettings` _(done)_
+  - `configs/parsing.yaml` / `.env.example` — `caption_chunks.enabled` / `PARSING__CAPTION_CHUNKS__ENABLED` _(done)_
+  - `tests/unit/test_caption_chunker.py` — chunker, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline _(done)_
+  - `tests/unit/ingestion_helpers.py` — shared structured-chunk skip-path fixtures _(done)_
+  - `README.md` — enablement, mermaid flows, skip-path / retention notes _(done)_
 - **Acceptance Criteria:**
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Emit `CHUNK_TYPE_CAPTION` chunks linked to `figure_id`; index like table chunks (T-202 pattern) once captions exist.
+- **Notes:** Emit `CHUNK_TYPE_CAPTION` chunks linked to `figure_id`; index like table chunks (T-202 pattern) once captions exist. Feature flag `parsing.caption_chunks.enabled` (default off). Full ingest extends indexed chunks; skip path backfills/purges stable UUIDv5 IDs like tables. Only figures with non-empty `figures[].caption` emit chunks (caption removal purges prior caption points when sync succeeds). Failed embeds retain previously indexed caption IDs via `merged_caption_chunk_ids()`.
 
 ---
 
@@ -2630,11 +2641,13 @@
 > **Motivation:** Section/page chunking, config wiring, type registry.
 >
 > **Preconditions:** Phases 20–21
+>
+> **Status:** **pending** — **T-240** ← next
 
 ---
 
 ### T-240 · Section-Boundary Chunker
-- **Status:** `[ ]`
+- **Status:** `[ ]` ← **start here**
 - **Goal:** Split on headings; set `metadata.section`.
 - **Inputs:** T-011, T-200
 - **Outputs:** `SectionChunker`
@@ -3052,8 +3065,8 @@ T-150 + T-281 ──► T-282
 20. **Phase 20 — Priority 10 (Layout Parsing):** T-200 ✅ → T-201 ✅ → T-202 ✅ _(complete)_
 21. **Phase 21 — Priority 11 (Domain Model):** T-210 ✅ _(complete)_
 22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-222 ✅ → T-223 ✅ _(complete)_
-23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → T-231 ✅ → **T-232** _(next)_
-24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 → T-241 → T-242 → T-243
+23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → T-231 ✅ → T-232 ✅ _(complete)_
+24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** **T-240** _(next)_ → T-241 → T-242 → T-243
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 → T-261 → T-262 → T-263
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274

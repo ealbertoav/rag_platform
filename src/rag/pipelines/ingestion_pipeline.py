@@ -19,6 +19,15 @@ from src.domain.repositories.vector_store_repository import VectorStoreRepositor
 from src.domain.services.ingestion_service import IngestionService
 from src.infrastructure.loaders import load_document
 from src.infrastructure.vectordb.bm25 import BM25Index
+from src.rag.ingestion.caption_chunker import (
+    build_caption_chunks,
+    caption_chunks_needing_upsert,
+    existing_caption_chunk_ids,
+    merged_caption_chunk_ids,
+    metadata_caption_figure_ids,
+    retained_caption_chunk_ids_on_embed_failure,
+    stale_caption_ids_safe_to_purge,
+)
 from src.rag.ingestion.figure_captioner import apply_figure_captions
 from src.rag.ingestion.figure_extractor import apply_figure_assets
 from src.rag.ingestion.ocr_fallback import apply_ocr_fallback, should_attempt_ocr
@@ -37,6 +46,7 @@ if TYPE_CHECKING:
     from src.rag.enrichment.document_augmentation import DocumentAugmentor
     from src.rag.enrichment.hierarchical_indexer import HierarchicalIndexer
     from src.rag.enrichment.hype_indexer import HyPEIndexer
+    from src.rag.ingestion.caption_chunker import CaptionChunker
     from src.rag.ingestion.graph_indexer import GraphIndexer
     from src.rag.ingestion.table_chunker import TableChunker
 
@@ -166,6 +176,7 @@ class IngestionPipeline:
         hype_indexer: HyPEIndexer | None = None,
         hierarchical_indexer: HierarchicalIndexer | None = None,
         table_chunker: TableChunker | None = None,
+        caption_chunker: CaptionChunker | None = None,
     ) -> None:
         self._service: IngestionService = service
         self._vector_store: VectorStoreRepository = vector_store
@@ -176,6 +187,7 @@ class IngestionPipeline:
         self._hype_indexer: HyPEIndexer | None = hype_indexer
         self._hierarchical_indexer: HierarchicalIndexer | None = hierarchical_indexer
         self._table_chunker: TableChunker | None = table_chunker
+        self._caption_chunker: CaptionChunker | None = caption_chunker
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -301,6 +313,13 @@ class IngestionPipeline:
                 embedded_table_chunks = self._table_chunker.index(document)
                 indexed_chunks.extend(embedded_table_chunks)
 
+            built_caption_chunks: list[Chunk] = []
+            embedded_caption_chunks: list[Chunk] = []
+            if self._caption_chunker is not None:
+                built_caption_chunks = build_caption_chunks(document)
+                embedded_caption_chunks = self._caption_chunker.index(document)
+                indexed_chunks.extend(embedded_caption_chunks)
+
             if not indexed_chunks:
                 retained = self._retained_table_ids_on_embed_failure(
                     source,
@@ -308,6 +327,15 @@ class IngestionPipeline:
                     old_chunk_ids,
                     built_table_chunks,
                     embedded_table_chunks,
+                )
+                retained.update(
+                    self._retained_caption_ids_on_embed_failure(
+                        source,
+                        document,
+                        old_chunk_ids,
+                        built_caption_chunks,
+                        embedded_caption_chunks,
+                    )
                 )
                 self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
                 elapsed_ms = (time.monotonic() - t0) * 1000
@@ -333,23 +361,44 @@ class IngestionPipeline:
                     embedded_table_chunks,
                 )
             )
+            retained.update(
+                self._retained_caption_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_caption_chunks,
+                    embedded_caption_chunks,
+                )
+            )
             self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
             self._bm25_add(indexed_chunks)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if self._metadata is not None:
             stored_chunk_ids = [c.id for c in indexed_chunks]
-            stored_chunk_ids.extend(
-                chunk_id
-                for chunk_id in self._retained_table_ids_on_embed_failure(
-                    source,
-                    document,
-                    old_chunk_ids,
+            for retain_fn, built, embedded in (
+                (
+                    self._retained_table_ids_on_embed_failure,
                     built_table_chunks,
                     embedded_table_chunks,
+                ),
+                (
+                    self._retained_caption_ids_on_embed_failure,
+                    built_caption_chunks,
+                    embedded_caption_chunks,
+                ),
+            ):
+                stored_chunk_ids.extend(
+                    chunk_id
+                    for chunk_id in retain_fn(
+                        source,
+                        document,
+                        old_chunk_ids,
+                        built,
+                        embedded,
+                    )
+                    if chunk_id not in stored_chunk_ids
                 )
-                if chunk_id not in stored_chunk_ids
-            )
             _ = self._metadata.upsert_document(
                 source,
                 doc_hash,
@@ -471,35 +520,48 @@ class IngestionPipeline:
         *,
         ocr_candidate: bool,
     ) -> IngestionResult:
-        """Skip full reindex while optionally syncing table chunks.
+        """Skip full reindex while optionally syncing table and caption chunks.
 
         Empty OCR candidates (scanned PDFs that still load as blank) may still
-        backfill when layout "tables[]" carry text. Without layout tables,
-        skip backfill so an empty body is not treated as "all tables removed"
-        (which would purge prior table chunks).
+        backfill when layout "tables[]" carry text or figures carry captions.
+        Without layout tables/captions, skip backfill so an empty body is not
+        treated as "all structured extras removed" (which would purge prior
+        table/caption chunks).
 
         Figure assets (T-230) are refreshed on the skip path, so enabling
         "parsing.figure_assets" backfills disk assets without a content change.
         VLM captions (T-231) also run here and persist to hash-bound asset
         sidecars so re-ingests do not re-call the vision API when asset bytes
-        are unchanged, and captions are not lost when the skip path skips
-        reindex (caption chunk indexing is T-232).
+        are unchanged. Caption chunk indexing (T-232) backfills on this path
+        when "parsing.caption_chunks" is enabled.
         """
         document = apply_figure_assets(document, path)
         document = apply_figure_captions(document)
         empty_ocr_without_layout = (
-            ocr_candidate and not document.content.strip() and not metadata_table_ids(document)
+            ocr_candidate
+            and not document.content.strip()
+            and not metadata_table_ids(document)
+            and not metadata_caption_figure_ids(document)
         )
         if not empty_ocr_without_layout:
-            backfill = self._backfill_table_chunks_on_skip(
+            table_backfill = self._backfill_table_chunks_on_skip(
                 document,
                 source,
                 doc_hash,
                 existing,
                 t0,
             )
-            if backfill is not None:
-                return backfill
+            caption_backfill = self._backfill_caption_chunks_on_skip(
+                document,
+                source,
+                doc_hash,
+                existing,
+                t0,
+            )
+            if caption_backfill is not None:
+                return caption_backfill
+            if table_backfill is not None:
+                return table_backfill
         return self._record_unchanged_skip(source, doc_hash, existing, path, t0)
 
     def _backfill_table_chunks_on_skip(
@@ -530,17 +592,106 @@ class IngestionPipeline:
             for chunk_id in existing_ids
             if chunk_id in known_table_ids and chunk_id not in desired_table_ids
         ]
-        chunks_to_upsert = table_chunks_needing_upsert(
-            table_chunks,
+        return self._apply_structured_chunk_backfill_on_skip(
+            source=source,
+            doc_hash=doc_hash,
+            existing=existing,
+            t0=t0,
+            existing_ids=existing_ids,
+            known_structured_ids=known_table_ids,
+            chunks_to_upsert=table_chunks_needing_upsert(
+                table_chunks,
+                existing_ids,
+                bm25=self._bm25,
+            ),
+            stale_to_purge=stale_table_ids_safe_to_purge(
+                document,
+                built_chunks,
+                table_chunks,
+                stale_table_ids,
+            ),
+            merged_structured_ids=merged_table_chunk_ids(
+                existing_ids,
+                known_table_ids,
+                document,
+                built_chunks,
+                table_chunks,
+            ),
+            kind="table",
+        )
+
+    def _backfill_caption_chunks_on_skip(
+        self,
+        document: Document,
+        source: str,
+        doc_hash: str,
+        existing: DocumentRecord,
+        t0: float,
+    ) -> IngestionResult | None:
+        """Sync caption chunks when base content is unchanged."""
+        if self._caption_chunker is None or self._metadata is None:
+            return None
+
+        built_chunks = build_caption_chunks(document)
+        caption_chunks = self._caption_chunker.index(document) if built_chunks else []
+
+        existing_ids = list(self._metadata.get_chunk_ids(existing.id))
+        desired_caption_ids = {chunk.id for chunk in built_chunks}
+        known_caption_ids = existing_caption_chunk_ids(
+            source,
             existing_ids,
+            document=document,
             bm25=self._bm25,
         )
-        stale_to_purge = stale_table_ids_safe_to_purge(
-            document,
-            built_chunks,
-            table_chunks,
-            stale_table_ids,
+        stale_caption_ids = [
+            chunk_id
+            for chunk_id in existing_ids
+            if chunk_id in known_caption_ids and chunk_id not in desired_caption_ids
+        ]
+        return self._apply_structured_chunk_backfill_on_skip(
+            source=source,
+            doc_hash=doc_hash,
+            existing=existing,
+            t0=t0,
+            existing_ids=existing_ids,
+            known_structured_ids=known_caption_ids,
+            chunks_to_upsert=caption_chunks_needing_upsert(
+                caption_chunks,
+                existing_ids,
+                bm25=self._bm25,
+            ),
+            stale_to_purge=stale_caption_ids_safe_to_purge(
+                document,
+                built_chunks,
+                caption_chunks,
+                stale_caption_ids,
+            ),
+            merged_structured_ids=merged_caption_chunk_ids(
+                existing_ids,
+                known_caption_ids,
+                document,
+                built_chunks,
+                caption_chunks,
+            ),
+            kind="caption",
         )
+
+    def _apply_structured_chunk_backfill_on_skip(
+        self,
+        *,
+        source: str,
+        doc_hash: str,
+        existing: DocumentRecord,
+        t0: float,
+        existing_ids: list[str],
+        known_structured_ids: set[str],
+        chunks_to_upsert: list[Chunk],
+        stale_to_purge: list[str],
+        merged_structured_ids: list[str],
+        kind: str,
+    ) -> IngestionResult | None:
+        """Upsert/purge structured extras and rewrite metadata on the skip path."""
+        assert self._metadata is not None
         if not chunks_to_upsert and not stale_to_purge:
             return None
 
@@ -551,15 +702,10 @@ class IngestionPipeline:
             if stale_to_purge:
                 self._purge_superseded_chunks(stale_to_purge)
 
-        non_table_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in known_table_ids]
-        merged_table_ids_list = merged_table_chunk_ids(
-            existing_ids,
-            known_table_ids,
-            document,
-            built_chunks,
-            table_chunks,
-        )
-        merged_ids = list(dict.fromkeys(non_table_ids + merged_table_ids_list))
+        non_structured_ids = [
+            chunk_id for chunk_id in existing_ids if chunk_id not in known_structured_ids
+        ]
+        merged_ids = list(dict.fromkeys(non_structured_ids + merged_structured_ids))
         elapsed_ms = (time.monotonic() - t0) * 1000
         _ = self._metadata.upsert_document(
             source,
@@ -570,14 +716,16 @@ class IngestionPipeline:
         )
         if chunks_to_upsert:
             logger.info(
-                "Backfilled %d table chunk(s) for %s (unchanged content)",
+                "Backfilled %d %s chunk(s) for %s (unchanged content)",
                 len(chunks_to_upsert),
+                kind,
                 Path(source).name,
             )
         if stale_to_purge:
             logger.info(
-                "Purged %d stale table chunk(s) for %s (unchanged content)",
+                "Purged %d stale %s chunk(s) for %s (unchanged content)",
                 len(stale_to_purge),
+                kind,
                 Path(source).name,
             )
         return IngestionResult(
@@ -602,6 +750,25 @@ class IngestionPipeline:
             old_chunk_ids,
             built_table_chunks,
             embedded_table_chunks,
+            bm25=self._bm25,
+        )
+
+    def _retained_caption_ids_on_embed_failure(
+        self,
+        source: str,
+        document: Document,
+        old_chunk_ids: list[str],
+        built_caption_chunks: list[Chunk],
+        embedded_caption_chunks: list[Chunk],
+    ) -> set[str]:
+        if self._caption_chunker is None or not old_chunk_ids:
+            return set()
+        return retained_caption_chunk_ids_on_embed_failure(
+            source,
+            document,
+            old_chunk_ids,
+            built_caption_chunks,
+            embedded_caption_chunks,
             bm25=self._bm25,
         )
 
@@ -680,6 +847,7 @@ class IngestionPipeline:
         hype_indexer = _build_hype_indexer(embedder, settings.retrieval.hype)
         hierarchical_indexer = _build_hierarchical_indexer(embedder, cfg.hierarchical)
         table_chunker = _build_table_chunker(embedder, settings.parsing.table_chunks)
+        caption_chunker = _build_caption_chunker(embedder, settings.parsing.caption_chunks)
 
         return cls(
             service=service,
@@ -691,6 +859,7 @@ class IngestionPipeline:
             hype_indexer=hype_indexer,
             hierarchical_indexer=hierarchical_indexer,
             table_chunker=table_chunker,
+            caption_chunker=caption_chunker,
         )
 
 
@@ -779,6 +948,15 @@ def _build_table_chunker(embedder: EmbeddingRepository, cfg: object) -> TableChu
     from src.rag.ingestion.table_chunker import TableChunker
 
     return TableChunker(embedder=embedder)
+
+
+def _build_caption_chunker(embedder: EmbeddingRepository, cfg: object) -> CaptionChunker | None:
+    """Build a structured caption chunker when caption chunking is enabled."""
+    if not getattr(cfg, "enabled", False):
+        return None
+    from src.rag.ingestion.caption_chunker import CaptionChunker
+
+    return CaptionChunker(embedder=embedder)
 
 
 def _bm25_indexable(chunks: list[Chunk]) -> list[Chunk]:
