@@ -35,6 +35,10 @@ parsing:
     enabled: false              # T-202 structured type=table chunks at ingesting; off by default
     # Requires layout metadata (tables with table_id) from T-200 Docling parser.
     # Re-ingest after enabling — unchanged documents backfill missing table chunks.
+  caption_chunks:
+    enabled: false              # T-232 structured type=caption chunks at ingesting; off by default
+    # Requires figures[].caption (T-231 VLM or layout caption) linked via figure_id.
+    # Re-ingest after enabling — unchanged documents backfill missing caption chunks.
   figure_assets:
     enabled: false              # T-230 persist figure bytes + asset_path / figure_id; off by default
     store_dir: data/assets      # local asset root (gitignored); env: PARSING__FIGURE_ASSETS__STORE_DIR
@@ -51,6 +55,7 @@ parsing:
     # asset SHA-256 so skip-path re-ingests reload without re-calling the VLM
     # while overwritten assets cannot reuse a stale caption. Soft-fails when the
     # VLM is unavailable or a single figure fails. Install: uv sync --extra api-embeddings
+    # Indexing type=caption chunks is parsing.caption_chunks (T-232).
     openai:
       api_key: ""               # prefer PARSING__FIGURE_CAPTIONS__OPENAI__API_KEY
       model: gpt-4o-mini

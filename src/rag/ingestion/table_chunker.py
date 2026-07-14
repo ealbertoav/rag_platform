@@ -7,9 +7,6 @@ from collections.abc import Iterable
 from typing import Any
 
 from src.core.constants import (
-    BBOX_KEY,
-    CHUNK_PAGE_KEY,
-    CHUNK_SOURCE_KEY,
     CHUNK_TYPE_KEY,
     CHUNK_TYPE_TABLE,
     TABLE_ID_KEY,
@@ -17,7 +14,12 @@ from src.core.constants import (
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.domain.repositories.embedding_repository import EmbeddingRepository
-from src.rag.chunking.metadata import chunk_metadata
+from src.rag.ingestion.structured_chunk_sync import (
+    built_layout_ids,
+    chunks_needing_upsert,
+    embedding_succeeded,
+    structured_chunk_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +79,7 @@ def metadata_table_ids(document: Document) -> set[str]:
 
 def built_table_ids(built_chunks: Iterable[Chunk]) -> set[str]:
     """Return layout table IDs represented by *built_chunks*."""
-    return {
-        str(chunk.metadata.get(TABLE_ID_KEY))
-        for chunk in built_chunks
-        if chunk.metadata.get(TABLE_ID_KEY)
-    }
+    return built_layout_ids(built_chunks, TABLE_ID_KEY)
 
 
 def table_embedding_succeeded(
@@ -89,11 +87,7 @@ def table_embedding_succeeded(
     embedded_chunks: Iterable[Chunk],
 ) -> bool:
     """Return True when every built table chunk was embedded successfully."""
-    desired = {chunk.id for chunk in built_chunks}
-    if not desired:
-        return True
-    successful = {chunk.id for chunk in embedded_chunks}
-    return successful == desired
+    return embedding_succeeded(built_chunks, embedded_chunks)
 
 
 def table_build_succeeded(document: Document, built_chunks: Iterable[Chunk]) -> bool:
@@ -177,19 +171,7 @@ def table_chunks_needing_upsert(
     bm25: object | None = None,
 ) -> list[Chunk]:
     """Return embedded table chunks that are new or have updated text in the index."""
-    existing_id_set = set(existing_chunk_ids)
-    get_by_id = getattr(bm25, "get_by_id", None) if bm25 is not None else None
-    needing: list[Chunk] = []
-    for chunk in table_chunks:
-        if chunk.id not in existing_id_set:
-            needing.append(chunk)
-            continue
-        if get_by_id is None:
-            continue
-        indexed = get_by_id(chunk.id)
-        if indexed is None or indexed.text != chunk.text:
-            needing.append(chunk)
-    return needing
+    return chunks_needing_upsert(table_chunks, existing_chunk_ids, bm25=bm25)
 
 
 def existing_table_chunk_ids(
@@ -284,14 +266,13 @@ def build_table_chunks(document: Document) -> list[Chunk]:
             )
             continue
 
-        metadata = chunk_metadata(document.metadata)
-        metadata[CHUNK_TYPE_KEY] = CHUNK_TYPE_TABLE
-        metadata[TABLE_ID_KEY] = str(table_id)
-        metadata[CHUNK_SOURCE_KEY] = document.source
-        if CHUNK_PAGE_KEY in raw_entry:
-            metadata[CHUNK_PAGE_KEY] = raw_entry[CHUNK_PAGE_KEY]
-        if BBOX_KEY in raw_entry:
-            metadata[BBOX_KEY] = raw_entry[BBOX_KEY]
+        metadata = structured_chunk_metadata(
+            document,
+            raw_entry,
+            chunk_type=CHUNK_TYPE_TABLE,
+            layout_id_key=TABLE_ID_KEY,
+            layout_id=str(table_id),
+        )
 
         chunks.append(
             Chunk(

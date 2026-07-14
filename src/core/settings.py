@@ -388,6 +388,12 @@ class TableChunkSettings(BaseModel):
     enabled: bool = False
 
 
+class CaptionChunkSettings(BaseModel):
+    """Index type=caption chunks from figures[].caption (T-232)."""
+
+    enabled: bool = False
+
+
 class FigureAssetSettings(BaseModel):
     """Persist extracted figure bytes under a local asset store (T-230)."""
 
@@ -418,6 +424,7 @@ class ParsingSettings(BaseModel):
     layout_parser: LayoutParserSettings = Field(default_factory=LayoutParserSettings)
     ocr: OcrSettings = Field(default_factory=OcrSettings)
     table_chunks: TableChunkSettings = Field(default_factory=TableChunkSettings)
+    caption_chunks: CaptionChunkSettings = Field(default_factory=CaptionChunkSettings)
     figure_assets: FigureAssetSettings = Field(default_factory=FigureAssetSettings)
     figure_captions: FigureCaptionSettings = Field(default_factory=FigureCaptionSettings)
 
