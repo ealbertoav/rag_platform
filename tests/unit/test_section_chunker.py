@@ -14,6 +14,7 @@ from src.rag.chunking.headings import (
     iter_section_segments,
     split_markdown_sections,
     split_outline_title_sections,
+    split_pptx_slide_records,
     split_slide_sections,
 )
 from src.rag.chunking.section_chunker import SectionChunker
@@ -131,12 +132,68 @@ class TestSectionSplitHelpers:
         assert "Agenda bullet one" in segments[1].body
         assert "More detail." in segments[2].body
 
-    def test_slide_split_matches_title_not_only_first_line(self):
+    def test_slide_split_ignores_pending_title_deeper_in_body(self):
+        # Agenda / outline slides list upcoming titles as body lines — must not steal.
+        content = (
+            "Introduction\n\nWelcome.\n\n"
+            "---\n\n"
+            "Agenda\n\nDetails\n\nNext steps\n\n"
+            "---\n\n"
+            "Details\n\nMore detail."
+        )
+        segments = split_slide_sections(content, ["Introduction", "Details"])
+        assert segments is not None
+        assert [s.title for s in segments] == [
+            "Introduction",
+            "Agenda",
+            "Details",
+        ]
+        assert "More detail." in segments[2].body
+
+    def test_slide_split_first_line_only_for_pending_titles(self):
+        # Subtitle-first slides keep the first-line label; pending titles stay unused
+        # unless the first line matches (loader "slides" records handle real titles).
         content = "Subtitle\n\nIntroduction\n\nbody\n\n---\n\nDetails\n\nmore"
         segments = split_slide_sections(content, ["Introduction", "Details"])
         assert segments is not None
-        assert segments[0].title == "Introduction"
+        assert segments[0].title == "Subtitle"
         assert segments[1].title == "Details"
+
+    def test_pptx_records_use_loader_titles(self):
+        segments = split_pptx_slide_records(
+            [
+                {"title": "Introduction", "text": "Subtitle\n\nIntroduction\n\nbody"},
+                {"title": None, "text": "Agenda\n\nDetails\n\nNext"},
+                {"title": "Details", "text": "Details\n\nMore."},
+            ]
+        )
+        assert segments is not None
+        assert [s.title for s in segments] == [
+            "Introduction",
+            "Agenda",
+            "Details",
+        ]
+        assert "Agenda\n\nDetails" in segments[1].body
+
+    def test_pptx_records_keep_intra_slide_hr_intact(self):
+        body = "Title\n\nBefore\n\n---\n\nAfter"
+        segments = split_pptx_slide_records([{"title": "Title", "text": body}])
+        assert segments is not None
+        assert len(segments) == 1
+        assert segments[0].body == body
+        assert segments[0].title == "Title"
+
+    def test_pptx_records_skip_invalid_and_empty(self):
+        assert split_pptx_slide_records([]) is None
+        assert split_pptx_slide_records("not-a-list") is None
+        segments = split_pptx_slide_records(
+            [
+                "skip-me",
+                {"title": "Keep", "text": ""},
+                {"title": "Real", "text": "  body  "},
+            ]
+        )
+        assert segments == [SectionSegment(title="Real", body="body")]
 
     def test_iter_prefers_markdown_over_outline(self):
         content = "# MD Heading\n\nbody"
@@ -145,6 +202,32 @@ class TestSectionSplitHelpers:
             {"sections": ["Docx Title"]},
         )
         assert segments[0].title == "MD Heading"
+
+    def test_iter_prefers_pptx_records_over_string_separators(self):
+        content = "IgnoredJoined\n\n---\n\nShouldNotSplit"
+        segments = iter_section_segments(
+            content,
+            {
+                "loader": "pptx",
+                "sections": ["Introduction", "Details"],
+                "slides": [
+                    {
+                        "title": "Introduction",
+                        "text": "Introduction\n\nWelcome.\n\n---\n\nStill one slide",
+                    },
+                    {"title": None, "text": "Agenda\n\nDetails"},
+                    {"title": "Details", "text": "Details\n\nMore."},
+                ],
+            },
+        )
+        assert len(segments) == 3
+        assert [s.title for s in segments] == [
+            "Introduction",
+            "Agenda",
+            "Details",
+        ]
+        assert "Still one slide" in segments[0].body
+        assert "---" in segments[0].body
 
     def test_iter_prefers_slides_over_outline(self):
         # Titled whole lines would make outline absorb the untitled middle slide.
@@ -168,6 +251,17 @@ class TestSectionSplitHelpers:
         assert "---" not in segments[0].body
         assert "Untitled body only" in segments[1].body
 
+    def test_iter_docx_hr_does_not_trigger_slide_split(self):
+        content = "Introduction\n\nBefore rule.\n\n---\n\nAfter rule.\n\nDetails\n\nMore."
+        segments = iter_section_segments(
+            content,
+            {"sections": ["Introduction", "Details"], "loader": "docx"},
+        )
+        assert [s.title for s in segments] == ["Introduction", "Details"]
+        assert "Before rule." in segments[0].body
+        assert "---" in segments[0].body
+        assert "After rule." in segments[0].body
+
     def test_iter_falls_back_to_outline(self):
         content = "Introduction\n\nbody text here"
         segments = iter_section_segments(content, {"sections": ["Introduction"]})
@@ -178,11 +272,18 @@ class TestSectionSplitHelpers:
         segments = iter_section_segments(content, {"headings": ["Section One"]})
         assert segments[0].title == "Section One"
 
-    def test_iter_falls_back_to_slides(self):
+    def test_iter_falls_back_to_slides_when_pptx_loader(self):
         content = "Slide body A\n\n---\n\nSlide body B"
-        segments = iter_section_segments(content, {})
+        segments = iter_section_segments(content, {"loader": "pptx"})
         assert len(segments) == 2
         assert segments[0].title == "Slide body A"
+
+    def test_iter_ignores_separators_without_pptx_loader(self):
+        content = "Slide body A\n\n---\n\nSlide body B"
+        segments = iter_section_segments(content, {})
+        assert segments == [
+            SectionSegment(title=None, body="Slide body A\n\n---\n\nSlide body B")
+        ]
 
     def test_iter_single_segment_without_boundaries(self):
         segments = iter_section_segments("plain text only", {})
@@ -296,6 +397,34 @@ class TestSectionChunker:
         assert "more body" in by_section["Details Title"]
         # Untitled middle must not be swallowed by Intro Title (outline path bug).
         assert "Bullet without a title placeholder" not in by_section["Intro Title"]
+
+    def test_pptx_slides_metadata_preserves_hr_and_agenda_titles(self):
+        doc = _doc(
+            "joined-content-unused-when-slides-present",
+            source="deck.pptx",
+            metadata={
+                "loader": "pptx",
+                "sections": ["Intro Title", "Details Title"],
+                "slides": [
+                    {
+                        "title": "Intro Title",
+                        "text": "Intro Title\n\nslide body\n\n---\n\nstill intro",
+                    },
+                    {
+                        "title": None,
+                        "text": "Agenda\n\nDetails Title\n\nNext",
+                    },
+                    {"title": "Details Title", "text": "Details Title\n\nmore body"},
+                ],
+            },
+        )
+        chunks = SectionChunker().chunk(doc)
+        by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
+        assert "still intro" in by_section["Intro Title"]
+        assert "---" in by_section["Intro Title"]
+        assert "Details Title" in by_section["Agenda"]
+        assert "more body" in by_section["Details Title"]
+        assert "slides" not in chunks[0].metadata
 
     def test_overlap_validation_delegates_to_recursive(self):
         with pytest.raises(ValueError, match="overlap"):

@@ -237,7 +237,7 @@ class TestMultimodalConstants:
         assert len(keys) == len(set(keys))
 
     def test_layout_document_metadata_keys(self) -> None:
-        assert frozenset({"tables", "figures", "sections", "headings"}) == (
+        assert frozenset({"tables", "figures", "sections", "headings", "slides"}) == (
             LAYOUT_DOCUMENT_METADATA_KEYS
         )
 

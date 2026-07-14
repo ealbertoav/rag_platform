@@ -17,7 +17,7 @@ class SectionSegment(NamedTuple):
 
 
 def _outline_titles(metadata: dict[str, Any]) -> list[str]:
-    """Prefer layout "sections" then markdown "headings" outlines."""
+    """Prefer layout "sections" then Markdown "headings" outlines."""
     for key in ("sections", "headings"):
         value = metadata.get(key)
         if isinstance(value, list) and value:
@@ -90,20 +90,39 @@ def _first_nonempty_line(body: str) -> str:
     return next((line.strip() for line in body.splitlines() if line.strip()), "")
 
 
-def _slide_contains_title(body: str, title: str) -> bool:
-    return any(line.strip() == title for line in body.splitlines())
+def split_pptx_slide_records(slides: Any) -> list[SectionSegment] | None:
+    """Build segments from PptxLoader "slides" records (title and text per slide).
+
+    Titles are loader-authoritative, so agenda lines cannot steal later titles, and
+    intra-slide "---" text cannot invent fake boundaries.
+    """
+    if not isinstance(slides, list) or not slides:
+        return None
+
+    segments: list[SectionSegment] = []
+    for item in slides:
+        if not isinstance(item, dict):
+            continue
+        body = str(item.get("text") or "").strip()
+        if not body:
+            continue
+        raw_title = item.get("title")
+        title = str(raw_title).strip() if raw_title else None
+        if not title:
+            title = _first_nonempty_line(body) or None
+        segments.append(SectionSegment(title=title, body=body))
+    return segments or None
 
 
 def split_slide_sections(
     content: str,
     titles: list[str],
 ) -> list[SectionSegment] | None:
-    """Split PPTX-style content on "---" slide separators.
+    """Split PPTX-style content on "---" slide separators (string fallback).
 
-    Loader "sections" lists only named slide titles and omits untitled slides, so
-    titles are not index-aligned with slide bodies. Match the next unused title
-    when it appears as a whole line in the slide; otherwise label from the first
-    non-empty line (or leave unset).
+    Prefer "split_pptx_slide_records" when loader metadata includes "slides".
+    Titles are matched only when the slide's first non-empty line equals the next
+    unused outline title — never by scanning deeper body lines (agenda slides).
     """
     if _SLIDE_SEPARATOR not in content:
         return None
@@ -115,7 +134,7 @@ def split_slide_sections(
         if not body:
             continue
         first_line = _first_nonempty_line(body)
-        if pending and _slide_contains_title(body, pending[0]):
+        if pending and first_line == pending[0]:
             title: str | None = pending.pop(0)
         else:
             title = first_line or None
@@ -131,10 +150,10 @@ def iter_section_segments(
 
     Priority:
     1. Markdown ATX headings in the body (Markdown / Docling export)
-    2. PPTX "---" slide separators (before outline — titled slides look like
-       outline whole lines and would otherwise absorb untitled slides)
-    3. Outline titles as whole lines (plain DOCX)
-    4. Single segment spanning the full document
+    2. PptxLoader "slides" records (authoritative per-slide titles and bodies)
+    3. PPTX "---" slide separators when "loader" is "pptx" (string fallback)
+    4. Outline titles as whole lines (plain DOCX)
+    5. Single segment spanning the full document
     """
     text = content if content is not None else ""
     meta = metadata or {}
@@ -143,11 +162,18 @@ def iter_section_segments(
     if markdown is not None:
         return markdown
 
+    pptx_records = split_pptx_slide_records(meta.get("slides") or [])
+    if pptx_records is not None:
+        return pptx_records
+
     titles = _outline_titles(meta)
 
-    slides = split_slide_sections(text, titles)
-    if slides is not None:
-        return slides
+    # Gate string "---" splitting on PPTX provenance, so DOCX/Markdown horizontal
+    # rules (`---` paragraphs joined as "\\n\\n---\\n\\n") are not treated as slides.
+    if meta.get("loader") == "pptx":
+        slides = split_slide_sections(text, titles)
+        if slides is not None:
+            return slides
 
     outline = split_outline_title_sections(text, titles)
     if outline is not None:

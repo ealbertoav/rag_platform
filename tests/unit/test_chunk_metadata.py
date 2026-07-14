@@ -17,7 +17,7 @@ from src.rag.chunking.recursive_chunker import RecursiveChunker
 
 class TestChunkMetadata:
     def test_layout_keys_constant(self) -> None:
-        assert frozenset({"tables", "figures", "sections", "headings"}) == (
+        assert frozenset({"tables", "figures", "sections", "headings", "slides"}) == (
             LAYOUT_DOCUMENT_METADATA_KEYS
         )
 
@@ -30,6 +30,7 @@ class TestChunkMetadata:
             "figures": [{"figure_id": "figure-1"}],
             "sections": ["Intro"],
             "headings": ["Intro"],
+            "slides": [{"title": "Intro", "text": "body"}],
         }
         filtered = chunk_metadata(metadata)
         assert filtered == {

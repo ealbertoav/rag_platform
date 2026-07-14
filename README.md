@@ -575,9 +575,10 @@ chunking:
 Splits on document structure, so each chunk carries the correct `metadata.section` (used by contextual headers and filters). Boundaries, in priority order:
 
 1. Markdown ATX headings (`#` … `######`) — Markdown loaders and Docling markdown export
-2. PPTX `---` slide separators — titles matched from `sections[]` by whole-line presence (untitled slides keep a first-line label; slides are preferred over outline so titled first lines do not absorb untitled slides)
-3. Outline titles as whole lines — plain DOCX `sections[]`
-4. No boundaries — falls back to a single recursive split (same as `recursive`)
+2. PptxLoader `slides[]` records — authoritative per-slide `{title, text}` (handles untitled slides, agenda title lists, and intra-slide `---` text without false splits)
+3. PPTX `---` slide separators — string fallback only when `metadata.loader == "pptx"` (first-line title match; not used for DOCX/Markdown horizontal rules)
+4. Outline titles as whole lines — plain DOCX `sections[]`
+5. No boundaries — falls back to a single recursive split (same as `recursive`)
 
 Oversized sections are further split with `RecursiveChunker` (`chunk_size` / `overlap`). Preamble text before the first heading omits `section` so contextual headers show `—`.
 
@@ -777,7 +778,7 @@ flowchart LR
 | `figures` | List of `{figure_id, caption?, page?, bbox?}` entries |
 | `page_count` | Total pages detected by Docling |
 
-Document-level keys (`tables`, `figures`, `sections`, `headings`) are listed in `LAYOUT_DOCUMENT_METADATA_KEYS` and **stripped** from per-chunk metadata by `chunk_metadata()` so large layout structures are not duplicated on every indexed chunk. Plain DOCX/Markdown loaders also populate `sections`/`headings` and promote the first title to `CHUNK_SECTION_KEY` when layout parsing is off.
+Document-level keys (`tables`, `figures`, `sections`, `headings`, `slides`) are listed in `LAYOUT_DOCUMENT_METADATA_KEYS` and **stripped** from per-chunk metadata by `chunk_metadata()` so large layout structures are not duplicated on every indexed chunk. Plain DOCX/Markdown loaders also populate `sections`/`headings` and promote the first title to `CHUNK_SECTION_KEY` when layout parsing is off. PPTX loaders additionally attach `slides` (`{title, text}` per slide) for section-boundary chunking.
 
 **Enable layout parsing:**
 

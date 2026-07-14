@@ -51,21 +51,22 @@ class PptxLoader:
         try:
             presentation = python_pptx.Presentation(str(path))
 
-            slide_texts: list[str] = []
-            # Named titles only (not index-aligned with slide_texts). Untitled
-            # slides are omitted here; SectionChunker matches titles to bodies
-            # by whole-line presence rather than by list index.
+            # Per-slide records keep title↔body alignment for SectionChunker.
+            # "sections" remain named titles only (omits untitled slides).
+            slide_records: list[dict[str, object]] = []
             section_titles: list[str] = []
             for slide in presentation.slides:
                 title = slide_title(slide)
                 text = slide_text(slide)
                 if not text.strip():
                     continue
-                slide_texts.append(text)
+                slide_records.append({"title": title, "text": text})
                 if title:
                     section_titles.append(title)
 
-            content = "\n\n---\n\n".join(slide_texts)
+            content = "\n\n---\n\n".join(
+                str(record["text"]) for record in slide_records
+            )
 
             metadata: dict[str, object] = {
                 "filename": path.name,
@@ -73,6 +74,7 @@ class PptxLoader:
                 "loader": "pptx",
                 "slide_count": len(presentation.slides),
                 "sections": section_titles,
+                "slides": slide_records,
             }
             if section_titles:
                 metadata[CHUNK_SECTION_KEY] = section_titles[0]
