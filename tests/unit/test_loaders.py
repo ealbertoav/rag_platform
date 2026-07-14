@@ -19,6 +19,7 @@ from pptx.util import Inches
 
 from src.core.constants import CHUNK_SECTION_KEY
 from src.core.exceptions import DocumentLoadError
+from src.core.slide_records import SlideRecord
 from src.domain.entities.document import Document
 from src.domain.entities.parsed_document import ParsedDocument
 from src.infrastructure.loaders import load_document
@@ -275,9 +276,10 @@ class TestPptxLoader:
         assert "Details" in doc.metadata["sections"]
         assert doc.metadata["section"] == "Introduction"
         assert len(doc.metadata["slides"]) == 2
-        assert doc.metadata["slides"][0]["title"] == "Introduction"
-        assert "Welcome to the deck." in doc.metadata["slides"][0]["text"]
-        assert doc.metadata["slides"][1]["title"] == "Details"
+        assert all(isinstance(record, SlideRecord) for record in doc.metadata["slides"])
+        assert doc.metadata["slides"][0].title == "Introduction"
+        assert "Welcome to the deck." in doc.metadata["slides"][0].text
+        assert doc.metadata["slides"][1].title == "Details"
 
     def test_blank_slide_without_title(self, blank_pptx_file: Path):
         doc = PptxLoader().load(blank_pptx_file)
@@ -305,7 +307,7 @@ class TestPptxLoader:
         assert doc.metadata["sections"] == ["Introduction", "Details"]
         assert doc.content.count("\n\n---\n\n") == 2
         assert "Agenda bullet without a slide title" in doc.content
-        assert [slide["title"] for slide in doc.metadata["slides"]] == [
+        assert [slide.title for slide in doc.metadata["slides"]] == [
             "Introduction",
             None,
             "Details",
@@ -362,7 +364,7 @@ class TestPptxLoader:
 
         doc = PptxLoader().load(path)
         assert len(doc.metadata["slides"]) == 1
-        assert "\n\n---\n\n" in doc.metadata["slides"][0]["text"]
+        assert "\n\n---\n\n" in doc.metadata["slides"][0].text
 
         from src.rag.chunking.section_chunker import SectionChunker
 

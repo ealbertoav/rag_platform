@@ -6,6 +6,7 @@ import pytest
 
 from src.core.constants import CHUNK_INDEX_KEY, CHUNK_SECTION_KEY, CHUNK_SOURCE_KEY
 from src.core.markdown_headings import extract_markdown_headings
+from src.core.slide_records import SlideRecord
 from src.domain.entities.document import Document
 from src.rag.chunking import get_chunker
 from src.rag.chunking.contextual_headers import build_header_line
@@ -212,9 +213,9 @@ class TestSectionSplitHelpers:
     def test_pptx_records_use_loader_titles(self):
         segments = split_pptx_slide_records(
             [
-                {"title": "Introduction", "text": "Subtitle\n\nIntroduction\n\nbody"},
-                {"title": None, "text": "Agenda\n\nDetails\n\nNext"},
-                {"title": "Details", "text": "Details\n\nMore."},
+                SlideRecord(title="Introduction", text="Subtitle\n\nIntroduction\n\nbody"),
+                SlideRecord(title=None, text="Agenda\n\nDetails\n\nNext"),
+                SlideRecord(title="Details", text="Details\n\nMore."),
             ]
         )
         assert segments is not None
@@ -227,7 +228,7 @@ class TestSectionSplitHelpers:
 
     def test_pptx_records_keep_intra_slide_hr_intact(self):
         body = "Title\n\nBefore\n\n---\n\nAfter"
-        segments = split_pptx_slide_records([{"title": "Title", "text": body}])
+        segments = split_pptx_slide_records([SlideRecord(title="Title", text=body)])
         assert segments is not None
         assert len(segments) == 1
         assert segments[0].body == body
@@ -239,8 +240,20 @@ class TestSectionSplitHelpers:
         segments = split_pptx_slide_records(
             [
                 "skip-me",
-                {"title": "Keep", "text": ""},
-                {"title": "Real", "text": "  body  "},
+                SlideRecord(title="Keep", text=""),
+                SlideRecord(title="Real", text="  body  "),
+            ]
+        )
+        assert segments == [SectionSegment(title="Real", body="body")]
+
+    def test_pptx_records_reject_plain_dicts(self):
+        # Only typed SlideRecord entries are accepted — plain dicts (e.g. a stale
+        # caller building loader-shaped metadata by hand) must be skipped, not
+        # duck-typed via .get().
+        segments = split_pptx_slide_records(
+            [
+                {"title": "Dict", "text": "body"},
+                SlideRecord(title="Real", text="body"),
             ]
         )
         assert segments == [SectionSegment(title="Real", body="body")]
@@ -262,8 +275,8 @@ class TestSectionSplitHelpers:
                 "loader": "pptx",
                 "sections": ["Intro", "Details"],
                 "slides": [
-                    {"title": "Intro", "text": "Intro\n\n# Key Points\n\nbullet"},
-                    {"title": "Details", "text": "Details\n\nmore"},
+                    SlideRecord(title="Intro", text="Intro\n\n# Key Points\n\nbullet"),
+                    SlideRecord(title="Details", text="Details\n\nmore"),
                 ],
             },
         )
@@ -280,12 +293,12 @@ class TestSectionSplitHelpers:
                 "loader": "pptx",
                 "sections": ["Introduction", "Details"],
                 "slides": [
-                    {
-                        "title": "Introduction",
-                        "text": "Introduction\n\nWelcome.\n\n---\n\nStill one slide",
-                    },
-                    {"title": None, "text": "Agenda\n\nDetails"},
-                    {"title": "Details", "text": "Details\n\nMore."},
+                    SlideRecord(
+                        title="Introduction",
+                        text="Introduction\n\nWelcome.\n\n---\n\nStill one slide",
+                    ),
+                    SlideRecord(title=None, text="Agenda\n\nDetails"),
+                    SlideRecord(title="Details", text="Details\n\nMore."),
                 ],
             },
         )
@@ -467,15 +480,15 @@ class TestSectionChunker:
                 "loader": "pptx",
                 "sections": ["Intro Title", "Details Title"],
                 "slides": [
-                    {
-                        "title": "Intro Title",
-                        "text": "Intro Title\n\nslide body\n\n---\n\nstill intro",
-                    },
-                    {
-                        "title": None,
-                        "text": "Agenda\n\nDetails Title\n\nNext",
-                    },
-                    {"title": "Details Title", "text": "Details Title\n\nmore body"},
+                    SlideRecord(
+                        title="Intro Title",
+                        text="Intro Title\n\nslide body\n\n---\n\nstill intro",
+                    ),
+                    SlideRecord(
+                        title=None,
+                        text="Agenda\n\nDetails Title\n\nNext",
+                    ),
+                    SlideRecord(title="Details Title", text="Details Title\n\nmore body"),
                 ],
             },
         )
@@ -495,8 +508,8 @@ class TestSectionChunker:
                 "loader": "pptx",
                 "sections": ["Intro", "Details"],
                 "slides": [
-                    {"title": "Intro", "text": "Intro\n\n# Key Points\n\nbullet"},
-                    {"title": "Details", "text": "Details\n\nmore"},
+                    SlideRecord(title="Intro", text="Intro\n\n# Key Points\n\nbullet"),
+                    SlideRecord(title="Details", text="Details\n\nmore"),
                 ],
             },
         )

@@ -10,6 +10,7 @@ from pptx.text.text import TextFrame
 
 from src.core.constants import CHUNK_SECTION_KEY
 from src.core.exceptions import DocumentLoadError
+from src.core.slide_records import SlideRecord
 from src.domain.entities.document import Document
 
 
@@ -53,18 +54,18 @@ class PptxLoader:
 
             # Per-slide records keep title↔body alignment for SectionChunker.
             # "sections" remain named titles only (omits untitled slides).
-            slide_records: list[dict[str, object]] = []
+            slide_records: list[SlideRecord] = []
             section_titles: list[str] = []
             for slide in presentation.slides:
                 title = slide_title(slide)
                 text = slide_text(slide)
                 if not text.strip():
                     continue
-                slide_records.append({"title": title, "text": text})
+                slide_records.append(SlideRecord(title=title, text=text))
                 if title:
                     section_titles.append(title)
 
-            content = "\n\n---\n\n".join(str(record["text"]) for record in slide_records)
+            content = "\n\n---\n\n".join(record.text for record in slide_records)
 
             metadata: dict[str, object] = {
                 "filename": path.name,

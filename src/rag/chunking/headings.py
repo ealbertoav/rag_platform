@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 from src.core.markdown_headings import iter_atx_heading_matches
+from src.core.slide_records import SlideRecord
 
 _SLIDE_SEPARATOR = "\n\n---\n\n"
 
@@ -104,13 +105,12 @@ def split_pptx_slide_records(slides: Any) -> list[SectionSegment] | None:
 
     segments: list[SectionSegment] = []
     for item in slides:
-        if not isinstance(item, dict):
+        if not isinstance(item, SlideRecord):
             continue
-        body = str(item.get("text") or "").strip()
+        body = item.text.strip()
         if not body:
             continue
-        raw_title = item.get("title")
-        title = str(raw_title).strip() if raw_title else None
+        title = item.title.strip() if item.title else None
         if not title:
             title = _first_nonempty_line(body) or None
         segments.append(SectionSegment(title=title, body=body))
