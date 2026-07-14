@@ -572,11 +572,11 @@ chunking:
 
 ##### Section-Boundary Chunking (T-240)
 
-Splits on document structure so each chunk carries the correct `metadata.section` (used by contextual headers and filters). Boundaries, in priority order:
+Splits on document structure, so each chunk carries the correct `metadata.section` (used by contextual headers and filters). Boundaries, in priority order:
 
 1. Markdown ATX headings (`#` … `######`) — Markdown loaders and Docling markdown export
-2. Outline titles as whole lines — plain DOCX `sections[]`
-3. PPTX `---` slide separators — with slide titles from `sections[]` or the first line of each slide
+2. PPTX `---` slide separators — titles matched from `sections[]` by whole-line presence (untitled slides keep a first-line label; slides are preferred over outline so titled first lines do not absorb untitled slides)
+3. Outline titles as whole lines — plain DOCX `sections[]`
 4. No boundaries — falls back to a single recursive split (same as `recursive`)
 
 Oversized sections are further split with `RecursiveChunker` (`chunk_size` / `overlap`). Preamble text before the first heading omits `section` so contextual headers show `—`.

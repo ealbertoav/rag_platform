@@ -2664,7 +2664,7 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Opt-in via `chunking.strategy: section` (default remains `recursive`). Splits on ATX headings first, then DOCX outline whole-line titles, then PPTX `---` slides; oversized sections use `RecursiveChunker`. Per-chunk `CHUNK_SECTION_KEY` (preamble omits it). No new nested settings — `chunk_size` / `overlap` only.
+- **Notes:** Opt-in via `chunking.strategy: section` (default remains `recursive`). Splits on ATX headings first, then PPTX `---` slides (before outline — titled slide first lines must not absorb untitled slides), then DOCX outline whole-line titles; oversized sections use `RecursiveChunker`. Per-chunk `CHUNK_SECTION_KEY` (preamble omits it). No new nested settings — `chunk_size` / `overlap` only.
 
 ---
 

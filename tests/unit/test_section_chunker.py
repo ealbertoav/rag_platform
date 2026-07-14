@@ -102,12 +102,41 @@ class TestSectionSplitHelpers:
         assert split_slide_sections("no slides", ["A"]) is None
 
     def test_slide_split_skips_empty_slides(self):
+        # Compact title lists omit empty slides; "Mid" must not attach to "Last".
         content = "Only\n\n---\n\n\n\n---\n\nLast"
         segments = split_slide_sections(content, ["Only", "Mid", "Last"])
         assert segments is not None
-        titles = [s.title for s in segments]
-        assert "Only" in titles
-        assert "Last" in titles
+        assert [(s.title, s.body) for s in segments] == [
+            ("Only", "Only"),
+            ("Last", "Last"),
+        ]
+
+    def test_slide_split_untitled_middle_does_not_steal_next_title(self):
+        # PptxLoader sections omit untitled slides → titles are not index-aligned.
+        content = (
+            "Introduction\n\nWelcome.\n\n"
+            "---\n\n"
+            "Agenda bullet one\n\n"
+            "---\n\n"
+            "Details\n\nMore detail."
+        )
+        segments = split_slide_sections(content, ["Introduction", "Details"])
+        assert segments is not None
+        assert [s.title for s in segments] == [
+            "Introduction",
+            "Agenda bullet one",
+            "Details",
+        ]
+        assert "Welcome." in segments[0].body
+        assert "Agenda bullet one" in segments[1].body
+        assert "More detail." in segments[2].body
+
+    def test_slide_split_matches_title_not_only_first_line(self):
+        content = "Subtitle\n\nIntroduction\n\nbody\n\n---\n\nDetails\n\nmore"
+        segments = split_slide_sections(content, ["Introduction", "Details"])
+        assert segments is not None
+        assert segments[0].title == "Introduction"
+        assert segments[1].title == "Details"
 
     def test_iter_prefers_markdown_over_outline(self):
         content = "# MD Heading\n\nbody"
@@ -116,6 +145,28 @@ class TestSectionSplitHelpers:
             {"sections": ["Docx Title"]},
         )
         assert segments[0].title == "MD Heading"
+
+    def test_iter_prefers_slides_over_outline(self):
+        # Titled whole lines would make outline absorb the untitled middle slide.
+        content = (
+            "Introduction\n\nWelcome.\n\n"
+            "---\n\n"
+            "Untitled body only\n\n"
+            "---\n\n"
+            "Details\n\nMore."
+        )
+        segments = iter_section_segments(
+            content,
+            {"sections": ["Introduction", "Details"], "loader": "pptx"},
+        )
+        assert len(segments) == 3
+        assert [s.title for s in segments] == [
+            "Introduction",
+            "Untitled body only",
+            "Details",
+        ]
+        assert "---" not in segments[0].body
+        assert "Untitled body only" in segments[1].body
 
     def test_iter_falls_back_to_outline(self):
         content = "Introduction\n\nbody text here"
@@ -128,7 +179,6 @@ class TestSectionSplitHelpers:
         assert segments[0].title == "Section One"
 
     def test_iter_falls_back_to_slides(self):
-        # No outline titles as whole lines → PPTX separator path.
         content = "Slide body A\n\n---\n\nSlide body B"
         segments = iter_section_segments(content, {})
         assert len(segments) == 2
@@ -223,6 +273,29 @@ class TestSectionChunker:
         chunks = SectionChunker().chunk(doc)
         sections = {c.metadata[CHUNK_SECTION_KEY] for c in chunks}
         assert sections == {"Intro Title", "Details Title"}
+
+    def test_pptx_untitled_middle_slide_keeps_own_section(self):
+        content = (
+            "Intro Title\n\nslide body\n\n"
+            "---\n\n"
+            "Bullet without a title placeholder\n\n"
+            "---\n\n"
+            "Details Title\n\nmore body"
+        )
+        doc = _doc(
+            content,
+            source="deck.pptx",
+            metadata={"sections": ["Intro Title", "Details Title"], "loader": "pptx"},
+        )
+        chunks = SectionChunker().chunk(doc)
+        by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
+        assert "slide body" in by_section["Intro Title"]
+        assert "Bullet without a title placeholder" in by_section[
+            "Bullet without a title placeholder"
+        ]
+        assert "more body" in by_section["Details Title"]
+        # Untitled middle must not be swallowed by Intro Title (outline path bug).
+        assert "Bullet without a title placeholder" not in by_section["Intro Title"]
 
     def test_overlap_validation_delegates_to_recursive(self):
         with pytest.raises(ValueError, match="overlap"):

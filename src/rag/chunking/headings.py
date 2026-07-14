@@ -86,26 +86,38 @@ def split_outline_title_sections(
     return segments
 
 
+def _first_nonempty_line(body: str) -> str:
+    return next((line.strip() for line in body.splitlines() if line.strip()), "")
+
+
+def _slide_contains_title(body: str, title: str) -> bool:
+    return any(line.strip() == title for line in body.splitlines())
+
+
 def split_slide_sections(
     content: str,
     titles: list[str],
 ) -> list[SectionSegment] | None:
-    """Split PPTX-style content on "---" slide separators."""
+    """Split PPTX-style content on "---" slide separators.
+
+    Loader "sections" lists only named slide titles and omits untitled slides, so
+    titles are not index-aligned with slide bodies. Match the next unused title
+    when it appears as a whole line in the slide; otherwise label from the first
+    non-empty line (or leave unset).
+    """
     if _SLIDE_SEPARATOR not in content:
         return None
 
-    slides = content.split(_SLIDE_SEPARATOR)
+    pending = [title for title in titles if title]
     segments: list[SectionSegment] = []
-    for index, slide in enumerate(slides):
+    for slide in content.split(_SLIDE_SEPARATOR):
         body = slide.strip()
         if not body:
             continue
-        title: str | None = titles[index] if index < len(titles) else None
-        if title is None:
-            first_line = next(
-                (line.strip() for line in body.splitlines() if line.strip()),
-                "",
-            )
+        first_line = _first_nonempty_line(body)
+        if pending and _slide_contains_title(body, pending[0]):
+            title: str | None = pending.pop(0)
+        else:
             title = first_line or None
         segments.append(SectionSegment(title=title, body=body))
     return segments or None
@@ -119,8 +131,9 @@ def iter_section_segments(
 
     Priority:
     1. Markdown ATX headings in the body (Markdown / Docling export)
-    2. Outline titles as whole lines (plain DOCX)
-    3. PPTX "---" slide separators
+    2. PPTX "---" slide separators (before outline — titled slides look like
+       outline whole lines and would otherwise absorb untitled slides)
+    3. Outline titles as whole lines (plain DOCX)
     4. Single segment spanning the full document
     """
     text = content if content is not None else ""
@@ -131,13 +144,14 @@ def iter_section_segments(
         return markdown
 
     titles = _outline_titles(meta)
-    outline = split_outline_title_sections(text, titles)
-    if outline is not None:
-        return outline
 
     slides = split_slide_sections(text, titles)
     if slides is not None:
         return slides
+
+    outline = split_outline_title_sections(text, titles)
+    if outline is not None:
+        return outline
 
     body = text.strip()
     if not body:

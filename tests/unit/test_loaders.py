@@ -15,7 +15,9 @@ import pptx as python_pptx
 import pytest
 from pptx.slide import Slide
 from pptx.text.text import TextFrame
+from pptx.util import Inches
 
+from src.core.constants import CHUNK_SECTION_KEY
 from src.core.exceptions import DocumentLoadError
 from src.domain.entities.document import Document
 from src.domain.entities.parsed_document import ParsedDocument
@@ -26,9 +28,9 @@ from src.infrastructure.loaders.markdown_loader import MarkdownLoader
 from src.infrastructure.loaders.pdf_loader import PdfLoader
 from src.infrastructure.loaders.pptx_loader import (
     PptxLoader,
-    _shape_text,
-    _slide_text,
-    _slide_title,
+    shape_text,
+    slide_text,
+    slide_title,
 )
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -279,6 +281,36 @@ class TestPptxLoader:
         assert doc.metadata["sections"] == []
         assert "section" not in doc.metadata
 
+    def test_untitled_middle_slide_omitted_from_sections(self, tmp_path: Path):
+        path = tmp_path / "mixed.pptx"
+        prs = python_pptx.Presentation()
+        first = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(first, "Introduction", "Welcome.")
+
+        untitled = prs.slides.add_slide(prs.slide_layouts[6])
+        box = untitled.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(2))
+        box.text_frame.text = "Agenda bullet without a slide title"
+
+        last = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(last, "Details", "More detail.")
+        prs.save(str(path))
+
+        doc = PptxLoader().load(path)
+        assert doc.metadata["slide_count"] == 3
+        assert doc.metadata["sections"] == ["Introduction", "Details"]
+        assert doc.content.count("\n\n---\n\n") == 2
+        assert "Agenda bullet without a slide title" in doc.content
+
+        from src.rag.chunking.section_chunker import SectionChunker
+
+        chunks = SectionChunker().chunk(doc)
+        by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
+        assert "Welcome." in by_section["Introduction"]
+        assert "Agenda bullet without a slide title" in by_section[
+            "Agenda bullet without a slide title"
+        ]
+        assert "More detail." in by_section["Details"]
+
     def test_source_is_absolute(self, pptx_file: Path):
         doc = PptxLoader().load(pptx_file)
         assert Path(doc.source).is_absolute()
@@ -292,12 +324,12 @@ class TestPptxLoaderHelpers:
     def test_shape_text_without_text_frame(self):
         shape = MagicMock()
         shape.has_text_frame = False
-        assert _shape_text(shape) == ""
+        assert shape_text(shape) == ""
 
     def test_slide_title_missing_shape(self):
         slide = MagicMock()
         slide.shapes.title = None
-        assert _slide_title(slide) is None
+        assert slide_title(slide) is None
 
     def test_slide_title_empty_text(self):
         slide = MagicMock()
@@ -305,7 +337,7 @@ class TestPptxLoaderHelpers:
         title_shape.has_text_frame = True
         title_shape.text_frame.paragraphs = [MagicMock(text="   ")]
         slide.shapes.title = title_shape
-        assert _slide_title(slide) is None
+        assert slide_title(slide) is None
 
     def test_slide_text_skips_empty_shapes(self):
         slide = MagicMock()
@@ -315,7 +347,7 @@ class TestPptxLoaderHelpers:
         empty_shape = MagicMock()
         empty_shape.has_text_frame = False
         slide.shapes = [empty_shape, text_shape]
-        assert _slide_text(slide) == "Slide body"
+        assert slide_text(slide) == "Slide body"
 
 
 # ── HtmlLoader ─────────────────────────────────────────────────────────────────
