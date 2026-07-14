@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from src.core.markdown_headings import HEADING_RE
+from src.core.markdown_headings import iter_atx_heading_matches
 
 _SLIDE_SEPARATOR = "\n\n---\n\n"
 
@@ -26,8 +26,11 @@ def _outline_titles(metadata: dict[str, Any]) -> list[str]:
 
 
 def split_markdown_sections(content: str) -> list[SectionSegment] | None:
-    """Split *content* on ATX headings. Returns "None" when no headings exist."""
-    matches = list(HEADING_RE.finditer(content))
+    """Split *content* on ATX headings outside fenced code blocks.
+
+    Returns "None" when no real (non-fenced) headings exist.
+    """
+    matches = list(iter_atx_heading_matches(content))
     if not matches:
         return None
 
@@ -149,8 +152,8 @@ def iter_section_segments(
     """Split *content* into section segments using the best available boundaries.
 
     Priority:
-    1. Markdown ATX headings in the body (Markdown / Docling export)
-    2. PptxLoader "slides" records (authoritative per-slide titles and bodies)
+    1. PptxLoader "slides" records (authoritative per-slide titles and bodies)
+    2. Markdown ATX headings in the body (Markdown / Docling export; skips fences)
     3. PPTX "---" slide separators when "loader" is "pptx" (string fallback)
     4. Outline titles as whole lines (plain DOCX)
     5. Single segment spanning the full document
@@ -158,13 +161,15 @@ def iter_section_segments(
     text = content if content is not None else ""
     meta = metadata or {}
 
-    markdown = split_markdown_sections(text)
-    if markdown is not None:
-        return markdown
-
+    # Prefer loader-authored slide records over ATX scans of joined deck text.
+    # PPTX body lines like "# Key Points" must not invent Markdown sections.
     pptx_records = split_pptx_slide_records(meta.get("slides") or [])
     if pptx_records is not None:
         return pptx_records
+
+    markdown = split_markdown_sections(text)
+    if markdown is not None:
+        return markdown
 
     titles = _outline_titles(meta)
 

@@ -574,8 +574,8 @@ chunking:
 
 Splits on document structure, so each chunk carries the correct `metadata.section` (used by contextual headers and filters). Boundaries, in priority order:
 
-1. Markdown ATX headings (`#` … `######`) — Markdown loaders and Docling markdown export
-2. PptxLoader `slides[]` records — authoritative per-slide `{title, text}` (handles untitled slides, agenda title lists, and intra-slide `---` text without false splits)
+1. PptxLoader `slides[]` records — authoritative per-slide `{title, text}` (handles untitled slides, agenda title lists, intra-slide `---`, and body lines that look like ATX headings such as `# Key Points`)
+2. Markdown ATX headings (`#` … `######`) outside fenced code blocks — Markdown loaders and Docling markdown export
 3. PPTX `---` slide separators — string fallback only when `metadata.loader == "pptx"` (first-line title match; not used for DOCX/Markdown horizontal rules)
 4. Outline titles as whole lines — plain DOCX `sections[]`
 5. No boundaries — falls back to a single recursive split (same as `recursive`)

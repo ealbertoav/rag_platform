@@ -38,10 +38,11 @@ def _segment_document_metadata(
 class SectionChunker:
     """Split documents on section boundaries, then recursively size each section.
 
-    Boundaries (in priority order) come from Markdown ATX headings, PptxLoader
-    "slides" records, PPTX "---" separators (loader-gated fallback), or outline
-    titles as whole lines. Each resulting chunk gets "metadata.section" set to
-    its section title (preamble chunks omit it).
+    Boundaries (in priority order) come from PptxLoader "slides" records,
+    Markdown ATX headings (outside fenced code), PPTX "---" separators
+    (loader-gated fallback), or outline titles as whole lines. Each resulting
+    chunk gets "metadata.section" set to its section title (preamble chunks omit
+    it).
     """
 
     def __init__(self, chunk_size: int = 500, overlap: int = 50) -> None:

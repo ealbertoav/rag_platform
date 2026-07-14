@@ -2654,7 +2654,7 @@
 - **Files:**
   - `src/rag/chunking/section_chunker.py` — `SectionChunker` with inner `RecursiveChunker` _(done)_
   - `src/rag/chunking/headings.py` — markdown / outline / slide segment splitters _(done)_
-  - `src/core/markdown_headings.py` — shared ATX `HEADING_RE` + `extract_markdown_headings` (used by MarkdownLoader) _(done)_
+  - `src/core/markdown_headings.py` — shared ATX `HEADING_RE` + fence-aware `extract_markdown_headings` / `iter_atx_heading_matches` (used by MarkdownLoader + SectionChunker) _(done)_
   - `src/rag/chunking/__init__.py` — register `section` strategy _(done)_
   - `src/core/settings.py` — `ChunkingSettings.strategy` includes `section` _(done)_
   - `configs/retrieval.yaml` / `.env.example` — strategy comment _(done)_
@@ -2664,7 +2664,7 @@
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Opt-in via `chunking.strategy: section` (default remains `recursive`). Splits on ATX headings first, then PptxLoader `slides[]` records (loader titles; resistant to agenda title-stealing and intra-slide `---`), then PPTX `---` string fallback only when `loader=pptx`, then DOCX outline whole-line titles; oversized sections use `RecursiveChunker`. Per-chunk `CHUNK_SECTION_KEY` (preamble omits it). No new nested settings — `chunk_size` / `overlap` only.
+- **Notes:** Opt-in via `chunking.strategy: section` (default remains `recursive`). Splits on PptxLoader `slides[]` records first when present (loader titles; resistant to agenda title-stealing, intra-slide `---`, and ATX-looking body lines), then Markdown ATX headings outside fenced code blocks, then PPTX `---` string fallback only when `loader=pptx`, then DOCX outline whole-line titles; oversized sections use `RecursiveChunker`. Per-chunk `CHUNK_SECTION_KEY` (preamble omits it). No new nested settings — `chunk_size` / `overlap` only.
 
 ---
 

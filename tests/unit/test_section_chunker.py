@@ -43,6 +43,38 @@ class TestMarkdownHeadings:
         text = "# Title\n\nbody\n\n## Section\n\nmore"
         assert extract_markdown_headings(text) == ["Title", "Section"]
 
+    def test_extract_skips_headings_inside_fenced_code(self):
+        text = (
+            "# Real\n\n"
+            "```python\n"
+            "# comment\n"
+            "print(1)\n"
+            "```\n\n"
+            "## Also Real\n\n"
+            "~~~bash\n"
+            "# shell comment\n"
+            "echo hi\n"
+            "~~~\n"
+        )
+        assert extract_markdown_headings(text) == ["Real", "Also Real"]
+
+    def test_extract_ignores_unclosed_fence_tail(self):
+        text = "# Keep\n\n```\n# fake\n"
+        assert extract_markdown_headings(text) == ["Keep"]
+
+    def test_extract_rejects_backtick_info_with_backticks(self):
+        # CommonMark: opener info may not contain backticks → not a fence.
+        text = "```not`a`fence\n# Still A Heading\n"
+        assert extract_markdown_headings(text) == ["Still A Heading"]
+
+    def test_extract_requires_matching_close_fence(self):
+        text = "```\n# inside\n~~~\n# still inside\n```\n# After\n"
+        assert extract_markdown_headings(text) == ["After"]
+
+    def test_extract_allows_indented_fences(self):
+        text = "# Real\n\n   ```\n# fake\n   ```\n\n## Also\n"
+        assert extract_markdown_headings(text) == ["Real", "Also"]
+
 
 class TestSectionSplitHelpers:
     def test_markdown_split_with_preamble(self):
@@ -56,6 +88,28 @@ class TestSectionSplitHelpers:
 
     def test_markdown_split_returns_none_without_headings(self):
         assert split_markdown_sections("plain paragraph") is None
+
+    def test_markdown_split_ignores_fenced_code_headings(self):
+        content = (
+            "Preamble.\n\n"
+            "# Alpha\n\n"
+            "before fence\n\n"
+            "```md\n"
+            "# Not A Section\n"
+            "body\n"
+            "```\n\n"
+            "## Beta\n\n"
+            "after fence"
+        )
+        segments = split_markdown_sections(content)
+        assert segments is not None
+        assert [s.title for s in segments] == [None, "Alpha", "Beta"]
+        assert "# Not A Section" in segments[1].body
+        assert "after fence" in segments[2].body
+
+    def test_markdown_split_returns_none_when_only_fenced_headings(self):
+        content = "intro\n\n```\n# Fake\n```\n\nplain after"
+        assert split_markdown_sections(content) is None
 
     def test_outline_split_docx_style(self):
         content = "Preface.\n\nIntroduction\n\nIntro body.\n\nDetails\n\nDetail body."
@@ -115,11 +169,7 @@ class TestSectionSplitHelpers:
     def test_slide_split_untitled_middle_does_not_steal_next_title(self):
         # PptxLoader sections omit untitled slides → titles are not index-aligned.
         content = (
-            "Introduction\n\nWelcome.\n\n"
-            "---\n\n"
-            "Agenda bullet one\n\n"
-            "---\n\n"
-            "Details\n\nMore detail."
+            "Introduction\n\nWelcome.\n\n---\n\nAgenda bullet one\n\n---\n\nDetails\n\nMore detail."
         )
         segments = split_slide_sections(content, ["Introduction", "Details"])
         assert segments is not None
@@ -203,6 +253,25 @@ class TestSectionSplitHelpers:
         )
         assert segments[0].title == "MD Heading"
 
+    def test_iter_prefers_pptx_records_over_markdown_heading_like_body(self):
+        # Joined deck text can contain ATX-looking lines; slides records win.
+        content = "Intro\n\n# Key Points\n\nbullet\n\n---\n\nDetails\n\nmore"
+        segments = iter_section_segments(
+            content,
+            {
+                "loader": "pptx",
+                "sections": ["Intro", "Details"],
+                "slides": [
+                    {"title": "Intro", "text": "Intro\n\n# Key Points\n\nbullet"},
+                    {"title": "Details", "text": "Details\n\nmore"},
+                ],
+            },
+        )
+        assert len(segments) == 2
+        assert [s.title for s in segments] == ["Intro", "Details"]
+        assert "# Key Points" in segments[0].body
+        assert segments[0].body.count("# Key Points") == 1
+
     def test_iter_prefers_pptx_records_over_string_separators(self):
         content = "IgnoredJoined\n\n---\n\nShouldNotSplit"
         segments = iter_section_segments(
@@ -231,13 +300,7 @@ class TestSectionSplitHelpers:
 
     def test_iter_prefers_slides_over_outline(self):
         # Titled whole lines would make outline absorb the untitled middle slide.
-        content = (
-            "Introduction\n\nWelcome.\n\n"
-            "---\n\n"
-            "Untitled body only\n\n"
-            "---\n\n"
-            "Details\n\nMore."
-        )
+        content = "Introduction\n\nWelcome.\n\n---\n\nUntitled body only\n\n---\n\nDetails\n\nMore."
         segments = iter_section_segments(
             content,
             {"sections": ["Introduction", "Details"], "loader": "pptx"},
@@ -281,9 +344,7 @@ class TestSectionSplitHelpers:
     def test_iter_ignores_separators_without_pptx_loader(self):
         content = "Slide body A\n\n---\n\nSlide body B"
         segments = iter_section_segments(content, {})
-        assert segments == [
-            SectionSegment(title=None, body="Slide body A\n\n---\n\nSlide body B")
-        ]
+        assert segments == [SectionSegment(title=None, body="Slide body A\n\n---\n\nSlide body B")]
 
     def test_iter_single_segment_without_boundaries(self):
         segments = iter_section_segments("plain text only", {})
@@ -391,9 +452,9 @@ class TestSectionChunker:
         chunks = SectionChunker().chunk(doc)
         by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
         assert "slide body" in by_section["Intro Title"]
-        assert "Bullet without a title placeholder" in by_section[
-            "Bullet without a title placeholder"
-        ]
+        assert (
+            "Bullet without a title placeholder" in by_section["Bullet without a title placeholder"]
+        )
         assert "more body" in by_section["Details Title"]
         # Untitled middle must not be swallowed by Intro Title (outline path bug).
         assert "Bullet without a title placeholder" not in by_section["Intro Title"]
@@ -425,6 +486,35 @@ class TestSectionChunker:
         assert "Details Title" in by_section["Agenda"]
         assert "more body" in by_section["Details Title"]
         assert "slides" not in chunks[0].metadata
+
+    def test_pptx_slides_metadata_wins_over_heading_like_body(self):
+        doc = _doc(
+            "Intro\n\n# Key Points\n\nbullet\n\n---\n\nDetails\n\nmore",
+            source="deck.pptx",
+            metadata={
+                "loader": "pptx",
+                "sections": ["Intro", "Details"],
+                "slides": [
+                    {"title": "Intro", "text": "Intro\n\n# Key Points\n\nbullet"},
+                    {"title": "Details", "text": "Details\n\nmore"},
+                ],
+            },
+        )
+        chunks = SectionChunker().chunk(doc)
+        by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
+        assert set(by_section) == {"Intro", "Details"}
+        assert "# Key Points" in by_section["Intro"]
+        assert "Key Points" not in by_section  # must not become its own section
+
+    def test_fenced_code_headings_do_not_become_sections(self):
+        content = "# Real\n\noutside\n\n```\n# Fake Heading\ncode\n```\n\n## Also Real\n\ntail"
+        chunks = SectionChunker().chunk(_doc(content))
+        sections = [c.metadata.get(CHUNK_SECTION_KEY) for c in chunks]
+        assert "Real" in sections
+        assert "Also Real" in sections
+        assert "Fake Heading" not in sections
+        fake_host = next(c for c in chunks if "# Fake Heading" in c.text)
+        assert fake_host.metadata.get(CHUNK_SECTION_KEY) == "Real"
 
     def test_overlap_validation_delegates_to_recursive(self):
         with pytest.raises(ValueError, match="overlap"):

@@ -64,9 +64,7 @@ class PptxLoader:
                 if title:
                     section_titles.append(title)
 
-            content = "\n\n---\n\n".join(
-                str(record["text"]) for record in slide_records
-            )
+            content = "\n\n---\n\n".join(str(record["text"]) for record in slide_records)
 
             metadata: dict[str, object] = {
                 "filename": path.name,

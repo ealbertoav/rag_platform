@@ -316,9 +316,10 @@ class TestPptxLoader:
         chunks = SectionChunker().chunk(doc)
         by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
         assert "Welcome." in by_section["Introduction"]
-        assert "Agenda bullet without a slide title" in by_section[
+        assert (
             "Agenda bullet without a slide title"
-        ]
+            in by_section["Agenda bullet without a slide title"]
+        )
         assert "More detail." in by_section["Details"]
         assert all("slides" not in c.metadata for c in chunks)
 
@@ -369,6 +370,26 @@ class TestPptxLoader:
         assert len(chunks) == 1
         assert chunks[0].metadata[CHUNK_SECTION_KEY] == "Rules"
         assert "Before" in chunks[0].text and "After" in chunks[0].text
+
+    def test_heading_like_body_does_not_steal_slide_sections(self, tmp_path: Path):
+        path = tmp_path / "atx.pptx"
+        prs = python_pptx.Presentation()
+        first = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(first, "Intro", "Welcome")
+        key_points = first.shapes.add_textbox(Inches(1), Inches(3), Inches(8), Inches(1))
+        key_points.text_frame.text = "# Key Points"
+        last = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(last, "Details", "More detail.")
+        prs.save(str(path))
+
+        from src.rag.chunking.section_chunker import SectionChunker
+
+        doc = PptxLoader().load(path)
+        assert "# Key Points" in doc.content
+        chunks = SectionChunker().chunk(doc)
+        sections = {c.metadata.get(CHUNK_SECTION_KEY) for c in chunks}
+        assert sections == {"Intro", "Details"}
+        assert "Key Points" not in sections
 
     def test_source_is_absolute(self, pptx_file: Path):
         doc = PptxLoader().load(pptx_file)
@@ -469,6 +490,17 @@ class TestMarkdownLoader:
         assert "Section One" in doc.metadata["headings"]
         assert "Section Two" in doc.metadata["headings"]
         assert doc.metadata["section"] == "Title"
+
+    def test_headings_skip_fenced_code_comments(self, tmp_path: Path):
+        path = tmp_path / "fenced.md"
+        path.write_text(
+            "# Real\n\n```python\n# comment\nprint(1)\n```\n\n## Also\n",
+            encoding="utf-8",
+        )
+        doc = MarkdownLoader().load(path)
+        assert doc.metadata["headings"] == ["Real", "Also"]
+        assert doc.metadata["heading_count"] == 2
+        assert doc.metadata["section"] == "Real"
 
     def test_metadata_keys(self, markdown_file: Path):
         doc = MarkdownLoader().load(markdown_file)
