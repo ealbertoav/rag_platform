@@ -432,7 +432,7 @@ uv run python scripts/ingest.py --list
 # Supported formats: .pdf, .docx, .html, .htm, .md, .markdown
 ```
 
-Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a hash stored in the SQLite metadata store (`data/processed/metadata.db` by default) — normally a text `content_hash`, or for PDFs that went through OCR a `source_file_hash` of the file bytes (T-223 dual-hash contract). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync table chunks on the skip path — backfilling missing/updated tables and purging stale ones (T-202), including when OCR is skipped or fails but layout `tables[]` still carry text.
+Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a hash stored in the SQLite metadata store (`data/processed/metadata.db` by default) — normally a text `content_hash`, or for PDFs that went through OCR a `source_file_hash` of the file bytes (T-223 dual-hash contract). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and/or `parsing.caption_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync structured chunks on the skip path — backfilling missing/updated tables (T-202) and captions (T-232) and purging stale ones, including when OCR is skipped or fails but layout metadata still carries table/caption text.
 
 With `chunking.strategy: parent_child`, both parent and child chunks are indexed in Qdrant and BM25. At query time, retrieval matches on child embeddings; enable `retrieval.parent_context` to substitute parent text into the LLM context (see [Parent Context on Retrieve (T-124)](#parent-context-on-retrieve-t-124)).
 
@@ -640,6 +640,7 @@ flowchart TB
     subgraph CONFIG["configs/parsing.yaml"]
         LPSET["layout_parser.enabled=false<br/>provider=docling"]
         TCSET["table_chunks.enabled=false"]
+        CCSET["caption_chunks.enabled=false"]
         FASET["figure_assets.enabled=false<br/>store_dir=data/assets"]
         FCSET["figure_captions.enabled=false<br/>provider=openai|gemini"]
         OCRSET["ocr.enabled=false<br/>provider=tesseract|easyocr|docling|azure_di<br/>min_chars=50 · azure_di.*"]
@@ -1009,13 +1010,17 @@ parsing:
 
 | Component | Location | Role |
 |---|---|---|
-| `build_caption_chunks` / `CaptionChunker` | `src/rag/ingestion/caption_chunker.py` | Build + embed caption chunks |
-| Pipeline wiring | `IngestionPipeline` | Full ingest + skip-path backfill/purge |
-| Config | `configs/parsing.yaml` + `CaptionChunkSettings` | `enabled` — off by default |
+| `build_caption_chunks` / `CaptionChunker` | `src/rag/ingestion/caption_chunker.py` | Build + embed `CHUNK_TYPE_CAPTION` points; stable `caption_chunk_id()` |
+| Shared sync helpers | `src/rag/ingestion/structured_chunk_sync.py` | Shared build/embed/upsert helpers for tables + captions |
+| Caption sync wrappers | `src/rag/ingestion/caption_chunker.py` | `caption_chunks_needing_upsert`, `retained_caption_chunk_ids_on_embed_failure`, `merged_caption_chunk_ids`, `stale_caption_ids_safe_to_purge` |
+| Pipeline wiring | `src/rag/pipelines/ingestion_pipeline.py` | `_build_caption_chunker()`, full-path index + `_backfill_caption_chunks_on_skip()` |
+| Config | `configs/parsing.yaml` + `CaptionChunkSettings` | `parsing.caption_chunks.enabled` — off by default |
 
-**Trade-offs:** Adds one embedded point per captioned figure (Qdrant + BM25). Requires captions to exist first (T-231 recommended). Figures without captions are skipped (not treated as build failures).
+**Skip-path behavior:** When content hash is unchanged and no LLM enrichers force a full reindex, the pipeline still builds/embeds caption chunks, upserts only new or text-changed captions, and purges stale caption IDs only after a successful build+embed sync. Failed embeds retain previously indexed caption points. Figures without captions are skipped (not treated as build failures); caption removal purges the prior caption point when sync succeeds.
 
-**Tests:** `tests/unit/test_caption_chunker.py`.
+**Trade-offs:** Adds one embedded point per captioned figure (Qdrant + BM25). Requires captions to exist first (T-231 recommended). Skip-path backfill is skipped when LLM enrichers are enabled (those require a full `prepare()`). Re-ingest after enabling — unchanged documents backfill missing caption chunks automatically.
+
+**Tests:** `tests/unit/test_caption_chunker.py` (chunk building, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline integration).
 
 **Next steps:** Phase 24 structure-aware chunking (T-240+) — see [specs/TODO.md](specs/TODO.md).
 
@@ -1059,7 +1064,8 @@ parsing:
 | Component | Location | Role |
 |---|---|---|
 | `TableChunker` / `build_table_chunks()` | `src/rag/ingestion/table_chunker.py` | Builds and embeds `CHUNK_TYPE_TABLE` index points; stable `table_chunk_id()` |
-| Sync helpers | `src/rag/ingestion/table_chunker.py` | `table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge` |
+| Shared sync helpers | `src/rag/ingestion/structured_chunk_sync.py` | Shared build/embed/upsert helpers for tables + captions |
+| Table sync wrappers | `src/rag/ingestion/table_chunker.py` | `table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge` |
 | Pipeline wiring | `src/rag/pipelines/ingestion_pipeline.py` | `_build_table_chunker()`, full-path index + `_backfill_table_chunks_on_skip()` |
 | Docling table text | `src/infrastructure/parsers/docling_parser.py` | `tables[].text` via `export_to_markdown()` |
 | Config | `configs/parsing.yaml` + `TableChunkSettings` | `parsing.table_chunks.enabled` — off by default |
@@ -2483,7 +2489,7 @@ rag_implementation/
 │   │   └── ollama-llama33-70b.yaml
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
-│   ├── parsing.yaml            # Layout parser (T-200), table chunks (T-202), OCR T-220–T-223; T-210 domain note
+│   ├── parsing.yaml            # Layout parser (T-200), table/caption chunks (T-202/T-232), figure assets/captions (T-230/T-231), OCR T-220–T-223; T-210 domain note
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
@@ -2582,13 +2588,13 @@ rag_implementation/
 │   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
-│   │   └── ingestion/          # ocr_fallback (T-223) · figure_extractor + local_asset_store (T-230) · table_chunker (T-202) · GraphIndexer
+│   │   └── ingestion/          # ocr_fallback (T-223) · figure_extractor + local_asset_store (T-230) · figure_captioner (T-231) · table_chunker (T-202) · caption_chunker (T-232) · structured_chunk_sync · GraphIndexer
 │   ├── type_regression/        # Typed smoke modules for mypy regression detection (T-171)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_figure_extractor / test_local_asset_store T-230, test_ocr_fallback T-223, test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
+│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_caption_chunker T-232, test_figure_captioner / test_vision_providers T-231, test_figure_extractor / test_local_asset_store T-230, test_ocr_fallback T-223, test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
 ├── .dockerignore
 ├── .env.example
 ├── .github/

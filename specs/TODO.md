@@ -2442,7 +2442,8 @@
 - **Inputs:** T-200, T-190, T-015
 - **Outputs:** Table chunks in Qdrant+BM25; skip-path backfill/purge for unchanged documents; embed-failure retention
 - **Files:**
-  - `src/rag/ingestion/table_chunker.py` — `TableChunker`, `build_table_chunks()`, `table_chunk_id()` (UUIDv5 on `source:table_id`), `is_table_chunk()`, sync helpers (`table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge`, `existing_table_chunk_ids`) _(done)_
+  - `src/rag/ingestion/table_chunker.py` — `TableChunker`, `build_table_chunks()`, `table_chunk_id()` (UUIDv5 on `source:table_id`), `is_table_chunk()`, table-specific sync wrappers (`table_chunks_needing_upsert`, `retained_table_chunk_ids_on_embed_failure`, `merged_table_chunk_ids`, `stale_table_ids_safe_to_purge`, `existing_table_chunk_ids`) _(done)_
+  - `src/rag/ingestion/structured_chunk_sync.py` — shared build/embed/upsert helpers reused by caption chunks (T-232) _(done)_
   - `src/infrastructure/parsers/docling_parser.py` — table `text` in metadata via `export_to_markdown()` _(done)_
   - `src/rag/pipelines/ingestion_pipeline.py` — `_build_table_chunker()`, full-path index, `_backfill_table_chunks_on_skip()`, retention on purge _(done)_
   - `src/core/settings.py` — `TableChunkSettings` _(done)_
@@ -2456,7 +2457,7 @@
   - [x] Stable chunk IDs keyed on `source` (not ephemeral `document.id`) for idempotent reindex
   - [x] Unchanged documents backfill missing/updated table chunks and purge stale ones when sync succeeds
   - [x] Failed table embed/build retains previously indexed table points
-- **Notes:** Disabled by default. Best results with T-200 layout `tables[]` (markdown pipe-table fallback when layout text is missing). Table chunks go to Qdrant **and** BM25 (unlike HyPE/summary extras). Skip-path sync is skipped when LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex via `_requires_full_reindex_on_skip()`. Stale purge only runs after successful build+embed (`table_sync_succeeded`).
+- **Notes:** Disabled by default. Best results with T-200 layout `tables[]` (markdown pipe-table fallback when layout text is missing). Table chunks go to Qdrant **and** BM25 (unlike HyPE/summary extras). Skip-path sync is skipped when LLM enrichers (augmentation / HyPE / hierarchical) force a full reindex via `_requires_full_reindex_on_skip()`. Stale purge only runs after successful build+embed (`table_sync_succeeded`). Shared skip-path primitives live in `structured_chunk_sync.py` (also used by T-232).
 
 ---
 
@@ -2616,13 +2617,21 @@
 - **Status:** `[x]`
 - **Goal:** Index `type=caption` chunks.
 - **Inputs:** T-231, T-202, T-015
-- **Outputs:** Caption chunks
-- **Files:** `caption_chunker.py`, tests
+- **Outputs:** Caption chunks in Qdrant+BM25; skip-path backfill/purge for unchanged documents; embed-failure retention
+- **Files:**
+  - `src/rag/ingestion/caption_chunker.py` — `CaptionChunker`, `build_caption_chunks()`, `caption_chunk_id()` (UUIDv5 on `source:figure_id`), caption sync wrappers _(done)_
+  - `src/rag/ingestion/structured_chunk_sync.py` — shared build/embed/upsert helpers with table chunks _(done)_
+  - `src/rag/pipelines/ingestion_pipeline.py` — `_build_caption_chunker()`, full-path index, `_backfill_caption_chunks_on_skip()`, shared skip backfill helper _(done)_
+  - `src/core/settings.py` — `CaptionChunkSettings` _(done)_
+  - `configs/parsing.yaml` / `.env.example` — `caption_chunks.enabled` / `PARSING__CAPTION_CHUNKS__ENABLED` _(done)_
+  - `tests/unit/test_caption_chunker.py` — chunker, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline _(done)_
+  - `tests/unit/ingestion_helpers.py` — shared structured-chunk skip-path fixtures _(done)_
+  - `README.md` — enablement, mermaid flows, skip-path / retention notes _(done)_
 - **Acceptance Criteria:**
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
-- **Notes:** Emit `CHUNK_TYPE_CAPTION` chunks linked to `figure_id`; index like table chunks (T-202 pattern) once captions exist. `CaptionChunker` + `build_caption_chunks()` under `src/rag/ingestion/caption_chunker.py`; feature flag `parsing.caption_chunks.enabled` (default off). Full ingest extends indexed chunks; skip path backfills/purges stable UUIDv5 IDs like tables. Only figures with non-empty `figures[].caption` emit chunks (caption removal purges prior caption points).
+- **Notes:** Emit `CHUNK_TYPE_CAPTION` chunks linked to `figure_id`; index like table chunks (T-202 pattern) once captions exist. Feature flag `parsing.caption_chunks.enabled` (default off). Full ingest extends indexed chunks; skip path backfills/purges stable UUIDv5 IDs like tables. Only figures with non-empty `figures[].caption` emit chunks (caption removal purges prior caption points when sync succeeds). Failed embeds retain previously indexed caption IDs via `merged_caption_chunk_ids()`.
 
 ---
 
@@ -2632,6 +2641,8 @@
 > **Motivation:** Section/page chunking, config wiring, type registry.
 >
 > **Preconditions:** Phases 20–21
+>
+> **Status:** **pending** — **T-240** ← next
 
 ---
 
