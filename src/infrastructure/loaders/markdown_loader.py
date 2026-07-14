@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from src.core.constants import CHUNK_SECTION_KEY
 from src.core.exceptions import DocumentLoadError
+from src.core.markdown_headings import extract_markdown_headings
 from src.domain.entities.document import Document
-
-_HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
 
 
 def _read_text(path: Path) -> str:
@@ -29,7 +27,7 @@ class MarkdownLoader:
         try:
             content = _read_text(path).strip()
 
-            headings = _HEADING_RE.findall(content)
+            headings = extract_markdown_headings(content)
 
             metadata: dict[str, object] = {
                 "filename": path.name,

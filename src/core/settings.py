@@ -341,7 +341,9 @@ class PropositionSettings(BaseModel):
 
 
 class ChunkingSettings(BaseModel):
-    strategy: Literal["recursive", "semantic", "parent_child", "proposition"] = "recursive"
+    strategy: Literal["recursive", "semantic", "parent_child", "proposition", "section"] = (
+        "recursive"
+    )
     chunk_size: int = Field(default=500, gt=0)
     overlap: int = Field(default=50, ge=0)
     # SemanticChunker: split when cosine distance between adjacent sentences > threshold
