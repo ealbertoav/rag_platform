@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 24 — **T-242** ← next (T-240 ✅, T-241 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 24 — **T-243** ← next (T-240 ✅, T-241 ✅, T-242 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2642,7 +2642,7 @@
 >
 > **Preconditions:** Phases 20–21
 >
-> **Status:** **in progress** — T-240 ✅ · T-241 ✅ · **T-242** ← next
+> **Status:** **in progress** — T-240 ✅ · T-241 ✅ · T-242 ✅ · **T-243** ← next
 
 ---
 
@@ -2693,15 +2693,18 @@
 
 
 ### T-242 · IngestionPipeline Chunker Config Wiring Fix
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Forward all chunking kwargs from settings.
 - **Inputs:** T-115, T-011
 - **Outputs:** Fixed `from_settings()`
-- **Files:** `ingestion_pipeline.py`, tests
+- **Files:**
+  - `src/rag/pipelines/ingestion_pipeline.py` — per-strategy `chunker_kwargs` branch replacing the one-size-fits-all `chunk_size`/`overlap` dict _(done)_
+  - `tests/unit/test_ingestion.py` — `TestIngestionPipelineFromSettings` cases for `semantic`, `parent_child`, `section`/`page` (parametrized), `proposition` _(done)_
 - **Acceptance Criteria:**
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Was a live bug, not just drift: `from_settings()` always forwarded `chunk_size`/`overlap`, but neither `SemanticChunker` (`model_name`, `similarity_threshold`, `max_tokens`, `encode`) nor `ParentChildChunker` (`parent_chunk_size`, `child_chunk_size`, `overlap`) accept those parameter names — `strategy: semantic` or `strategy: parent_child` crashed `from_settings()` with `TypeError`. Fix forwards `cfg.similarity_threshold` + `cfg.chunk_size → max_tokens` for `semantic`, and `cfg.parent_chunk_size`/`cfg.child_chunk_size`/`cfg.overlap` for `parent_child`. `recursive`/`section`/`page`/`proposition` unchanged (already correct). No config/doc changes needed — `configs/retrieval.yaml` already documented these fields correctly; only the Python wiring was broken.
 
 ---
 

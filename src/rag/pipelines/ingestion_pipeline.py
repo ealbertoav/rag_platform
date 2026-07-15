@@ -820,10 +820,22 @@ class IngestionPipeline:
         from src.rag.chunking import get_chunker
 
         cfg = settings.chunking
-        chunker_kwargs: dict[str, object] = {
-            "chunk_size": cfg.chunk_size,
-            "overlap": cfg.overlap,
-        }
+        if cfg.strategy == "semantic":
+            chunker_kwargs: dict[str, object] = {
+                "similarity_threshold": cfg.similarity_threshold,
+                "max_tokens": cfg.chunk_size,
+            }
+        elif cfg.strategy == "parent_child":
+            chunker_kwargs = {
+                "parent_chunk_size": cfg.parent_chunk_size,
+                "child_chunk_size": cfg.child_chunk_size,
+                "overlap": cfg.overlap,
+            }
+        else:
+            chunker_kwargs = {
+                "chunk_size": cfg.chunk_size,
+                "overlap": cfg.overlap,
+            }
         if cfg.strategy == "proposition":
             from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
 
