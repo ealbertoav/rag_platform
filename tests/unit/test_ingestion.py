@@ -491,6 +491,125 @@ class TestIngestionPipelineFromSettings:
             overlap=64,
         )
 
+    def test_from_settings_forwards_semantic_kwargs(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch("src.rag.chunking.get_chunker") as mock_chunker,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.infrastructure.metadata.sqlite_store.SQLiteMetadataStore.from_settings"),
+        ):
+            mock_settings.chunking = MagicMock(
+                strategy="semantic",
+                chunk_size=512,
+                overlap=64,
+                similarity_threshold=0.6,
+                contextual_headers=MagicMock(enabled=False),
+                augmentation=MagicMock(enabled=False),
+            )
+            mock_settings.metadata = MagicMock(enabled=True)
+            mock_settings.neo4j = MagicMock(enabled=False)
+            IngestionPipeline.from_settings()
+
+        mock_chunker.assert_called_once_with(
+            "semantic",
+            use_contextual_headers=False,
+            similarity_threshold=0.6,
+            max_tokens=512,
+        )
+
+    def test_from_settings_forwards_parent_child_kwargs(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch("src.rag.chunking.get_chunker") as mock_chunker,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.infrastructure.metadata.sqlite_store.SQLiteMetadataStore.from_settings"),
+        ):
+            mock_settings.chunking = MagicMock(
+                strategy="parent_child",
+                chunk_size=512,
+                overlap=64,
+                parent_chunk_size=2000,
+                child_chunk_size=300,
+                contextual_headers=MagicMock(enabled=False),
+                augmentation=MagicMock(enabled=False),
+            )
+            mock_settings.metadata = MagicMock(enabled=True)
+            mock_settings.neo4j = MagicMock(enabled=False)
+            IngestionPipeline.from_settings()
+
+        mock_chunker.assert_called_once_with(
+            "parent_child",
+            use_contextual_headers=False,
+            parent_chunk_size=2000,
+            child_chunk_size=300,
+            overlap=64,
+        )
+
+    @pytest.mark.parametrize("strategy", ["section", "page"])
+    def test_from_settings_forwards_chunk_size_and_overlap(self, strategy: str):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch("src.rag.chunking.get_chunker") as mock_chunker,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.infrastructure.metadata.sqlite_store.SQLiteMetadataStore.from_settings"),
+        ):
+            mock_settings.chunking = MagicMock(
+                strategy=strategy,
+                chunk_size=512,
+                overlap=64,
+                contextual_headers=MagicMock(enabled=False),
+                augmentation=MagicMock(enabled=False),
+            )
+            mock_settings.metadata = MagicMock(enabled=True)
+            mock_settings.neo4j = MagicMock(enabled=False)
+            IngestionPipeline.from_settings()
+
+        mock_chunker.assert_called_once_with(
+            strategy,
+            use_contextual_headers=False,
+            chunk_size=512,
+            overlap=64,
+        )
+
+    def test_from_settings_forwards_proposition_kwargs(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch("src.rag.chunking.get_chunker") as mock_chunker,
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+            ) as mock_llm,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.infrastructure.metadata.sqlite_store.SQLiteMetadataStore.from_settings"),
+        ):
+            mock_settings.chunking = MagicMock(
+                strategy="proposition",
+                chunk_size=512,
+                overlap=64,
+                proposition=MagicMock(quality_threshold=7),
+                contextual_headers=MagicMock(enabled=False),
+                augmentation=MagicMock(enabled=False),
+            )
+            mock_settings.metadata = MagicMock(enabled=True)
+            mock_settings.neo4j = MagicMock(enabled=False)
+            IngestionPipeline.from_settings()
+
+        mock_chunker.assert_called_once_with(
+            "proposition",
+            use_contextual_headers=False,
+            chunk_size=512,
+            overlap=0,
+            llm=mock_llm.return_value,
+            quality_threshold=7,
+        )
+
 
 # ── embed_both default ─────────────────────────────────────────────────────────
 
