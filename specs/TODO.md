@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 24 — **T-243** ← next (T-240 ✅, T-241 ✅, T-242 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 25 — **T-250** ← next (Phase 24 complete: T-240 ✅, T-241 ✅, T-242 ✅, T-243 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2642,7 +2642,7 @@
 >
 > **Preconditions:** Phases 20–21
 >
-> **Status:** **in progress** — T-240 ✅ · T-241 ✅ · T-242 ✅ · **T-243** ← next
+> **Status:** complete — T-240 ✅ · T-241 ✅ · T-242 ✅ · T-243 ✅
 
 ---
 
@@ -2710,15 +2710,20 @@
 
 
 ### T-243 · Modality Chunk Type Registry & Index Routing
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Centralize BM25/dense routing per type.
 - **Inputs:** T-202, T-232, T-015
 - **Outputs:** Type registry
-- **Files:** `chunk_type_registry.py`, tests
+- **Files:**
+  - `src/rag/ingestion/chunk_type_registry.py` — `ChunkIndexRouting`, `CHUNK_TYPE_INDEX_ROUTING`, `routing_for_type()` / `routing_for_chunk()`, `is_dense_indexable()` / `is_bm25_indexable()`, `filter_dense_indexable()` / `filter_bm25_indexable()` _(done)_
+  - `src/rag/pipelines/ingestion_pipeline.py` — `_bm25_indexable()` and new `_dense_indexable()` delegate to the registry; new `_dense_add()` mirrors `_bm25_add()` at both `vector_store.upsert()` call sites _(done)_
+  - `configs/parsing.yaml` — T-243 routing note _(done)_
+  - `tests/unit/test_chunk_type_registry.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Replaces the scattered `is_hype_question`/`is_summary_chunk` imports that used to live inline in `_bm25_indexable()`. `hype_question` and `summary` chunks remain dense-only (vector-only index points); `table`/`caption`/`synthetic_question`/`detail`/`proposition` chunks (and any unrecognized/untyped chunk) index to both stores — reproduces prior behavior exactly, including the pre-existing synthetic-vs-hype asymmetry (synthetic questions were never BM25-excluded, unlike HyPE). No new feature flag; pure refactor of existing routing logic.
 
 ---
 

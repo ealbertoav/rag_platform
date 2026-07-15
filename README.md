@@ -493,7 +493,7 @@ flowchart LR
     TC --> IDX
     CAPIDX --> IDX
     SKIP --> META
-    IDX["Upsert indexes"] --> QD[("Qdrant<br/>HNSW + Sparse")]
+    IDX["Upsert indexes<br/>routing: chunk_type_registry (T-243)"] --> QD[("Qdrant<br/>HNSW + Sparse")]
     IDX --> BM[("BM25<br/>memory | disk<br/>excludes HyPE + summaries<br/>includes table + caption chunks")]
     IDX --> META[("SQLite<br/>metadata.db")]
     EM -->|neo4j.enabled| GR["Entity Extractor<br/>→ Neo4j"]
@@ -519,6 +519,8 @@ Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptiv
 | Scanned-PDF OCR fallback (T-223) | `parsing.ocr` | Replaces document text before chunk/embed | Standard dense/BM25 (OCR text becomes passage chunks) |
 | Figure assets (T-230) | `parsing.figure_assets` | Local files under `store_dir` + `figures[].asset_path` | Assets on disk; use T-232 caption chunks for retrieval |
 | VLM figure captions (T-231) | `parsing.figure_captions` | Writes `figures[].caption` + hash-bound sidecars | Feeds T-232 `type=caption` indexing when enabled |
+
+The **Indexed in** column above is no longer decided ad hoc per call site — `src/rag/ingestion/chunk_type_registry.py` (T-243) is the single lookup table (`chunk_type → {index_dense, index_bm25}`) that `IngestionPipeline._dense_add()`/`_bm25_add()` consult for every chunk, including untyped passage chunks (default: both stores). Unrecognized/future `type` values fall back to indexing both stores.
 
 ##### Contextual Chunk Headers (T-120)
 
@@ -2626,13 +2628,13 @@ rag_implementation/
 │   │   ├── pipelines/          # chat · retrieval · ingestion · agent (Self-RAG T-141)
 │   │   ├── ranking/            # RRF fusion · cross-encoder reranker · MMR diversity (T-135)
 │   │   ├── retrieval/          # Dense · BM25 · hybrid · graph · hype · hyde · hierarchical · adaptive · step-back · filters (T-134)
-│   │   └── ingestion/          # ocr_fallback (T-223) · figure_extractor + local_asset_store (T-230) · figure_captioner (T-231) · table_chunker (T-202) · caption_chunker (T-232) · structured_chunk_sync · GraphIndexer
+│   │   └── ingestion/          # ocr_fallback (T-223) · figure_extractor + local_asset_store (T-230) · figure_captioner (T-231) · table_chunker (T-202) · caption_chunker (T-232) · structured_chunk_sync · chunk_type_registry (T-243) · GraphIndexer
 │   ├── type_regression/        # Typed smoke modules for mypy regression detection (T-171)
 │   └── main.py                 # FastAPI app factory
 ├── tests/
 │   ├── benchmarks/             # E2E, technique matrix (T-150), chunk size sweep (T-151), feedback concurrency tests
 │   ├── integration/            # Integration tests (skip without models)
-│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_caption_chunker T-232, test_figure_captioner / test_vision_providers T-231, test_figure_extractor / test_local_asset_store T-230, test_ocr_fallback T-223, test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
+│   └── unit/                   # 2300+ unit tests (zero external deps; incl. test_chunk_type_registry T-243, test_caption_chunker T-232, test_figure_captioner / test_vision_providers T-231, test_figure_extractor / test_local_asset_store T-230, test_ocr_fallback T-223, test_source_reference T-210, test_docling_parser + test_chunk_metadata T-200, test_parsing_repositories T-190)
 ├── .dockerignore
 ├── .env.example
 ├── .github/
