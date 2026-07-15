@@ -116,6 +116,10 @@ class RerankerSettings(BaseModel):
     model_path: str = "models/rerankers/bge-reranker-v2-m3"
     top_k: int = 10
     batch_size: int = 16
+    # T-262: additive boost applied to table/caption chunk scores after cross-encoder
+    # scoring, since cross-encoders trained on prose pairs tend to under-score
+    # structured content. 0.0 (default) disables the boost — no behavior change.
+    modality_boost: float = 0.0
 
 
 class QdrantSettings(BaseModel):

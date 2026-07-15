@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 26 — **T-262** ← next (T-260 ✅, T-261 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 26 — **T-263** ← next (T-260 ✅, T-261 ✅, T-262 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2344,7 +2344,7 @@
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
-> | **26** | 16 | T-260 → T-263 | Phase 25 | T-260 ✅ · T-261 ✅ · T-262–T-263 pending |
+> | **26** | 16 | T-260 → T-263 | Phase 25 | T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 pending |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
@@ -2865,15 +2865,22 @@
 
 
 ### T-262 · Modality-Aware Reranking
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Table/caption boost; implement `qwen_reranker`.
 - **Inputs:** T-023, T-131, T-243
 - **Outputs:** Modality rerank
-- **Files:** `cross_encoder.py`, `qwen_reranker.py`, tests
+- **Files:**
+  - `src/rag/ranking/cross_encoder.py` — new `apply_modality_boost()` adds `reranker.modality_boost` to the cross-encoder score of any chunk whose `Chunk.modality` is `table`/`caption`, then re-sorts; `CrossEncoder.__init__` gains a `modality_boost` param applied in `rerank()` before the existing feedback boost (T-145) so both compose additively; `CrossEncoder.from_settings()` now also selects the reranker provider via `reranker.provider` (`bge_reranker` default, `qwen_reranker` new) _(done)_
+  - `src/infrastructure/rerankers/qwen_reranker.py` — new `QwenRerankerProvider`, mirroring `BGERerankerProvider`'s shape (lazy model load, batched `_score_pairs()`, `from_settings()`) but backed by `Qwen/Qwen3-Reranker-0.6B` via `sentence_transformers.CrossEncoder`, which auto-detects the causal-LM architecture and appends a LogitScore head — no custom module wiring needed _(done)_
+  - `src/core/settings.py` — `RerankerSettings.modality_boost: float = 0.0` _(done)_
+  - `configs/retrieval.yaml`, `configs/parsing.yaml`, `.env.example`, `README.md` — T-262 notes _(done)_
+  - `tests/unit/test_qwen_reranker.py` — `QwenRerankerProvider` unit tests (model mocked), mirroring `test_reranker.py`'s BGE coverage _(done)_
+  - `tests/unit/test_reranker.py` — `apply_modality_boost()` tests, `CrossEncoder` modality-boost + provider-selection tests, `test_settings.py` default assertion _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Both additions are off by default (`modality_boost: 0.0`, `provider: bge_reranker`), so unset config is byte-identical to before T-262. `qwen_reranker` uses `sentence-transformers` (already a core dep — same library `qwen_embedding`, T-108, uses for embeddings) instead of `FlagEmbedding` (used by `bge_reranker`); no new dependency. No integration test file added — no `Qwen/Qwen3-Reranker-0.6B` weights on disk in this environment, matching the `bge_reranker` integration test's `skipif` precedent; unit coverage (model mocked) is the acceptance-tested path, consistent with T-253's precedent for phases without local model weights.
 
 ---
 
@@ -3130,6 +3137,6 @@ T-150 + T-281 ──► T-282
 23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → T-231 ✅ → T-232 ✅ _(complete)_
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 ✅ → T-241 ✅ → T-242 ✅ → T-243 ✅ _(complete)_
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 ✅ → T-251 ✅ → T-252 ✅ → T-253 ✅ _(complete)_
-26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 → T-263
+26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 ✅ → T-263
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274
 28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 → T-281 → T-282

@@ -75,6 +75,7 @@ class TestYamlDefaults:
     def test_reranker_defaults_from_yaml(self):
         assert settings.reranker.provider == "bge_reranker"
         assert settings.reranker.top_k == 10
+        assert settings.reranker.modality_boost == 0.0
 
     def test_query_expansion_defaults_from_yaml(self):
         assert settings.query_expansion.enabled is True

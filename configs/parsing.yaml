@@ -31,6 +31,15 @@ parsing:
   # (RetrievalPipeline.from_settings() wires ImageDenseRetriever in automatically).
   # It runs unconditionally alongside dense/BM25; on a non-multimodal provider it
   # always returns [] (T-260's `.enabled` gate) so fusion output is unchanged.
+  # T-262 (reranker.modality_boost, default 0.0 — disabled): CrossEncoder adds
+  # this value to the cross-encoder score of table/caption chunks before the
+  # final sort, since cross-encoders trained on prose pairs tend to under-score
+  # structured content. Also adds `reranker.provider: qwen_reranker`
+  # (QwenRerankerProvider, src/infrastructure/rerankers/qwen_reranker.py) as an
+  # alternative to bge_reranker — Qwen/Qwen3-Reranker-0.6B via
+  # sentence-transformers' CrossEncoder, which auto-detects the causal-LM
+  # architecture and appends a LogitScore head. See configs/retrieval.yaml
+  # `reranker.*`.
   ocr:
     enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di
