@@ -60,7 +60,7 @@ CHUNK_TYPE_TO_MODALITY: dict[str, str] = {
 # Document-level layout/outline metadata; excluded from per-chunk spreads.
 # Per-chunk section labels use CHUNK_SECTION_KEY (promoted by chunk_metadata).
 LAYOUT_DOCUMENT_METADATA_KEYS: frozenset[str] = frozenset(
-    {"tables", "figures", "sections", "headings", "slides"}
+    {"tables", "figures", "sections", "headings", "slides", "pages"}
 )
 # Multimodal parse/chunk metadata reuses CHUNK_PAGE_KEY and CHUNK_SECTION_KEY above.
 SOURCE_CHUNK_ID_KEY = "source_chunk_id"

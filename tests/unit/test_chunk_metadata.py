@@ -17,7 +17,7 @@ from src.rag.chunking.recursive_chunker import RecursiveChunker
 
 class TestChunkMetadata:
     def test_layout_keys_constant(self) -> None:
-        assert frozenset({"tables", "figures", "sections", "headings", "slides"}) == (
+        assert frozenset({"tables", "figures", "sections", "headings", "slides", "pages"}) == (
             LAYOUT_DOCUMENT_METADATA_KEYS
         )
 
@@ -31,6 +31,7 @@ class TestChunkMetadata:
             "sections": ["Intro"],
             "headings": ["Intro"],
             "slides": [{"title": "Intro", "text": "body"}],
+            "pages": ["Page one text.", "Page two text."],
         }
         filtered = chunk_metadata(metadata)
         assert filtered == {
@@ -97,6 +98,22 @@ class TestChunkMetadata:
             assert "sections" not in chunk.metadata
             assert "headings" not in chunk.metadata
             assert chunk.metadata[CHUNK_SECTION_KEY] == "Intro"
+
+    def test_recursive_chunker_does_not_leak_pages_array(self) -> None:
+        document = Document(
+            source="/tmp/report.pdf",
+            content="Paragraph one.\n\nParagraph two.",
+            metadata={
+                "loader": "docling",
+                "pages": ["Paragraph one.", "Paragraph two."],
+                "page_count": 2,
+            },
+        )
+        chunks = RecursiveChunker(chunk_size=100, overlap=10).chunk(document)
+        assert len(chunks) >= 1
+        for chunk in chunks:
+            assert "pages" not in chunk.metadata
+            assert chunk.metadata["page_count"] == 2
 
     def test_docx_loader_path_preserves_section_in_contextual_headers(self, tmp_path: Path) -> None:
         path = tmp_path / "sample.docx"
