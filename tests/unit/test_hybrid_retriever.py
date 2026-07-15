@@ -200,3 +200,106 @@ class TestFusionMode:
             rrf.assert_called_once()
             wl.assert_not_called()
         hyde_mock.retrieve.assert_called_once()
+
+
+# ── image leg (T-261) ─────────────────────────────────────────────────────────
+
+
+class TestImageLeg:
+    @pytest.mark.asyncio
+    async def test_calls_image_retrieve(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = []
+        image_mock = MagicMock()
+        image_mock.retrieve.return_value = [(_chunk(2), 0.8)]
+        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, image_retriever=image_mock)
+        await hr.retrieve(_query(), top_k=3)
+        image_mock.retrieve.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_image_results_included_in_fusion(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = []
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = []
+        image_mock = MagicMock()
+        figure = _chunk(9)
+        image_mock.retrieve.return_value = [(figure, 0.8)]
+        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, image_retriever=image_mock)
+        results = await hr.retrieve(_query(), top_k=3)
+        assert [c.id for c, _ in results] == [figure.id]
+
+    @pytest.mark.asyncio
+    async def test_shared_chunk_across_dense_and_image_gets_boost(self):
+        shared = _chunk(0)
+        other = _chunk(1)
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(other, 0.99), (shared, 0.5)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = []
+        image_mock = MagicMock()
+        image_mock.retrieve.return_value = [(shared, 0.9)]
+        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, image_retriever=image_mock)
+        results = await hr.retrieve(_query(), top_k=2)
+        assert results[0][0].id == shared.id
+
+    @pytest.mark.asyncio
+    async def test_no_image_retriever_by_default(self):
+        hr = _retriever()
+        results = await hr.retrieve(_query(), top_k=3)
+        assert isinstance(results, list)
+
+    @pytest.mark.asyncio
+    async def test_image_disabled_leg_returns_empty_is_a_noop(self):
+        """An ImageDenseRetriever wired in but disabled (non-multimodal provider)
+        returns [] from retrieve() — the fused result must match not wiring it at all."""
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        image_mock = MagicMock()
+        image_mock.retrieve.return_value = []
+
+        without_image = HybridRetriever(dense=dense_mock, bm25=bm25_mock)
+        with_disabled_image = HybridRetriever(
+            dense=dense_mock, bm25=bm25_mock, image_retriever=image_mock
+        )
+        expected = await without_image.retrieve(_query(), top_k=3)
+        actual = await with_disabled_image.retrieve(_query(), top_k=3)
+        assert [c.id for c, _ in actual] == [c.id for c, _ in expected]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("image_enabled", [True, False])
+    async def test_weighted_linear_guard_follows_image_enabled(self, image_enabled):
+        """`_build_image_retriever` wires the image leg in unconditionally (no
+        feature flag, T-260 convention), so the weighted_linear guard must key
+        off `image.enabled`, not just presence — else a non-multimodal provider
+        would silently lose weighted_linear fusion for everyone (regression)."""
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        image_mock = MagicMock()
+        image_mock.enabled = image_enabled
+        image_mock.retrieve.return_value = [(_chunk(2), 0.6)] if image_enabled else []
+        hr = HybridRetriever(
+            dense=dense_mock,
+            bm25=bm25_mock,
+            image_retriever=image_mock,
+            fusion_mode="weighted_linear",
+        )
+        with (
+            patch("src.rag.retrieval.hybrid_retriever.weighted_linear_fuse") as wl,
+            patch("src.rag.retrieval.hybrid_retriever.rrf_fuse") as rrf,
+        ):
+            wl.return_value = [(_chunk(0), 0.5)]
+            rrf.return_value = [(_chunk(0), 0.5)]
+            await hr.retrieve(_query(), top_k=3)
+            if image_enabled:
+                rrf.assert_called_once()
+                wl.assert_not_called()
+            else:
+                wl.assert_called_once()
+                rrf.assert_not_called()

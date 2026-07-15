@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
     from src.rag.retrieval.hyde_retriever import HyDERetriever
     from src.rag.retrieval.hype_retriever import HyPERetriever
+    from src.rag.retrieval.image_dense_retriever import ImageDenseRetriever
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.retrieval")
@@ -115,6 +116,33 @@ def _build_hierarchical_retriever(
         return None
 
 
+def _build_image_retriever(
+    embedder: EmbeddingRepository,
+    vector_store: VectorStoreRepository,
+) -> ImageDenseRetriever | None:
+    """Return an ImageDenseRetriever for HybridRetriever's cross-modal fusion leg (T-261).
+
+    No feature flag, matching the T-260 convention: `ImageDenseRetriever.enabled`
+    already gates itself off (returns `[]`) when the collection has no
+    `image_dense` vector space, so it is safe to construct and wire in
+    unconditionally regardless of the active embedding provider. Requires a
+    concrete `QdrantVectorStore` — `search_image_dense()` isn't part of the
+    `VectorStoreRepository` interface — so a non-Qdrant store (e.g. an
+    injected test double) skips this leg instead of failing.
+    """
+    from src.infrastructure.vectordb.qdrant import QdrantVectorStore
+
+    if not isinstance(vector_store, QdrantVectorStore):
+        return None
+    try:
+        from src.rag.retrieval.image_dense_retriever import ImageDenseRetriever
+
+        return ImageDenseRetriever(embedder=embedder, vector_store=vector_store)
+    except Exception as exc:
+        logger.warning("Image-dense retriever unavailable (continuing without it): %s", exc)
+        return None
+
+
 class RetrievalPipeline:
     """Thin wrapper around "RetrievalService" that adds OTel span context.
 
@@ -192,6 +220,7 @@ class RetrievalPipeline:
             enabled=cfg.hyde.enabled or cfg.adaptive.enabled,
         )
         hierarchical = _build_hierarchical_retriever(embedder, vector_store)
+        image = _build_image_retriever(embedder, vector_store)
         hybrid = HybridRetriever(
             dense=dense,
             bm25=bm25,
@@ -200,6 +229,7 @@ class RetrievalPipeline:
             hype_retriever=hype,
             hyde_retriever=hyde,
             hierarchical_retriever=hierarchical,
+            image_retriever=image,
             fusion_mode=cfg.hybrid_fusion,
             feedback_boost_multiplier=(
                 _settings().quality.feedback_loop.boost_multiplier
