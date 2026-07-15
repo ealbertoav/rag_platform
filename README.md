@@ -382,6 +382,7 @@ PARSING__FIGURE_CAPTIONS__ENABLED=false # VLM captions for stored figures (T-231
 PARSING__FIGURE_CAPTIONS__PROVIDER=openai  # openai | gemini
 # PARSING__FIGURE_CAPTIONS__OPENAI__API_KEY=
 # PARSING__FIGURE_CAPTIONS__GEMINI__API_KEY=
+PARSING__FIGURE_CHUNKS__ENABLED=false   # structured type=figure chunks + image_dense wiring (T-253)
 PARSING__OCR__ENABLED=false             # OCR factory + scanned-PDF fallback (T-220/T-223)
 PARSING__OCR__PROVIDER=tesseract        # tesseract | easyocr | docling | azure_di
 PARSING__OCR__MIN_CHARS=50              # OCR when extractable text is below this many non-whitespace chars
@@ -432,7 +433,7 @@ uv run python scripts/ingest.py --list
 # Supported formats: .pdf, .docx, .html, .htm, .md, .markdown
 ```
 
-Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a hash stored in the SQLite metadata store (`data/processed/metadata.db` by default) — normally a text `content_hash`, or for PDFs that went through OCR a `source_file_hash` of the file bytes (T-223 dual-hash contract). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and/or `parsing.caption_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync structured chunks on the skip path — backfilling missing/updated tables (T-202) and captions (T-232) and purging stale ones, including when OCR is skipped or fails but layout metadata still carries table/caption text.
+Re-ingesting the same file is **idempotent**: unchanged content is skipped (`IngestionResult.skipped=True`); modified content removes superseded chunk IDs from Qdrant and BM25, then upserts the new set inside a single `deferred_rebuild()` scope (one lexical rebuild per document). Deduplication uses a hash stored in the SQLite metadata store (`data/processed/metadata.db` by default) — normally a text `content_hash`, or for PDFs that went through OCR a `source_file_hash` of the file bytes (T-223 dual-hash contract). Hierarchical summaries (T-125) and HyPE questions (T-122) are indexed in the same scope when enabled. When `parsing.table_chunks.enabled=true` and/or `parsing.caption_chunks.enabled=true` and/or `parsing.figure_chunks.enabled=true` and no LLM enrichers force a full reindex, unchanged documents still sync structured chunks on the skip path — backfilling missing/updated tables (T-202), captions (T-232), and figures (T-253) and purging stale ones, including when OCR is skipped or fails but layout metadata still carries table/caption/figure text.
 
 With `chunking.strategy: parent_child`, both parent and child chunks are indexed in Qdrant and BM25. At query time, retrieval matches on child embeddings; enable `retrieval.parent_context` to substitute parent text into the LLM context (see [Parent Context on Retrieve (T-124)](#parent-context-on-retrieve-t-124)).
 
@@ -516,6 +517,7 @@ Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptiv
 | Hierarchical summaries (T-125) | `chunking.hierarchical` | Qdrant only (`type=summary` + `type=detail`) | Two-stage summary→detail dense search → RRF source |
 | Structured table chunks (T-202) | `parsing.table_chunks` | Qdrant + BM25 (`type=table`) | Standard dense/BM25 (same as passage chunks) |
 | Image caption chunks (T-232) | `parsing.caption_chunks` | Qdrant + BM25 (`type=caption`) | Standard dense/BM25 (linked via `figure_id`) |
+| Structured figure chunks (T-253) | `parsing.figure_chunks` | Qdrant + BM25 (`type=figure`); `image_dense` too when `embeddings.provider` is `clip`/`voyage` | Standard dense/BM25, plus cross-modal `image_dense` search when populated |
 | Scanned-PDF OCR fallback (T-223) | `parsing.ocr` | Replaces document text before chunk/embed | Standard dense/BM25 (OCR text becomes passage chunks) |
 | Figure assets (T-230) | `parsing.figure_assets` | Local files under `store_dir` + `figures[].asset_path` | Assets on disk; use T-232 caption chunks for retrieval |
 | VLM figure captions (T-231) | `parsing.figure_captions` | Writes `figures[].caption` + hash-bound sidecars | Feeds T-232 `type=caption` indexing when enabled |
@@ -2456,7 +2458,7 @@ All API providers are dense-only — BM25 continues to provide sparse retrieval.
 - **`clip`** — self-hosted, no API key or extra dependency. `embed()` and `embed_image()` route through the same CLIP model instance, so text and image vectors are directly comparable (cross-modal similarity search).
 - **`voyage`** — `embed()`/`embed_query()` keep using `voyage-large-2` (or whatever `EMBEDDINGS__VOYAGE__MODEL` is set to); `embed_image()` uses the separate `voyage-multimodal-3` model (`EMBEDDINGS__VOYAGE__MULTIMODAL_MODEL`) via the Voyage `multimodal_embed` API, since Voyage's text and multimodal models are not interchangeable.
 
-All other providers (BGE-M3, Nomic, Qwen, OpenAI, Cohere, Gemini) still raise on `embed_image()`. The Qdrant `image_dense` schema is [T-252](#qdrant-multimodal-schema-t-252); ingest pipeline wiring is T-253.
+All other providers (BGE-M3, Nomic, Qwen, OpenAI, Cohere, Gemini) still raise on `embed_image()`. The Qdrant `image_dense` schema is [T-252](#qdrant-multimodal-schema-t-252); ingest pipeline wiring is [T-253](#multimodal-ingestion-wiring-t-253).
 
 When [MMR diversity (T-135)](#diversity-retrieval--mmr-t-135) is enabled and reranked chunks lack stored vectors, the pipeline calls `embed_passage()` to embed chunk text for pairwise similarity. Cohere (`search_document`), Voyage (`document`), and Gemini (`RETRIEVAL_DOCUMENT`) use their document embedding modes; self-hosted providers and OpenAI delegate to `embed()`.
 
@@ -2477,7 +2479,7 @@ uv run python scripts/rebuild_embeddings.py --recreate-collection
 
 ### Qdrant multimodal schema (T-252)
 
-`QdrantVectorStore` adds an optional **`image_dense`** named vector — sized via `provider_image_dim()`, which returns `None` for every provider except `clip` (512-dim, shares CLIP's text space) and `voyage` (1024-dim, `EMBEDDINGS__VOYAGE__MULTIMODAL_DIMENSIONS`, sized for `voyage-multimodal-3`). No feature flag: the vector is added automatically when `EMBEDDINGS__PROVIDER` is `clip` or `voyage`, and omitted entirely for every other provider — the collection schema is byte-identical to before T-252 unless a multimodal provider is active. `Chunk.image_embedding` (T-210) is written to `image_dense` only when a chunk actually carries an image vector; it stays `None` until ingestion wiring (T-253) populates it.
+`QdrantVectorStore` adds an optional **`image_dense`** named vector — sized via `provider_image_dim()`, which returns `None` for every provider except `clip` (512-dim, shares CLIP's text space) and `voyage` (1024-dim, `EMBEDDINGS__VOYAGE__MULTIMODAL_DIMENSIONS`, sized for `voyage-multimodal-3`). No feature flag: the vector is added automatically when `EMBEDDINGS__PROVIDER` is `clip` or `voyage`, and omitted entirely for every other provider — the collection schema is byte-identical to before T-252 unless a multimodal provider is active. `Chunk.image_embedding` (T-210) is written to `image_dense` only when a chunk actually carries an image vector; it stays `None` until ingestion wiring ([T-253](#multimodal-ingestion-wiring-t-253)) populates it.
 
 Qdrant cannot add a named vector to an existing collection in place. If you switch an **existing** collection to `clip`/`voyage`, run the migration script instead of `rebuild_embeddings.py --recreate-collection` (which would also re-embed everything):
 
@@ -2491,6 +2493,20 @@ uv run python scripts/migrate_qdrant_image_dense.py              # scrolls all p
 ```
 
 The script no-ops when the active provider has no image space, the collection doesn't exist yet (created correctly on first upsert), or `image_dense` is already present.
+
+### Multimodal ingestion wiring (T-253)
+
+`FigureChunker` (`src/rag/ingestion/figure_chunker.py`) closes the loop T-252 left open: `Chunk.image_embedding` is now actually populated at ingest time. When `parsing.figure_chunks.enabled=true`, it text-embeds each figure chunk built by `build_figure_chunks()` (T-230 — caption text if present, else a `"[figure]"` placeholder) via `embed_both()`, exactly like `TableChunker`/`CaptionChunker`, then additionally calls `EmbeddingRepository.embed_image()` on the chunk's `asset_path`. Non-multimodal providers still raise the T-250 default `EmbeddingError`; `FigureChunker` catches that (and any other embed_image failure) and leaves `image_embedding=None` — the chunk still indexes with its text vectors, it just never gets an `image_dense` point. No config flip is needed when switching providers: the same `figure_chunks.enabled=true` setting works whether or not the active provider is multimodal.
+
+Off by default, mirroring `table_chunks`/`caption_chunks`. Wired into `IngestionPipeline` with the same shape as those two: stable UUIDv5 chunk IDs (`figure_chunk_id()`, from T-230), live-path indexing in `ingest_file()`, skip-path backfill (`_backfill_figure_chunks_on_skip`) so unchanged documents pick up figure chunks after enabling the flag, `_retained_figure_ids_on_embed_failure` to keep prior points when a re-embed attempt fails, and `_build_figure_chunker()` gating construction on the settings flag. `type=figure` chunks route to both Qdrant and BM25 via the existing `chunk_type_registry` (T-243) — no registry change needed since `CHUNK_TYPE_FIGURE` was already registered ahead of this wiring.
+
+```bash
+PARSING__FIGURE_ASSETS__ENABLED=true    # required: figure_chunks reads figures[].asset_path
+PARSING__FIGURE_CHUNKS__ENABLED=true
+EMBEDDINGS__PROVIDER=clip                # or voyage — image_dense only appears for these two
+```
+
+Requires `parsing.figure_assets.enabled=true` (T-230) for `figures[].asset_path` to exist at all; works with any embedding provider, but only `clip`/`voyage` (`MULTIMODAL_EMBEDDING_PROVIDERS`) actually populate `image_dense` — every other provider gets `type=figure` chunks indexed for text search only, same as before this wiring existed.
 
 ### Embedding cache
 

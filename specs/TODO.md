@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 25 — **T-253** ← next (T-250 ✅, T-251 ✅, T-252 ✅; Phase 24 complete: T-240 ✅, T-241 ✅, T-242 ✅, T-243 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 26 — **T-260** ← next (Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2343,7 +2343,7 @@
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | ✅ complete — T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅ |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
-> | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 pending |
+> | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
@@ -2799,15 +2799,21 @@
 
 
 ### T-253 · Multimodal Ingestion Pipeline Wiring
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** End-to-end multimodal ingest.
 - **Inputs:** T-200..T-232, T-252, T-015
 - **Outputs:** Full ingest path
-- **Files:** `ingestion_pipeline.py`, integration tests
+- **Files:**
+  - `src/rag/ingestion/figure_chunker.py` — new `FigureChunker`, mirroring `TableChunker`/`CaptionChunker`: `index(document)` builds figure chunks via T-230's `build_figure_chunks()`, text-embeds via `embed_both()`, then attaches `Chunk.image_embedding` by calling `EmbeddingRepository.embed_image()` (T-250) on each chunk's `asset_path`; soft-fails to `image_embedding=None` on `EmbeddingError` (non-multimodal provider) or any other exception — the text-embedded chunk still indexes. Also exports the sync-helper family (`metadata_figure_ids`, `existing_figure_chunk_ids`, `retained_figure_chunk_ids_on_embed_failure`, `merged_figure_chunk_ids`, `figure_chunks_needing_upsert`, `stale_figure_ids_safe_to_purge`) built on the shared `structured_chunk_sync.py` helpers _(done)_
+  - `src/rag/pipelines/ingestion_pipeline.py` — `figure_chunker` constructor param; live-path indexing in `ingest_file()` alongside `_table_chunker`/`_caption_chunker`; `_backfill_figure_chunks_on_skip()`; `_retained_figure_ids_on_embed_failure()`; `_build_figure_chunker()` factory gated on `parsing.figure_chunks.enabled`; wired into `from_settings()` _(done)_
+  - `src/core/settings.py` — `FigureChunkSettings(enabled: bool = False)`, `ParsingSettings.figure_chunks` _(done)_
+  - `configs/parsing.yaml`, `README.md` — T-253 notes _(done)_
+  - `tests/unit/test_figure_chunker.py` — 32 tests: sync helpers, `FigureChunker.index()` (text success/failure, image attach/soft-fail/batching), `_build_figure_chunker`, and pipeline wiring (live-path index, skip backfill, retained-on-embed-failure, purge, `from_settings`) _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** `build_figure_chunks()`/`figure_chunk_id()`/`is_figure_chunk()` (T-230) and the `CHUNK_TYPE_FIGURE` dense+BM25 routing (T-243) already existed but were never called from the live pipeline before this task — `FigureChunker` is the first caller. No new integration test file: `tests/integration/test_ingestion_pipeline.py` has no table/caption coverage either (requires live models/Qdrant, skipped in this environment), so unit coverage matches T-202/T-232 precedent. Off by default (`parsing.figure_chunks.enabled=false`); requires `parsing.figure_assets.enabled=true` (T-230) for `figures[].asset_path` to exist. Works with any embedding provider — only `clip`/`voyage` (`MULTIMODAL_EMBEDDING_PROVIDERS`) populate `image_dense`; every other provider still gets `type=figure` chunks indexed for text search only, matching pre-T-253 behavior.
 
 ---
 
@@ -3112,8 +3118,8 @@ T-150 + T-281 ──► T-282
 21. **Phase 21 — Priority 11 (Domain Model):** T-210 ✅ _(complete)_
 22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-222 ✅ → T-223 ✅ _(complete)_
 23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → T-231 ✅ → T-232 ✅ _(complete)_
-24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 ✅ → **T-241** _(next)_ → T-242 → T-243
-25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253
+24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 ✅ → T-241 ✅ → T-242 ✅ → T-243 ✅ _(complete)_
+25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 ✅ → T-251 ✅ → T-252 ✅ → T-253 ✅ _(complete)_
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 → T-261 → T-262 → T-263
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274
 28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 → T-281 → T-282

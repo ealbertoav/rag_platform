@@ -79,3 +79,15 @@ parsing:
     gemini:
       api_key: ""               # prefer PARSING__FIGURE_CAPTIONS__GEMINI__API_KEY
       model: gemini-2.0-flash
+  figure_chunks:
+    enabled: false              # T-253 structured type=figure chunks at ingesting; off by default
+    # Requires figures[].asset_path from T-230. FigureChunker text-embeds each
+    # figure (caption if present, else a "[figure]" placeholder) via embed_both(),
+    # then attaches Chunk.image_embedding via EmbeddingRepository.embed_image()
+    # on asset_path when the active provider supports it (embeddings.provider:
+    # clip/voyage — MULTIMODAL_EMBEDDING_PROVIDERS, T-250/T-251). Non-multimodal
+    # providers soft-fail the image step and keep the text-only chunk — no error,
+    # no image_dense point. Qdrant only writes image_dense when both the chunk
+    # carries image_embedding and the collection was created with that named
+    # vector (T-252). Re-ingest after enabling — unchanged documents backfill
+    # missing figure chunks the same way table_chunks/caption_chunks do.
