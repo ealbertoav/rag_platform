@@ -39,6 +39,10 @@ parsing:
     enabled: false              # T-232 structured type=caption chunks at ingesting; off by default
     # Requires figures[].caption (T-231 VLM or layout caption) linked via figure_id.
     # Re-ingest after enabling — unchanged documents backfill missing caption chunks.
+    # T-243 (no feature flag): which chunk `type`s land in Qdrant vs BM25 is
+    # centralized in src/rag/ingestion/chunk_type_registry.py — hype_question
+    # and summary chunks are dense-only; table/caption/synthetic/detail/proposition
+    # chunks (and any unrecognized type) index to both, matching prior behavior.
   figure_assets:
     enabled: false              # T-230 persist figure bytes + asset_path / figure_id; off by default
     store_dir: data/assets      # local asset root (gitignored); env: PARSING__FIGURE_ASSETS__STORE_DIR

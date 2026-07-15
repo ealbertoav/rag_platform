@@ -350,7 +350,7 @@ class IngestionPipeline:
                 return IngestionResult(source=source, chunk_count=0, content_hash=doc_hash)
 
             self._index_graph(chunks, document.id)
-            self._vector_store.upsert(indexed_chunks)
+            self._dense_add(indexed_chunks)
             retained = {chunk.id for chunk in indexed_chunks}
             retained.update(
                 self._retained_table_ids_on_embed_failure(
@@ -466,6 +466,11 @@ class IngestionPipeline:
         return self._metadata.list_documents()
 
     # ── Internals ──────────────────────────────────────────────────────────────
+
+    def _dense_add(self, indexed_chunks: list[Chunk]) -> None:
+        indexable = _dense_indexable(indexed_chunks)
+        if indexable:
+            self._vector_store.upsert(indexable)
 
     def _bm25_add(self, indexed_chunks: list[Chunk]) -> None:
         indexable = _bm25_indexable(indexed_chunks)
@@ -697,7 +702,7 @@ class IngestionPipeline:
 
         with self._bm25.deferred_rebuild():
             if chunks_to_upsert:
-                self._vector_store.upsert(chunks_to_upsert)
+                self._dense_add(chunks_to_upsert)
                 self._bm25_add(chunks_to_upsert)
             if stale_to_purge:
                 self._purge_superseded_chunks(stale_to_purge)
@@ -972,10 +977,14 @@ def _build_caption_chunker(embedder: EmbeddingRepository, cfg: object) -> Captio
 
 
 def _bm25_indexable(chunks: list[Chunk]) -> list[Chunk]:
-    """Exclude vector-only index points from the lexical BM25 index."""
-    from src.rag.enrichment.hierarchical_indexer import is_summary_chunk
-    from src.rag.enrichment.hype_indexer import is_hype_question
+    """Filter to chunk types routed to the lexical BM25 index (T-243 registry)."""
+    from src.rag.ingestion.chunk_type_registry import filter_bm25_indexable
 
-    return [
-        chunk for chunk in chunks if not is_hype_question(chunk) and not is_summary_chunk(chunk)
-    ]
+    return filter_bm25_indexable(chunks)
+
+
+def _dense_indexable(chunks: list[Chunk]) -> list[Chunk]:
+    """Filter to chunk types routed to the dense vector store (T-243 registry)."""
+    from src.rag.ingestion.chunk_type_registry import filter_dense_indexable
+
+    return filter_dense_indexable(chunks)
