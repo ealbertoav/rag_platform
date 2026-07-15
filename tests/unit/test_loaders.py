@@ -15,8 +15,11 @@ import pptx as python_pptx
 import pytest
 from pptx.slide import Slide
 from pptx.text.text import TextFrame
+from pptx.util import Inches
 
+from src.core.constants import CHUNK_SECTION_KEY
 from src.core.exceptions import DocumentLoadError
+from src.core.slide_records import SlideRecord
 from src.domain.entities.document import Document
 from src.domain.entities.parsed_document import ParsedDocument
 from src.infrastructure.loaders import load_document
@@ -26,9 +29,9 @@ from src.infrastructure.loaders.markdown_loader import MarkdownLoader
 from src.infrastructure.loaders.pdf_loader import PdfLoader
 from src.infrastructure.loaders.pptx_loader import (
     PptxLoader,
-    _shape_text,
-    _slide_text,
-    _slide_title,
+    shape_text,
+    slide_text,
+    slide_title,
 )
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -272,12 +275,123 @@ class TestPptxLoader:
         assert "Introduction" in doc.metadata["sections"]
         assert "Details" in doc.metadata["sections"]
         assert doc.metadata["section"] == "Introduction"
+        assert len(doc.metadata["slides"]) == 2
+        assert all(isinstance(record, SlideRecord) for record in doc.metadata["slides"])
+        assert doc.metadata["slides"][0].title == "Introduction"
+        assert "Welcome to the deck." in doc.metadata["slides"][0].text
+        assert doc.metadata["slides"][1].title == "Details"
 
     def test_blank_slide_without_title(self, blank_pptx_file: Path):
         doc = PptxLoader().load(blank_pptx_file)
         assert doc.metadata["slide_count"] == 1
         assert doc.metadata["sections"] == []
+        assert doc.metadata["slides"] == []
         assert "section" not in doc.metadata
+
+    def test_untitled_middle_slide_omitted_from_sections(self, tmp_path: Path):
+        path = tmp_path / "mixed.pptx"
+        prs = python_pptx.Presentation()
+        first = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(first, "Introduction", "Welcome.")
+
+        untitled = prs.slides.add_slide(prs.slide_layouts[6])
+        box = untitled.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(2))
+        box.text_frame.text = "Agenda bullet without a slide title"
+
+        last = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(last, "Details", "More detail.")
+        prs.save(str(path))
+
+        doc = PptxLoader().load(path)
+        assert doc.metadata["slide_count"] == 3
+        assert doc.metadata["sections"] == ["Introduction", "Details"]
+        assert doc.content.count("\n\n---\n\n") == 2
+        assert "Agenda bullet without a slide title" in doc.content
+        assert [slide.title for slide in doc.metadata["slides"]] == [
+            "Introduction",
+            None,
+            "Details",
+        ]
+
+        from src.rag.chunking.section_chunker import SectionChunker
+
+        chunks = SectionChunker().chunk(doc)
+        by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
+        assert "Welcome." in by_section["Introduction"]
+        assert (
+            "Agenda bullet without a slide title"
+            in by_section["Agenda bullet without a slide title"]
+        )
+        assert "More detail." in by_section["Details"]
+        assert all("slides" not in c.metadata for c in chunks)
+
+    def test_agenda_slide_listing_titles_does_not_steal_pending(self, tmp_path: Path):
+        path = tmp_path / "agenda.pptx"
+        prs = python_pptx.Presentation()
+        first = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(first, "Introduction", "Welcome.")
+
+        agenda = prs.slides.add_slide(prs.slide_layouts[6])
+        box = agenda.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(3))
+        box.text_frame.text = "Agenda\nDetails\nNext steps"
+
+        last = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(last, "Details", "More detail.")
+        prs.save(str(path))
+
+        from src.rag.chunking.section_chunker import SectionChunker
+
+        doc = PptxLoader().load(path)
+        chunks = SectionChunker().chunk(doc)
+        by_section = {c.metadata.get(CHUNK_SECTION_KEY): c.text for c in chunks}
+        assert "Welcome." in by_section["Introduction"]
+        assert "Details" in by_section["Agenda"]
+        assert "More detail." in by_section["Details"]
+        assert by_section["Agenda"] != by_section["Details"]
+
+    def test_intra_slide_hr_does_not_split_section_chunks(self, tmp_path: Path):
+        path = tmp_path / "hr.pptx"
+        prs = python_pptx.Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(slide, "Rules", "Before")
+        # Extra shapes become "\n\n"-joined body parts, which can embed the
+        # content separator sequence inside a single slide.
+        hr = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(8), Inches(0.5))
+        hr.text_frame.text = "---"
+        after = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(8), Inches(0.5))
+        after.text_frame.text = "After"
+        prs.save(str(path))
+
+        doc = PptxLoader().load(path)
+        assert len(doc.metadata["slides"]) == 1
+        assert "\n\n---\n\n" in doc.metadata["slides"][0].text
+
+        from src.rag.chunking.section_chunker import SectionChunker
+
+        chunks = SectionChunker().chunk(doc)
+        assert len(chunks) == 1
+        assert chunks[0].metadata[CHUNK_SECTION_KEY] == "Rules"
+        assert "Before" in chunks[0].text and "After" in chunks[0].text
+
+    def test_heading_like_body_does_not_steal_slide_sections(self, tmp_path: Path):
+        path = tmp_path / "atx.pptx"
+        prs = python_pptx.Presentation()
+        first = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(first, "Intro", "Welcome")
+        key_points = first.shapes.add_textbox(Inches(1), Inches(3), Inches(8), Inches(1))
+        key_points.text_frame.text = "# Key Points"
+        last = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_slide_title_and_body(last, "Details", "More detail.")
+        prs.save(str(path))
+
+        from src.rag.chunking.section_chunker import SectionChunker
+
+        doc = PptxLoader().load(path)
+        assert "# Key Points" in doc.content
+        chunks = SectionChunker().chunk(doc)
+        sections = {c.metadata.get(CHUNK_SECTION_KEY) for c in chunks}
+        assert sections == {"Intro", "Details"}
+        assert "Key Points" not in sections
 
     def test_source_is_absolute(self, pptx_file: Path):
         doc = PptxLoader().load(pptx_file)
@@ -292,12 +406,12 @@ class TestPptxLoaderHelpers:
     def test_shape_text_without_text_frame(self):
         shape = MagicMock()
         shape.has_text_frame = False
-        assert _shape_text(shape) == ""
+        assert shape_text(shape) == ""
 
     def test_slide_title_missing_shape(self):
         slide = MagicMock()
         slide.shapes.title = None
-        assert _slide_title(slide) is None
+        assert slide_title(slide) is None
 
     def test_slide_title_empty_text(self):
         slide = MagicMock()
@@ -305,7 +419,7 @@ class TestPptxLoaderHelpers:
         title_shape.has_text_frame = True
         title_shape.text_frame.paragraphs = [MagicMock(text="   ")]
         slide.shapes.title = title_shape
-        assert _slide_title(slide) is None
+        assert slide_title(slide) is None
 
     def test_slide_text_skips_empty_shapes(self):
         slide = MagicMock()
@@ -315,7 +429,7 @@ class TestPptxLoaderHelpers:
         empty_shape = MagicMock()
         empty_shape.has_text_frame = False
         slide.shapes = [empty_shape, text_shape]
-        assert _slide_text(slide) == "Slide body"
+        assert slide_text(slide) == "Slide body"
 
 
 # ── HtmlLoader ─────────────────────────────────────────────────────────────────
@@ -378,6 +492,17 @@ class TestMarkdownLoader:
         assert "Section One" in doc.metadata["headings"]
         assert "Section Two" in doc.metadata["headings"]
         assert doc.metadata["section"] == "Title"
+
+    def test_headings_skip_fenced_code_comments(self, tmp_path: Path):
+        path = tmp_path / "fenced.md"
+        path.write_text(
+            "# Real\n\n```python\n# comment\nprint(1)\n```\n\n## Also\n",
+            encoding="utf-8",
+        )
+        doc = MarkdownLoader().load(path)
+        assert doc.metadata["headings"] == ["Real", "Also"]
+        assert doc.metadata["heading_count"] == 2
+        assert doc.metadata["section"] == "Real"
 
     def test_metadata_keys(self, markdown_file: Path):
         doc = MarkdownLoader().load(markdown_file)

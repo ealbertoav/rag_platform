@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 24 — **T-240** ← next (Phase 23 complete: T-230–T-232 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 24 — **T-241** ← next (T-240 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2342,7 +2342,7 @@
 > | **21** | 11 | T-210 | Phases 19–20 | T-210 ✅ |
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | ✅ complete — T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅ |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
-> | **24** | 14 | T-240 → T-243 | Phases 20–21 | pending |
+> | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
@@ -2579,7 +2579,7 @@
 >
 > **Status:** **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅
 >
-> **Next:** Phase 24 (T-240)
+> **Next:** Phase 24 (T-241)
 
 ---
 
@@ -2642,26 +2642,35 @@
 >
 > **Preconditions:** Phases 20–21
 >
-> **Status:** **pending** — **T-240** ← next
+> **Status:** **in progress** — T-240 ✅ · **T-241** ← next
 
 ---
 
 ### T-240 · Section-Boundary Chunker
-- **Status:** `[ ]` ← **start here**
+- **Status:** `[x]`
 - **Goal:** Split on headings; set `metadata.section`.
 - **Inputs:** T-011, T-200
 - **Outputs:** `SectionChunker`
-- **Files:** `section_chunker.py`, tests
+- **Files:**
+  - `src/rag/chunking/section_chunker.py` — `SectionChunker` with inner `RecursiveChunker` _(done)_
+  - `src/rag/chunking/headings.py` — markdown / outline / slide segment splitters _(done)_
+  - `src/core/markdown_headings.py` — shared ATX `HEADING_RE` + fence-aware `extract_markdown_headings` / `iter_atx_heading_matches` (used by MarkdownLoader + SectionChunker) _(done)_
+  - `src/rag/chunking/__init__.py` — register `section` strategy _(done)_
+  - `src/core/settings.py` — `ChunkingSettings.strategy` includes `section` _(done)_
+  - `configs/retrieval.yaml` / `.env.example` — strategy comment _(done)_
+  - `tests/unit/test_section_chunker.py` _(done)_
+  - `README.md` — enablement, mermaid, T-240 subsection _(done)_
 - **Acceptance Criteria:**
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Opt-in via `chunking.strategy: section` (default remains `recursive`). Splits on PptxLoader `slides[]` records first when present (loader titles; resistant to agenda title-stealing, intra-slide `---`, and ATX-looking body lines), then Markdown ATX headings outside fenced code blocks, then PPTX `---` string fallback only when `loader=pptx`, then DOCX outline whole-line titles; oversized sections use `RecursiveChunker`. Per-chunk `CHUNK_SECTION_KEY` (preamble omits it). No new nested settings — `chunk_size` / `overlap` only.
 
 ---
 
 
 ### T-241 · Page-Boundary Chunker & Per-Chunk Page Metadata
-- **Status:** `[ ]`
+- **Status:** `[ ]` ← **start here**
 - **Goal:** Set `metadata.page` per chunk.
 - **Inputs:** T-200, T-240
 - **Outputs:** `PageAwareChunker`
@@ -3066,7 +3075,7 @@ T-150 + T-281 ──► T-282
 21. **Phase 21 — Priority 11 (Domain Model):** T-210 ✅ _(complete)_
 22. **Phase 22 — Priority 12 (OCR):** T-220 ✅ → T-221 ✅ → T-222 ✅ → T-223 ✅ _(complete)_
 23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → T-231 ✅ → T-232 ✅ _(complete)_
-24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** **T-240** _(next)_ → T-241 → T-242 → T-243
+24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 ✅ → **T-241** _(next)_ → T-242 → T-243
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 → T-251 → T-252 → T-253
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 → T-261 → T-262 → T-263
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274

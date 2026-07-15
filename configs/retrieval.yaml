@@ -1,5 +1,5 @@
 chunking:
-  strategy: recursive          # recursive | semantic | parent_child | proposition
+  strategy: recursive          # recursive | semantic | parent_child | proposition | section (T-240)
   chunk_size: 500              # approximate tokens
   overlap: 50
   similarity_threshold: 0.4   # semantic chunker: distance > threshold → split

@@ -8,6 +8,7 @@ from src.rag.chunking.contextual_headers import ContextualHeadersChunker
 from src.rag.chunking.parent_child_chunker import ParentChildChunker
 from src.rag.chunking.proposition_chunker import PropositionChunker
 from src.rag.chunking.recursive_chunker import RecursiveChunker
+from src.rag.chunking.section_chunker import SectionChunker
 from src.rag.chunking.semantic_chunker import SemanticChunker
 
 
@@ -31,6 +32,8 @@ def get_chunker(
             chunker = ParentChildChunker(**cast(Any, kwargs))
         case "proposition":
             chunker = PropositionChunker(**cast(Any, kwargs))
+        case "section":
+            chunker = SectionChunker(**cast(Any, kwargs))
         case _:
             raise ValueError(f"Unknown chunking strategy: {strategy!r}")
 
@@ -45,6 +48,7 @@ __all__ = [
     "ParentChildChunker",
     "PropositionChunker",
     "RecursiveChunker",
+    "SectionChunker",
     "SemanticChunker",
     "get_chunker",
 ]

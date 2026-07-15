@@ -350,7 +350,7 @@ WEB_SEARCH__TAVILY__API_KEY=               # required when provider=tavily
 QUERY_EXPANSION__STEP_BACK__ENABLED=false # broader background query for multi-query RRF fusion (T-133)
 
 # Chunk enrichment (disabled by default — see Optional Chunk Enrichment)
-CHUNKING__STRATEGY=recursive              # recursive | semantic | parent_child | proposition
+CHUNKING__STRATEGY=recursive              # recursive | semantic | parent_child | proposition | section (T-240)
 CHUNKING__PROPOSITION__QUALITY_THRESHOLD=7  # min score 1-10 per category when strategy=proposition (T-126)
 CHUNKING__CONTEXTUAL_HEADERS__ENABLED=false
 CHUNKING__CONTEXTUAL_HEADERS__EXCLUDE_FROM_LLM_CONTEXT=true
@@ -469,7 +469,8 @@ flowchart LR
     CH -->|semantic| SC["Semantic<br/>Splitter"]
     CH -->|parent_child| PC["Parent-Child<br/>Splitter<br/>(child embed · parent stored)"]
     CH -->|proposition| PR["Proposition<br/>Splitter<br/>(segment · LLM extract · grade)"]
-    RC & SC & PC & PR --> CCH{"Contextual<br/>Headers?<br/>(optional)"}
+    CH -->|section| SEC["Section<br/>Splitter<br/>(heading boundaries · T-240)"]
+    RC & SC & PC & PR & SEC --> CCH{"Contextual<br/>Headers?<br/>(optional)"}
     CCH -->|enabled| HDR["Prepend doc/section/page<br/>to embedded text"]
     CCH -->|disabled| EM["Embed Both<br/>dense + sparse"]
     HDR --> EM
@@ -500,7 +501,7 @@ flowchart LR
 
 #### Optional Chunk Enrichment
 
-Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semantic`, `parent_child`, or `proposition` — see [Proposition Chunking (T-126)](#proposition-chunking-t-126)). The optional enrichments below stack on top of whichever strategy is active.
+Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semantic`, `parent_child`, `proposition`, or `section` — see [Proposition Chunking (T-126)](#proposition-chunking-t-126) and [Section-Boundary Chunking (T-240)](#section-boundary-chunking-t-240)). The optional enrichments below stack on top of whichever strategy is active.
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
@@ -560,7 +561,7 @@ Indexes **atomic factual propositions** instead of arbitrary text windows. At in
 ```yaml
 # configs/retrieval.yaml
 chunking:
-  strategy: proposition          # recursive | semantic | parent_child | proposition
+  strategy: proposition          # recursive | semantic | parent_child | proposition | section
   proposition:
     quality_threshold: 7
 ```
@@ -568,6 +569,30 @@ chunking:
 **When to use:** dense factual corpora (policies, contracts, compliance docs) where precise fact retrieval matters more than narrative context.
 
 **Trade-offs:** significantly slower ingestion than `recursive` or `semantic` — expect roughly two LLM calls per extracted proposition (extract + grade) plus one per processing segment. A 10-page policy may take minutes instead of seconds. Failures on individual segments or propositions are logged and skipped. Re-ingest after changing strategy — existing indexes are not updated retroactively.
+
+##### Section-Boundary Chunking (T-240)
+
+Splits on document structure, so each chunk carries the correct `metadata.section` (used by contextual headers and filters). Boundaries, in priority order:
+
+1. PptxLoader `slides[]` records — authoritative per-slide `{title, text}` (handles untitled slides, agenda title lists, intra-slide `---`, and body lines that look like ATX headings such as `# Key Points`)
+2. Markdown ATX headings (`#` … `######`) outside fenced code blocks — Markdown loaders and Docling markdown export
+3. PPTX `---` slide separators — string fallback only when `metadata.loader == "pptx"` (first-line title match; not used for DOCX/Markdown horizontal rules)
+4. Outline titles as whole lines — plain DOCX `sections[]`
+5. No boundaries — falls back to a single recursive split (same as `recursive`)
+
+Oversized sections are further split with `RecursiveChunker` (`chunk_size` / `overlap`). Preamble text before the first heading omits `section` so contextual headers show `—`.
+
+```yaml
+# configs/retrieval.yaml
+chunking:
+  strategy: section              # recursive | semantic | parent_child | proposition | section
+  chunk_size: 500
+  overlap: 50
+```
+
+**When to use:** long structured docs (manuals, reports, slide decks) where section-aware retrieval or headers matter. Prefer Markdown or Docling layout output for heading markup; DOCX/PPTX use outline / slide fallbacks.
+
+**Trade-offs:** no LLM cost; heading quality depends on source structure. Re-ingest after switching strategy — existing indexes are not updated retroactively. Page-aware chunking is T-241.
 
 ##### HyPE — Hypothetical Prompt Embeddings (T-122)
 
@@ -721,7 +746,7 @@ parsing:
 
 **OCR factory (T-220 / T-221 / T-222):** `get_ocr_provider()` in `src/infrastructure/ocr/` uses shared `EnabledProviderCache` — keyed by `(enabled, provider, identity)`, returns `None` when `parsing.ocr.enabled=false`. Self-hosted engines are Docling-backed: `tesseract` (Tesseract CLI), `easyocr`, `docling` (auto engine pick). Install Docling separately: `uv pip install docling`. `azure_di` uses Azure Document Intelligence REST (`prebuilt-read`) with credentials under `parsing.ocr.azure_di`; the identity fingerprint includes endpoint, API key, API version, model ID, timeout, and poll interval so credential/config rotations rebuild the client and call `close()` on the previous instance — see [docs/ocr-providers.md](docs/ocr-providers.md). Ingest wiring is [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223). Figure assets are [Figure Asset Extraction & Storage (T-230)](#figure-asset-extraction--storage-t-230); VLM captions are [VLM Captioning at Ingest (T-231)](#vlm-captioning-at-ingest-t-231). **Next multimodal work:** T-232 `type=caption` chunks.
 
-**Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200 today; structure-aware chunking in T-240/T-241).
+**Clean Architecture:** repository ABCs and `ParsedDocument` live in `domain/` with no `infrastructure/` imports. `contextual_headers.py` reads section/page metadata via `CHUNK_SECTION_KEY` and `CHUNK_PAGE_KEY` so layout parsers and chunkers share the same keys (T-200; per-chunk section labels from `SectionChunker` in T-240; page-aware chunking in T-241).
 
 **Tests:** `tests/unit/test_parsing_repositories.py` verifies ABC instantiation rules, `ParsedDocument` immutability/serialization, constant uniqueness, and domain-layer import hygiene. Parsing settings defaults and env overrides are covered in `tests/unit/test_settings.py`. OCR factory, self-hosted, and Azure DI providers are covered in `tests/unit/test_ocr_provider.py`.
 
@@ -753,7 +778,7 @@ flowchart LR
 | `figures` | List of `{figure_id, caption?, page?, bbox?}` entries |
 | `page_count` | Total pages detected by Docling |
 
-Document-level keys (`tables`, `figures`, `sections`, `headings`) are listed in `LAYOUT_DOCUMENT_METADATA_KEYS` and **stripped** from per-chunk metadata by `chunk_metadata()` so large layout structures are not duplicated on every indexed chunk. Plain DOCX/Markdown loaders also populate `sections`/`headings` and promote the first title to `CHUNK_SECTION_KEY` when layout parsing is off.
+Document-level keys (`tables`, `figures`, `sections`, `headings`, `slides`) are listed in `LAYOUT_DOCUMENT_METADATA_KEYS` and **stripped** from per-chunk metadata by `chunk_metadata()` so large layout structures are not duplicated on every indexed chunk. Plain DOCX/Markdown loaders also populate `sections`/`headings` and promote the first title to `CHUNK_SECTION_KEY` when layout parsing is off. PPTX loaders additionally attach `slides` (`{title, text}` per slide) for section-boundary chunking.
 
 **Enable layout parsing:**
 
@@ -909,7 +934,7 @@ parsing:
 
 **Tests:** `tests/unit/test_local_asset_store.py`; `tests/unit/test_figure_extractor.py` (PPTX incl. nested groups, Docling/DOCX fallback + slot alignment, soft-fail, chunk builders).
 
-**Next steps:** Phase 24 structure-aware chunking (T-240+) — see [specs/TODO.md](specs/TODO.md).
+**Next steps:** Page-aware chunking (**T-241**) — see [specs/TODO.md](specs/TODO.md).
 
 #### VLM Captioning at Ingest (T-231)
 
@@ -1022,7 +1047,7 @@ parsing:
 
 **Tests:** `tests/unit/test_caption_chunker.py` (chunk building, stable IDs, skip-path backfill/purge, embed-failure retention, pipeline integration).
 
-**Next steps:** Phase 24 structure-aware chunking (T-240+) — see [specs/TODO.md](specs/TODO.md).
+**Next steps:** Page-aware chunking (**T-241**) — see [specs/TODO.md](specs/TODO.md).
 
 #### Structured Table Chunks at Ingest (T-202)
 
@@ -1104,7 +1129,7 @@ flowchart LR
 
 **Tests:** `tests/unit/test_source_reference.py` (helpers, round-trips, inference from metadata, Answer wiring); entity defaults also covered in `tests/unit/test_entities.py`.
 
-**Next steps:** Phase 24 structure-aware chunking (T-240+) — see [specs/TODO.md](specs/TODO.md).
+**Next steps:** Page-aware chunking (**T-241**) — see [specs/TODO.md](specs/TODO.md).
 
 ### Start the API Server
 
@@ -2581,7 +2606,7 @@ rag_implementation/
 │   │   ├── quality/              # relevance_grading (T-140) · self_rag_* (T-141) · crag_knowledge_refinement (T-142) · explain_retrieval (T-143) · source_highlighting (T-144) · explain_and_highlight (T-143+T-144)
 │   │   └── retrieval/          # query_expansion · step_back · query_classification · hyde_generate · entity_extraction · agent_decision
 │   ├── rag/                    # Chunkers, retrievers, pipelines
-│   │   ├── chunking/           # Recursive / semantic / parent-child / proposition + contextual_headers + metadata filter (T-200)
+│   │   ├── chunking/           # Recursive / semantic / parent-child / proposition / section (T-240) + contextual_headers + metadata filter (T-200)
 │   │   ├── enrichment/         # Document augmentation (T-121) · HyPE (T-122) · hierarchical (T-125) · RSE (T-123) · parent context (T-124)
 │   │   ├── quality/            # Reliable RAG (T-140) · Self-RAG gates (T-141) · CRAG (T-142) · explainable retrieval (T-143) · source highlighting (T-144) · feedback loop (T-145) · post_generation (combined explain+highlight)
 │   │   ├── structured_output.py # Shared Pydantic JSON parsing for LLM structured output
