@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 26 — **T-261** ← next (T-260 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 26 — **T-262** ← next (T-260 ✅, T-261 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2344,7 +2344,7 @@
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
-> | **26** | 16 | T-260 → T-263 | Phase 25 | T-260 ✅ · T-261–T-263 pending |
+> | **26** | 16 | T-260 → T-263 | Phase 25 | T-260 ✅ · T-261 ✅ · T-262–T-263 pending |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
@@ -2846,15 +2846,20 @@
 
 
 ### T-261 · Cross-Modal Hybrid Fusion
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Add image leg to `HybridRetriever` RRF.
 - **Inputs:** T-260, T-022, T-243
 - **Outputs:** Fusion leg
-- **Files:** `hybrid_retriever.py`, tests
+- **Files:**
+  - `src/rag/retrieval/hybrid_retriever.py` — new `image_retriever: ImageDenseRetriever | None` constructor param (`self.image`); runs concurrently with dense/BM25/graph/HyPE/HyDE/hierarchical via `asyncio.to_thread`; its results feed into `rrf_fuse()` as an extra ranked list; `weighted_linear` fusion mode falls back to RRF only when the image leg is wired in **and active** (`self.image.enabled`) — since `_build_image_retriever()` wires it in unconditionally (T-260 convention, no feature flag), gating on `.enabled` rather than just "is not None" is what keeps `weighted_linear` working unchanged for non-multimodal providers, matching the existing graph/HyPE/HyDE/hierarchical guard shape _(done)_
+  - `src/rag/pipelines/retrieval_pipeline.py` — new `_build_image_retriever()` factory, wired into `RetrievalPipeline.from_settings()`'s `HybridRetriever(image_retriever=...)` construction; skips the leg (`None`) when the injected vector store isn't a concrete `QdrantVectorStore` (`search_image_dense()` isn't part of `VectorStoreRepository`) _(done)_
+  - `configs/parsing.yaml`, `README.md` — T-261 notes _(done)_
+  - `tests/unit/test_hybrid_retriever.py` — 6 new tests: image leg called, image-only results surface in fusion, shared dense+image chunk gets an RRF boost, no-image-retriever default unaffected, a wired-but-disabled (`.enabled=False`) image leg is a no-op vs. not wiring it at all, `weighted_linear` fusion falls back to RRF when an image leg is present _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** No feature flag — matches the T-260 convention: `ImageDenseRetriever.enabled` already gates itself off (`retrieve()` returns `[]`) on non-multimodal providers, so wiring the leg in unconditionally via `RetrievalPipeline.from_settings()` leaves fused output byte-identical unless `EMBEDDINGS__PROVIDER` is `clip`/`voyage` and `parsing.figure_chunks.enabled=true` (T-253) has actually populated `image_dense` points.
 
 ---
 
@@ -3125,6 +3130,6 @@ T-150 + T-281 ──► T-282
 23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → T-231 ✅ → T-232 ✅ _(complete)_
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 ✅ → T-241 ✅ → T-242 ✅ → T-243 ✅ _(complete)_
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 ✅ → T-251 ✅ → T-252 ✅ → T-253 ✅ _(complete)_
-26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 → T-261 → T-262 → T-263
+26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 → T-263
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274
 28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 → T-281 → T-282

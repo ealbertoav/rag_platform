@@ -26,8 +26,11 @@ parsing:
   # embeds a text query and searches the image_dense named vector via
   # QdrantVectorStore.search_image_dense(). `.enabled` mirrors image_dense_dim —
   # retrieve() returns [] instead of raising when the active provider has no image
-  # space, so callers can wire it unconditionally. Not yet called from
-  # HybridRetriever/RetrievalPipeline — cross-modal fusion is T-261.
+  # space, so callers can wire it unconditionally.
+  # T-261 (no feature flag): HybridRetriever gained an `image_retriever` RRF leg
+  # (RetrievalPipeline.from_settings() wires ImageDenseRetriever in automatically).
+  # It runs unconditionally alongside dense/BM25; on a non-multimodal provider it
+  # always returns [] (T-260's `.enabled` gate) so fusion output is unchanged.
   ocr:
     enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

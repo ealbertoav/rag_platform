@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from src.rag.retrieval.hierarchical_retriever import HierarchicalRetriever
     from src.rag.retrieval.hyde_retriever import HyDERetriever
     from src.rag.retrieval.hype_retriever import HyPERetriever
+    from src.rag.retrieval.image_dense_retriever import ImageDenseRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class HybridRetriever:
         hype_retriever: HyPERetriever | None = None,
         hyde_retriever: HyDERetriever | None = None,
         hierarchical_retriever: HierarchicalRetriever | None = None,
+        image_retriever: ImageDenseRetriever | None = None,
         fusion_mode: str = "rrf",
         feedback_boost_multiplier: float = 0.0,
         feedback_expand_pool: bool = True,
@@ -58,6 +60,7 @@ class HybridRetriever:
         self.hype: HyPERetriever | None = hype_retriever
         self.hyde: HyDERetriever | None = hyde_retriever
         self.hierarchical: HierarchicalRetriever | None = hierarchical_retriever
+        self.image: ImageDenseRetriever | None = image_retriever
         self._fusion_mode: str = fusion_mode
         self._feedback_boost_multiplier: float = feedback_boost_multiplier
         self._feedback_expand_pool: bool = feedback_expand_pool
@@ -104,6 +107,8 @@ class HybridRetriever:
             tasks.append(asyncio.to_thread(self.hyde.retrieve, query, expansion))
         if self.hierarchical is not None:
             tasks.append(asyncio.to_thread(self.hierarchical.retrieve, query, expansion))
+        if self.image is not None:
+            tasks.append(asyncio.to_thread(self.image.retrieve, query, expansion))
 
         gathered = await asyncio.gather(*tasks)
 
@@ -119,39 +124,47 @@ class HybridRetriever:
             resolve_synthetic_questions(gathered[1], lookup),
             query.filters,
         )
-        graph_idx = 2
+        idx = 2
         graph_results: list[SearchResult] = []
         if self.graph is not None:
             graph_results = apply_chunk_filters(
-                resolve_synthetic_questions(gathered[graph_idx], lookup),
+                resolve_synthetic_questions(gathered[idx], lookup),
                 query.filters,
             )
-            graph_idx += 1
+            idx += 1
         hype_results: list[SearchResult] = []
         if self.hype is not None:
             hype_results = apply_min_score(
-                apply_chunk_filters(gathered[graph_idx], query.filters),
+                apply_chunk_filters(gathered[idx], query.filters),
                 query.filters,
             )
-            graph_idx += 1
+            idx += 1
         hyde_results: list[SearchResult] = []
         if self.hyde is not None and use_hyde:
             hyde_results = apply_min_score(
                 apply_chunk_filters(
-                    resolve_synthetic_questions(gathered[graph_idx], lookup),
+                    resolve_synthetic_questions(gathered[idx], lookup),
                     query.filters,
                 ),
                 query.filters,
             )
-            graph_idx += 1
+            idx += 1
         hierarchical_results: list[SearchResult] = []
         if self.hierarchical is not None:
             hierarchical_results = apply_min_score(
-                apply_chunk_filters(gathered[graph_idx], query.filters),
+                apply_chunk_filters(gathered[idx], query.filters),
+                query.filters,
+            )
+            idx += 1
+        image_results: list[SearchResult] = []
+        if self.image is not None:
+            image_results = apply_min_score(
+                apply_chunk_filters(gathered[idx], query.filters),
                 query.filters,
             )
 
         hyde_active = self.hyde is not None and use_hyde
+        image_active = self.image is not None and self.image.enabled
         fusion_top_k = top_k
         if self._uses_expanded_pool():
             fusion_top_k = self._candidate_limit(top_k)
@@ -161,6 +174,7 @@ class HybridRetriever:
             and self.hype is None
             and not hyde_active
             and self.hierarchical is None
+            and not image_active
         ):
             fused = weighted_linear_fuse(
                 dense_results, bm25_results, alpha=self.alpha, top_k=fusion_top_k
@@ -173,6 +187,7 @@ class HybridRetriever:
                 hype_results,
                 hyde_results,
                 hierarchical_results,
+                image_results,
                 top_k=fusion_top_k,
             )
         fused = apply_feedback_boost(
@@ -184,7 +199,7 @@ class HybridRetriever:
         logger.debug(
             (
                 "Hybrid retrieval: %d dense + %d bm25 + %d graph + %d hype "
-                + "+ %d hyde + %d hierarchical → %d fused"
+                + "+ %d hyde + %d hierarchical + %d image → %d fused"
             ),
             len(dense_results),
             len(bm25_results),
@@ -192,6 +207,7 @@ class HybridRetriever:
             len(hype_results),
             len(hyde_results),
             len(hierarchical_results),
+            len(image_results),
             len(fused),
         )
         return fused
