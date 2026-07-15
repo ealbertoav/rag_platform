@@ -9,6 +9,9 @@ parsing:
   # not routed through the layout parser unless extended in a future phase.
   # T-210 multimodal domain model (no feature flag): Chunk.modality / image_embedding /
   # asset_path, Answer.source_references, and SourceReference — see README.
+  # T-250 (no feature flag): EmbeddingRepository.embed_image() — capability probe,
+  # not config-driven. Default raises EmbeddingError; only multimodal providers
+  # (CLIP / Voyage-multimodal, T-251) override it.
   ocr:
     enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

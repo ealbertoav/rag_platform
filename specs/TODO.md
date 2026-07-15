@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 25 — **T-250** ← next (Phase 24 complete: T-240 ✅, T-241 ✅, T-242 ✅, T-243 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 25 — **T-251** ← next (T-250 ✅; Phase 24 complete: T-240 ✅, T-241 ✅, T-242 ✅, T-243 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2343,7 +2343,7 @@
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | ✅ complete — T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅ |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
-> | **25** | 15 | T-250 → T-253 | Phase 21 | pending |
+> | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251–T-253 pending |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
@@ -2737,15 +2737,19 @@
 ---
 
 ### T-250 · EmbeddingRepository Image API Extension
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Add `embed_image()`.
 - **Inputs:** T-004, T-210
 - **Outputs:** Extended ABC
-- **Files:** `embedding_repository.py`, tests
+- **Files:**
+  - `src/domain/repositories/embedding_repository.py` — `embed_image(paths: list[Path]) -> list[DenseVector]`, non-abstract default raising `EmbeddingError` _(done)_
+  - `tests/unit/test_repositories.py` — default-raises + overriding-subclass cases _(done)_
+  - `configs/parsing.yaml` — T-250 note _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Not made abstract — every existing provider (BGE-M3, Nomic, Qwen, OpenAI, Voyage, Cohere, Gemini) keeps instantiating unchanged. No text-based fallback exists for image vectors (unlike `embed_query`/`embed_passage`, which can delegate to `embed()`), so the default raises `EmbeddingError` rather than silently returning meaningless data. Real multimodal support (CLIP/Voyage-multimodal) lands in T-251, which will override this method.
 
 ---
 

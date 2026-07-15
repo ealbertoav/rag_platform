@@ -11,10 +11,12 @@ from __future__ import annotations
 
 from abc import ABC
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from src.core.exceptions import EmbeddingError
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.retrieval_filter import RetrievalFilter
 from src.domain.repositories import (
@@ -174,6 +176,19 @@ class TestEmbeddingRepository:
         emb = _Embedder()
         texts = ["passage one", "passage two"]
         assert emb.embed_passage(texts) == emb.embed(texts)
+
+    def test_embed_image_default_raises(self):
+        with pytest.raises(EmbeddingError):
+            _Embedder().embed_image([Path("figure.png")])
+
+    def test_embed_image_override_returns_vectors(self):
+        class _ImageEmbedder(_Embedder):
+            def embed_image(self, paths: list[Path]) -> list[DenseVector]:
+                return [[1.0, 0.0] for _ in paths]
+
+        result = _ImageEmbedder().embed_image([Path("a.png"), Path("b.png")])
+        assert len(result) == 2
+        assert all(isinstance(v, list) for v in result)
 
 
 # ── RerankerRepository ─────────────────────────────────────────────────────────
