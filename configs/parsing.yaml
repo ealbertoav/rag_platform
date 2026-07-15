@@ -22,6 +22,12 @@ parsing:
   # original dense+sparse-only schema. Existing collections gaining a multimodal
   # provider need scripts/migrate_qdrant_image_dense.py (Qdrant cannot add a named
   # vector in place, so it rebuilds the collection and restores existing points).
+  # T-260 (no feature flag): ImageDenseRetriever (src/rag/retrieval/image_dense_retriever.py)
+  # embeds a text query and searches the image_dense named vector via
+  # QdrantVectorStore.search_image_dense(). `.enabled` mirrors image_dense_dim —
+  # retrieve() returns [] instead of raising when the active provider has no image
+  # space, so callers can wire it unconditionally. Not yet called from
+  # HybridRetriever/RetrievalPipeline — cross-modal fusion is T-261.
   ocr:
     enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

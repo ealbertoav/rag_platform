@@ -307,6 +307,62 @@ class QdrantVectorStore(VectorStoreRepository):
         document_ids: frozenset[str] | None = None,
         filters: RetrievalFilter | None = None,
     ) -> list[SearchResult]:
+        return self._search_named_vector(
+            _DENSE,
+            query_vector,
+            top_k,
+            type_equals=type_equals,
+            exclude_types=exclude_types,
+            document_ids=document_ids,
+            filters=filters,
+            error_context="Qdrant dense search failed",
+        )
+
+    def search_image_dense(
+        self,
+        query_vector: DenseVector,
+        top_k: int,
+        *,
+        type_equals: str | None = None,
+        exclude_types: frozenset[str] | None = None,
+        document_ids: frozenset[str] | None = None,
+        filters: RetrievalFilter | None = None,
+    ) -> list[SearchResult]:
+        """ANN search on the optional `image_dense` named vector (T-260).
+
+        Only meaningful when the collection was created with an image_dense
+        space (multimodal `embeddings.provider` — clip/voyage, T-252); raises
+        VectorStoreError otherwise, since Qdrant has no such named vector to
+        query. Callers should check `image_dense_dim is not None` first.
+        """
+        if self.image_dense_dim is None:
+            raise VectorStoreError(
+                f"Collection {self.collection!r} has no image_dense vector space — "
+                "embeddings.provider must be clip or voyage (T-252)"
+            )
+        return self._search_named_vector(
+            _IMAGE_DENSE,
+            query_vector,
+            top_k,
+            type_equals=type_equals,
+            exclude_types=exclude_types,
+            document_ids=document_ids,
+            filters=filters,
+            error_context="Qdrant image-dense search failed",
+        )
+
+    def _search_named_vector(
+        self,
+        vector_name: str,
+        query_vector: DenseVector,
+        top_k: int,
+        *,
+        type_equals: str | None,
+        exclude_types: frozenset[str] | None,
+        document_ids: frozenset[str] | None,
+        filters: RetrievalFilter | None,
+        error_context: str,
+    ) -> list[SearchResult]:
         self._ensure_collection()
         query_filter = build_qdrant_filter(
             type_equals=type_equals,
@@ -318,13 +374,13 @@ class QdrantVectorStore(VectorStoreRepository):
             response = self._client.query_points(
                 collection_name=self.collection,
                 query=cast(Any, query_vector),
-                using=_DENSE,
+                using=vector_name,
                 limit=top_k,
                 with_payload=True,
                 query_filter=query_filter,
             )
         except Exception as exc:
-            raise VectorStoreError("Qdrant dense search failed", cause=exc) from exc
+            raise VectorStoreError(error_context, cause=exc) from exc
         return [self._to_result(h) for h in response.points]
 
     @override
