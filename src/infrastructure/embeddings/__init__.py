@@ -11,6 +11,7 @@ from src.core.constants import (
 )
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.infrastructure.embeddings.bge_m3 import BGEM3EmbeddingProvider
+from src.infrastructure.embeddings.clip_provider import ClipEmbeddingProvider
 from src.infrastructure.embeddings.nomic import NomicEmbeddingProvider
 from src.infrastructure.embeddings.qwen_embedding import QwenEmbeddingProvider
 
@@ -50,10 +51,12 @@ def get_embedding_provider() -> EmbeddingRepository:
         bge_m3         — BGE-M3 1024-dim dense and sparse (default)
         nomic          — Nomic-Embed-Text v1.5, 768-dim dense only
         qwen_embedding — Qwen3-Embedding-0.6B, 1024-dim dense only
+        clip           — CLIP (clip-ViT-B-32), 512-dim, text+image (embed_image, T-251)
 
     API-based (require API key and "uv sync --extra api-embeddings"):
         openai         — text-embedding-3-large/small/ada-002, dense only
-        voyage         — voyage-large-2 / voyage-code-2, dense only
+        voyage         — voyage-large-2 / voyage-code-2, dense only; embed_image()
+                         uses voyage-multimodal-3 (embeddings.voyage.multimodal_model)
         cohere         — embed-english-v3.0 / embed-multilingual-v3.0, dense only
         gemini         — text-embedding-004 (768-dim), dense only
 
@@ -161,6 +164,14 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
                 batch_size=cfg.batch_size,
                 normalize=cfg.normalize,
             )
+        case "clip":
+            cfg = settings.embeddings
+            return ClipEmbeddingProvider(
+                model_path=_self_hosted_model_path(name, settings),
+                device=cfg.device,
+                batch_size=cfg.batch_size,
+                normalize=cfg.normalize,
+            )
         case "openai":
             openai_cfg = settings.embeddings.openai
             _require_api_key(name, openai_cfg.api_key)
@@ -179,6 +190,7 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
             return VoyageEmbeddingProvider(
                 api_key=voyage_cfg.api_key.get_secret_value(),
                 model=voyage_cfg.model,
+                multimodal_model=voyage_cfg.multimodal_model,
             )
         case "cohere":
             cohere_cfg = settings.embeddings.cohere
@@ -230,6 +242,7 @@ def _wrap_with_cache(
 
 __all__ = [
     "BGEM3EmbeddingProvider",
+    "ClipEmbeddingProvider",
     "NomicEmbeddingProvider",
     "QwenEmbeddingProvider",
     "create_embedding_provider",

@@ -63,6 +63,7 @@ class VoyageEmbeddingConfig(BaseModel):
     api_key: SecretStr = SecretStr("")
     model: str = "voyage-large-2"
     dimensions: int = 1536
+    multimodal_model: str = "voyage-multimodal-3"  # used by embed_image() (T-251)
 
 
 class CohereEmbeddingConfig(BaseModel):
@@ -86,7 +87,8 @@ class EmbeddingSettings(BaseModel):
     provider: Literal[
         "bge_m3",
         "nomic",
-        "qwen_embedding",  # self-hosted
+        "qwen_embedding",
+        "clip",  # self-hosted (clip is text+image, T-251)
         "openai",
         "voyage",
         "cohere",
