@@ -29,7 +29,15 @@ from src.rag.ingestion.caption_chunker import (
     stale_caption_ids_safe_to_purge,
 )
 from src.rag.ingestion.figure_captioner import apply_figure_captions
-from src.rag.ingestion.figure_extractor import apply_figure_assets
+from src.rag.ingestion.figure_chunker import (
+    existing_figure_chunk_ids,
+    figure_chunks_needing_upsert,
+    merged_figure_chunk_ids,
+    metadata_figure_ids,
+    retained_figure_chunk_ids_on_embed_failure,
+    stale_figure_ids_safe_to_purge,
+)
+from src.rag.ingestion.figure_extractor import apply_figure_assets, build_figure_chunks
 from src.rag.ingestion.ocr_fallback import apply_ocr_fallback, should_attempt_ocr
 from src.rag.ingestion.table_chunker import (
     build_table_chunks,
@@ -47,6 +55,7 @@ if TYPE_CHECKING:
     from src.rag.enrichment.hierarchical_indexer import HierarchicalIndexer
     from src.rag.enrichment.hype_indexer import HyPEIndexer
     from src.rag.ingestion.caption_chunker import CaptionChunker
+    from src.rag.ingestion.figure_chunker import FigureChunker
     from src.rag.ingestion.graph_indexer import GraphIndexer
     from src.rag.ingestion.table_chunker import TableChunker
 
@@ -177,6 +186,7 @@ class IngestionPipeline:
         hierarchical_indexer: HierarchicalIndexer | None = None,
         table_chunker: TableChunker | None = None,
         caption_chunker: CaptionChunker | None = None,
+        figure_chunker: FigureChunker | None = None,
     ) -> None:
         self._service: IngestionService = service
         self._vector_store: VectorStoreRepository = vector_store
@@ -188,6 +198,7 @@ class IngestionPipeline:
         self._hierarchical_indexer: HierarchicalIndexer | None = hierarchical_indexer
         self._table_chunker: TableChunker | None = table_chunker
         self._caption_chunker: CaptionChunker | None = caption_chunker
+        self._figure_chunker: FigureChunker | None = figure_chunker
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -320,6 +331,13 @@ class IngestionPipeline:
                 embedded_caption_chunks = self._caption_chunker.index(document)
                 indexed_chunks.extend(embedded_caption_chunks)
 
+            built_figure_chunks: list[Chunk] = []
+            embedded_figure_chunks: list[Chunk] = []
+            if self._figure_chunker is not None:
+                built_figure_chunks = build_figure_chunks(document)
+                embedded_figure_chunks = self._figure_chunker.index(document)
+                indexed_chunks.extend(embedded_figure_chunks)
+
             if not indexed_chunks:
                 retained = self._retained_table_ids_on_embed_failure(
                     source,
@@ -335,6 +353,15 @@ class IngestionPipeline:
                         old_chunk_ids,
                         built_caption_chunks,
                         embedded_caption_chunks,
+                    )
+                )
+                retained.update(
+                    self._retained_figure_ids_on_embed_failure(
+                        source,
+                        document,
+                        old_chunk_ids,
+                        built_figure_chunks,
+                        embedded_figure_chunks,
                     )
                 )
                 self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
@@ -370,6 +397,15 @@ class IngestionPipeline:
                     embedded_caption_chunks,
                 )
             )
+            retained.update(
+                self._retained_figure_ids_on_embed_failure(
+                    source,
+                    document,
+                    old_chunk_ids,
+                    built_figure_chunks,
+                    embedded_figure_chunks,
+                )
+            )
             self._purge_superseded_chunks(old_chunk_ids, retained_chunk_ids=retained)
             self._bm25_add(indexed_chunks)
 
@@ -386,6 +422,11 @@ class IngestionPipeline:
                     self._retained_caption_ids_on_embed_failure,
                     built_caption_chunks,
                     embedded_caption_chunks,
+                ),
+                (
+                    self._retained_figure_ids_on_embed_failure,
+                    built_figure_chunks,
+                    embedded_figure_chunks,
                 ),
             ):
                 stored_chunk_ids.extend(
@@ -547,6 +588,7 @@ class IngestionPipeline:
             and not document.content.strip()
             and not metadata_table_ids(document)
             and not metadata_caption_figure_ids(document)
+            and not metadata_figure_ids(document)
         )
         if not empty_ocr_without_layout:
             table_backfill = self._backfill_table_chunks_on_skip(
@@ -563,6 +605,15 @@ class IngestionPipeline:
                 existing,
                 t0,
             )
+            figure_backfill = self._backfill_figure_chunks_on_skip(
+                document,
+                source,
+                doc_hash,
+                existing,
+                t0,
+            )
+            if figure_backfill is not None:
+                return figure_backfill
             if caption_backfill is not None:
                 return caption_backfill
             if table_backfill is not None:
@@ -681,6 +732,62 @@ class IngestionPipeline:
             kind="caption",
         )
 
+    def _backfill_figure_chunks_on_skip(
+        self,
+        document: Document,
+        source: str,
+        doc_hash: str,
+        existing: DocumentRecord,
+        t0: float,
+    ) -> IngestionResult | None:
+        """Sync figure chunks when base content is unchanged."""
+        if self._figure_chunker is None or self._metadata is None:
+            return None
+
+        built_chunks = build_figure_chunks(document)
+        figure_chunks = self._figure_chunker.index(document) if built_chunks else []
+
+        existing_ids = list(self._metadata.get_chunk_ids(existing.id))
+        desired_figure_ids = {chunk.id for chunk in built_chunks}
+        known_figure_ids = existing_figure_chunk_ids(
+            source,
+            existing_ids,
+            document=document,
+            bm25=self._bm25,
+        )
+        stale_figure_ids = [
+            chunk_id
+            for chunk_id in existing_ids
+            if chunk_id in known_figure_ids and chunk_id not in desired_figure_ids
+        ]
+        return self._apply_structured_chunk_backfill_on_skip(
+            source=source,
+            doc_hash=doc_hash,
+            existing=existing,
+            t0=t0,
+            existing_ids=existing_ids,
+            known_structured_ids=known_figure_ids,
+            chunks_to_upsert=figure_chunks_needing_upsert(
+                figure_chunks,
+                existing_ids,
+                bm25=self._bm25,
+            ),
+            stale_to_purge=stale_figure_ids_safe_to_purge(
+                document,
+                built_chunks,
+                figure_chunks,
+                stale_figure_ids,
+            ),
+            merged_structured_ids=merged_figure_chunk_ids(
+                existing_ids,
+                known_figure_ids,
+                document,
+                built_chunks,
+                figure_chunks,
+            ),
+            kind="figure",
+        )
+
     def _apply_structured_chunk_backfill_on_skip(
         self,
         *,
@@ -777,6 +884,25 @@ class IngestionPipeline:
             bm25=self._bm25,
         )
 
+    def _retained_figure_ids_on_embed_failure(
+        self,
+        source: str,
+        document: Document,
+        old_chunk_ids: list[str],
+        built_figure_chunks: list[Chunk],
+        embedded_figure_chunks: list[Chunk],
+    ) -> set[str]:
+        if self._figure_chunker is None or not old_chunk_ids:
+            return set()
+        return retained_figure_chunk_ids_on_embed_failure(
+            source,
+            document,
+            old_chunk_ids,
+            built_figure_chunks,
+            embedded_figure_chunks,
+            bm25=self._bm25,
+        )
+
     def _purge_superseded_chunks(
         self,
         chunk_ids: list[str],
@@ -865,6 +991,7 @@ class IngestionPipeline:
         hierarchical_indexer = _build_hierarchical_indexer(embedder, cfg.hierarchical)
         table_chunker = _build_table_chunker(embedder, settings.parsing.table_chunks)
         caption_chunker = _build_caption_chunker(embedder, settings.parsing.caption_chunks)
+        figure_chunker = _build_figure_chunker(embedder, settings.parsing.figure_chunks)
 
         return cls(
             service=service,
@@ -877,6 +1004,7 @@ class IngestionPipeline:
             hierarchical_indexer=hierarchical_indexer,
             table_chunker=table_chunker,
             caption_chunker=caption_chunker,
+            figure_chunker=figure_chunker,
         )
 
 
@@ -974,6 +1102,15 @@ def _build_caption_chunker(embedder: EmbeddingRepository, cfg: object) -> Captio
     from src.rag.ingestion.caption_chunker import CaptionChunker
 
     return CaptionChunker(embedder=embedder)
+
+
+def _build_figure_chunker(embedder: EmbeddingRepository, cfg: object) -> FigureChunker | None:
+    """Build a structured figure chunker when figure chunking is enabled."""
+    if not getattr(cfg, "enabled", False):
+        return None
+    from src.rag.ingestion.figure_chunker import FigureChunker
+
+    return FigureChunker(embedder=embedder)
 
 
 def _bm25_indexable(chunks: list[Chunk]) -> list[Chunk]:

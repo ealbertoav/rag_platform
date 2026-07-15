@@ -259,7 +259,7 @@ class RetrievalSettings(BaseModel):
     parent_context: ParentContextSettings = Field(default_factory=ParentContextSettings)
     diversity: DiversitySettings = Field(default_factory=DiversitySettings)
 
-    model_config: ClassVar[ConfigDict] = {"populate_by_name": True}
+    model_config: ClassVar[ConfigDict] = ConfigDict(populate_by_name=True)
 
 
 class Neo4jSettings(BaseModel):
@@ -406,6 +406,12 @@ class FigureAssetSettings(BaseModel):
     store_dir: str = "data/assets"
 
 
+class FigureChunkSettings(BaseModel):
+    """Index type=figure chunks from figures[].asset_path (T-253)."""
+
+    enabled: bool = False
+
+
 class OpenAIVisionConfig(BaseModel):
     api_key: SecretStr = SecretStr("")
     model: str = "gpt-4o-mini"
@@ -432,6 +438,7 @@ class ParsingSettings(BaseModel):
     caption_chunks: CaptionChunkSettings = Field(default_factory=CaptionChunkSettings)
     figure_assets: FigureAssetSettings = Field(default_factory=FigureAssetSettings)
     figure_captions: FigureCaptionSettings = Field(default_factory=FigureCaptionSettings)
+    figure_chunks: FigureChunkSettings = Field(default_factory=FigureChunkSettings)
 
 
 # ── Root settings ──────────────────────────────────────────────────────────────
