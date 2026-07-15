@@ -2456,7 +2456,7 @@ All API providers are dense-only — BM25 continues to provide sparse retrieval.
 - **`clip`** — self-hosted, no API key or extra dependency. `embed()` and `embed_image()` route through the same CLIP model instance, so text and image vectors are directly comparable (cross-modal similarity search).
 - **`voyage`** — `embed()`/`embed_query()` keep using `voyage-large-2` (or whatever `EMBEDDINGS__VOYAGE__MODEL` is set to); `embed_image()` uses the separate `voyage-multimodal-3` model (`EMBEDDINGS__VOYAGE__MULTIMODAL_MODEL`) via the Voyage `multimodal_embed` API, since Voyage's text and multimodal models are not interchangeable.
 
-All other providers (BGE-M3, Nomic, Qwen, OpenAI, Cohere, Gemini) still raise on `embed_image()`. Ingestion/retrieval wiring for image chunks (Qdrant `image_dense`, ingest pipeline) lands in T-252/T-253.
+All other providers (BGE-M3, Nomic, Qwen, OpenAI, Cohere, Gemini) still raise on `embed_image()`. The Qdrant `image_dense` schema is [T-252](#qdrant-multimodal-schema-t-252); ingest pipeline wiring is T-253.
 
 When [MMR diversity (T-135)](#diversity-retrieval--mmr-t-135) is enabled and reranked chunks lack stored vectors, the pipeline calls `embed_passage()` to embed chunk text for pairwise similarity. Cohere (`search_document`), Voyage (`document`), and Gemini (`RETRIEVAL_DOCUMENT`) use their document embedding modes; self-hosted providers and OpenAI delegate to `embed()`.
 
@@ -2474,6 +2474,23 @@ EMBEDDINGS__DENSE_DIM=1024
 
 uv run python scripts/rebuild_embeddings.py --recreate-collection
 ```
+
+### Qdrant multimodal schema (T-252)
+
+`QdrantVectorStore` adds an optional **`image_dense`** named vector — sized via `provider_image_dim()`, which returns `None` for every provider except `clip` (512-dim, shares CLIP's text space) and `voyage` (1024-dim, `EMBEDDINGS__VOYAGE__MULTIMODAL_DIMENSIONS`, sized for `voyage-multimodal-3`). No feature flag: the vector is added automatically when `EMBEDDINGS__PROVIDER` is `clip` or `voyage`, and omitted entirely for every other provider — the collection schema is byte-identical to before T-252 unless a multimodal provider is active. `Chunk.image_embedding` (T-210) is written to `image_dense` only when a chunk actually carries an image vector; it stays `None` until ingestion wiring (T-253) populates it.
+
+Qdrant cannot add a named vector to an existing collection in place. If you switch an **existing** collection to `clip`/`voyage`, run the migration script instead of `rebuild_embeddings.py --recreate-collection` (which would also re-embed everything):
+
+```bash
+EMBEDDINGS__PROVIDER=clip
+
+uv run python scripts/migrate_qdrant_image_dense.py --dry-run   # preview
+uv run python scripts/migrate_qdrant_image_dense.py              # scrolls all points out,
+                                                                   # recreates the collection with
+                                                                   # image_dense, restores every point
+```
+
+The script no-ops when the active provider has no image space, the collection doesn't exist yet (created correctly on first upsert), or `image_dense` is already present.
 
 ### Embedding cache
 

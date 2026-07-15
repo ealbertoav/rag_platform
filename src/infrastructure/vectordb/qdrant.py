@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 _DENSE = "dense"
 _SPARSE = "sparse"
+_IMAGE_DENSE = "image_dense"  # optional named vector for multimodal providers (T-252)
 _EXPANSION = 3  # multiplier for hybrid search candidate pool
 _EMBEDDING_MODEL_METADATA_KEY = "embedding_model_name"
 _FEEDBACK_SCORE_EPSILON = 1e-9
@@ -158,10 +159,14 @@ class QdrantVectorStore(VectorStoreRepository):
         api_key: str = "",
         dense_dim: int = 1024,
         embedding_model_name: str = "",
+        image_dense_dim: int | None = None,
     ) -> None:
         self.collection: str = collection
         self.dense_dim: int = dense_dim
         self.embedding_model_name: str = embedding_model_name
+        # Only providers with an image embedding space (clip, voyage) set this;
+        # None keeps the collection schema unchanged (T-252).
+        self.image_dense_dim: int | None = image_dense_dim
         self._client_lock: Any = threading.RLock()
         raw_client = QdrantClient(url=url, api_key=api_key or None, check_compatibility=False)
         self._client: Any = ThreadSafeQdrantClient(raw_client, self._client_lock)
@@ -174,7 +179,11 @@ class QdrantVectorStore(VectorStoreRepository):
     @classmethod
     def from_settings(cls) -> QdrantVectorStore:
         from src.core.settings import settings
-        from src.infrastructure.embeddings import embedding_model_identifier, provider_dense_dim
+        from src.infrastructure.embeddings import (
+            embedding_model_identifier,
+            provider_dense_dim,
+            provider_image_dim,
+        )
 
         provider = settings.embeddings.provider
         return cls(
@@ -183,6 +192,7 @@ class QdrantVectorStore(VectorStoreRepository):
             api_key=settings.qdrant.api_key,
             dense_dim=provider_dense_dim(provider, settings),
             embedding_model_name=embedding_model_identifier(provider, settings),
+            image_dense_dim=provider_image_dim(provider, settings),
         )
 
     def drop_collection(self) -> None:
@@ -401,6 +411,65 @@ class QdrantVectorStore(VectorStoreRepository):
 
     def _count_unlocked(self) -> int:
         return cast(int, self._client.count(collection_name=self.collection).count)
+
+    # ── Schema introspection & migration helpers (T-252) ────────────────────────
+
+    def collection_exists(self) -> bool:
+        """Return True when the underlying Qdrant collection exists."""
+        try:
+            return bool(self._client.collection_exists(self.collection))
+        except Exception as exc:
+            raise VectorStoreError("Qdrant collection_exists check failed", cause=exc) from exc
+
+    def has_named_vector(self, name: str) -> bool:
+        """Return True when the collection's vector config already defines *name*."""
+        if not self.collection_exists():
+            return False
+        try:
+            info = self._client.get_collection(self.collection)
+        except Exception as exc:
+            raise VectorStoreError("Qdrant get_collection failed", cause=exc) from exc
+        vectors_config = info.config.params.vectors
+        if isinstance(vectors_config, dict):
+            return name in vectors_config
+        return False
+
+    def export_all_points(self) -> list[Chunk]:
+        """Scroll every point out of the collection as full Chunk entities.
+
+        Includes dense/sparse/image_dense vectors and payload, so a migration
+        script can drop and recreate the collection under an extended schema
+        (e.g. adding image_dense, T-252) without losing existing data.
+        """
+        chunks: list[Chunk] = []
+        offset: Any | None = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self.collection,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            chunks.extend(self._point_to_chunk(point) for point in points)
+            if offset is None:
+                break
+        return chunks
+
+    @staticmethod
+    def _point_to_chunk(point: Any) -> Chunk:
+        vectors = point.vector or {}
+        sparse = vectors.get(_SPARSE)
+        sparse_vector = (
+            dict(zip(sparse.indices, sparse.values, strict=True)) if sparse is not None else None
+        )
+        payload = dict(point.payload or {})
+        payload["embedding"] = vectors.get(_DENSE)
+        payload["sparse_vector"] = sparse_vector
+        image_dense = vectors.get(_IMAGE_DENSE)
+        if image_dense is not None:
+            payload["image_embedding"] = image_dense
+        return Chunk.model_validate(payload)
 
     def _delete_all_points_unlocked(self) -> None:
         """Remove every point from the collection (caller must hold ``_client_lock``)."""
@@ -962,16 +1031,19 @@ class QdrantVectorStore(VectorStoreRepository):
         embedding = chunk.embedding
         sparse_vector = chunk.sparse_vector
         assert embedding is not None and sparse_vector is not None
-        return cast(
-            QdrantNamedVectors,
-            {
-                _DENSE: embedding,
-                _SPARSE: QSparseVector(
-                    indices=list(sparse_vector.keys()),
-                    values=list(sparse_vector.values()),
-                ),
-            },
-        )
+        vectors: dict[str, Any] = {
+            _DENSE: embedding,
+            _SPARSE: QSparseVector(
+                indices=list(sparse_vector.keys()),
+                values=list(sparse_vector.values()),
+            ),
+        }
+        # Only chunks with a real image vector (multimodal providers, T-251) get
+        # image_dense written — collections created without it reject the extra
+        # named vector, so text-only setups are unaffected (T-252).
+        if chunk.image_embedding is not None:
+            vectors[_IMAGE_DENSE] = chunk.image_embedding
+        return cast(QdrantNamedVectors, vectors)
 
     def _top_level_payload(self, chunk: Chunk) -> dict[str, object]:
         payload = chunk.model_dump(exclude={"embedding", "sparse_vector", "metadata"})
@@ -1092,11 +1164,16 @@ class QdrantVectorStore(VectorStoreRepository):
                         if self.embedding_model_name
                         else None
                     )
+                    vectors_config: dict[str, VectorParams] = {
+                        _DENSE: VectorParams(size=self.dense_dim, distance=Distance.COSINE),
+                    }
+                    if self.image_dense_dim is not None:
+                        vectors_config[_IMAGE_DENSE] = VectorParams(
+                            size=self.image_dense_dim, distance=Distance.COSINE
+                        )
                     self._client.create_collection(
                         collection_name=self.collection,
-                        vectors_config={
-                            _DENSE: VectorParams(size=self.dense_dim, distance=Distance.COSINE),
-                        },
+                        vectors_config=vectors_config,
                         sparse_vectors_config={
                             _SPARSE: SparseVectorParams(index=SparseIndexParams(on_disk=False)),
                         },

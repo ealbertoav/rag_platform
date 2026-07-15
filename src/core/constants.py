@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_COLLECTION_NAME = "rag_documents"
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
+# Optional named vector for multimodal providers (clip / voyage); see T-252.
+IMAGE_DENSE_VECTOR_NAME = "image_dense"
 
 # ── Chunk metadata keys ────────────────────────────────────────────────────────
 CHUNK_DOCUMENT_ID_KEY = "document_id"
@@ -105,6 +107,9 @@ RRF_K = 60  # constant in Reciprocal Rank Fusion: score = Σ 1/(k + rank_i)
 
 # ── Embedding providers ─────────────────────────────────────────────────────────
 API_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"openai", "voyage", "cohere", "gemini"})
+# Providers whose embed_image() (T-250/T-251) returns real vectors, used to decide
+# whether the Qdrant collection gets an image_dense named vector (T-252).
+MULTIMODAL_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"clip", "voyage"})
 
 SELF_HOSTED_EMBEDDING_MODEL_PATHS: dict[str, str] = {
     "bge_m3": "models/embeddings/bge-m3",

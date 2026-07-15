@@ -401,6 +401,43 @@ class TestProviderDenseDimExtended:
             provider_dense_dim("future_api", settings)
 
 
+class TestProviderImageDim:
+    """T-252: image_dense dimension lookup for the Qdrant schema."""
+
+    def test_clip_returns_512(self):
+        from src.infrastructure.embeddings import provider_image_dim
+
+        settings = _mock_settings(**{"embeddings.provider": "clip"})
+        assert provider_image_dim("clip", settings) == 512
+
+    def test_voyage_returns_configured_multimodal_dimensions(self):
+        from src.infrastructure.embeddings import provider_image_dim
+
+        settings = _api_settings("voyage")
+        settings.embeddings.voyage.multimodal_dimensions = 1024
+        assert provider_image_dim("voyage", settings) == 1024
+
+    def test_text_only_providers_return_none(self):
+        from src.infrastructure.embeddings import provider_image_dim
+
+        settings = _mock_settings(**{"embeddings.provider": "bge_m3"})
+        assert provider_image_dim("bge_m3", settings) is None
+        assert provider_image_dim("openai", _api_settings("openai")) is None
+        assert provider_image_dim("cohere", _api_settings("cohere")) is None
+        assert provider_image_dim("gemini", _api_settings("gemini")) is None
+
+    def test_unhandled_multimodal_provider_raises(self, monkeypatch):
+        from src.infrastructure.embeddings import provider_image_dim
+
+        monkeypatch.setattr(
+            "src.infrastructure.embeddings.MULTIMODAL_EMBEDDING_PROVIDERS",
+            frozenset({"future_multimodal"}),
+        )
+        settings = _api_settings()
+        with pytest.raises(AssertionError, match="Unhandled multimodal embedding provider"):
+            provider_image_dim("future_multimodal", settings)
+
+
 class TestEmbeddingModelIdentifierExtended:
     def test_voyage_cohere_gemini(self):
         from src.infrastructure.embeddings import embedding_model_identifier
