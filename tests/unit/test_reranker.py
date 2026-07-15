@@ -6,11 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.core.constants import MODALITY_CAPTION, MODALITY_TABLE
 from src.core.exceptions import RetrievalError
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.reranker_repository import RerankerRepository
 from src.infrastructure.rerankers.bge_reranker import BGERerankerProvider
-from src.rag.ranking.cross_encoder import CrossEncoder
+from src.infrastructure.rerankers.qwen_reranker import QwenRerankerProvider
+from src.rag.ranking.cross_encoder import CrossEncoder, apply_modality_boost
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -171,3 +173,95 @@ class TestCrossEncoder:
         # BGERerankerProvider uses lazy model loading, so no download happens here.
         ce = CrossEncoder.from_settings()
         assert isinstance(ce, CrossEncoder)
+
+    def test_modality_boost_disabled_by_default_unaffected_order(self):
+        table_chunk = Chunk(id="table", document_id="doc", text="table", modality=MODALITY_TABLE)
+        prose_chunk = Chunk(id="prose", document_id="doc", text="prose")
+        ce = CrossEncoder(reranker=_provider([0.1, 0.9]), top_k=2)
+        result = ce.rerank("q", [table_chunk, prose_chunk])
+        assert [c.id for c in result] == ["prose", "table"]
+
+    def test_modality_boost_promotes_table_chunk(self):
+        table_chunk = Chunk(id="table", document_id="doc", text="table", modality=MODALITY_TABLE)
+        prose_chunk = Chunk(id="prose", document_id="doc", text="prose")
+        ce = CrossEncoder(reranker=_provider([0.1, 0.9]), top_k=2, modality_boost=1.0)
+        result = ce.rerank("q", [table_chunk, prose_chunk])
+        assert result[0].id == "table"
+
+    def test_modality_boost_promotes_caption_chunk(self):
+        caption_chunk = Chunk(
+            id="caption", document_id="doc", text="caption", modality=MODALITY_CAPTION
+        )
+        prose_chunk = Chunk(id="prose", document_id="doc", text="prose")
+        ce = CrossEncoder(reranker=_provider([0.1, 0.9]), top_k=2, modality_boost=1.0)
+        result = ce.rerank("q", [caption_chunk, prose_chunk])
+        assert result[0].id == "caption"
+
+    def test_modality_boost_composes_with_feedback_boost(self):
+        from src.core.constants import FEEDBACK_SCORE_KEY
+
+        table_chunk = Chunk(id="table", document_id="doc", text="table", modality=MODALITY_TABLE)
+        feedback_chunk = Chunk(
+            id="feedback",
+            document_id="doc",
+            text="feedback",
+            metadata={FEEDBACK_SCORE_KEY: 5.0},
+        )
+        ce = CrossEncoder(reranker=_provider([0.1, 0.11]), top_k=2, modality_boost=1.0)
+        result = ce.rerank("q", [table_chunk, feedback_chunk], boost_multiplier=0.2)
+        assert result[0].id == "feedback"
+
+    def test_qwen_provider_selected_from_settings(self):
+        # Re-imported here (not module-level) so this reads whatever object
+        # "src.core.settings.settings" currently points to — other test modules
+        # (e.g. reload_settings_module()) may have rebound it via importlib.reload,
+        # which a stale module-level import wouldn't see.
+        from src.core.settings import settings as live_settings
+
+        with patch.object(live_settings.reranker, "provider", "qwen_reranker"):
+            ce = CrossEncoder.from_settings()
+        assert isinstance(ce, CrossEncoder)
+        assert isinstance(ce._reranker, QwenRerankerProvider)
+
+    def test_bge_provider_selected_from_settings_by_default(self):
+        ce = CrossEncoder.from_settings()
+        assert isinstance(ce._reranker, BGERerankerProvider)
+
+    def test_modality_boost_read_from_settings(self):
+        from src.core.settings import settings as live_settings
+
+        with patch.object(live_settings.reranker, "modality_boost", 2.5):
+            ce = CrossEncoder.from_settings()
+        assert ce._modality_boost == pytest.approx(2.5)
+
+
+# ── apply_modality_boost ─────────────────────────────────────────────────────────
+
+
+class TestApplyModalityBoost:
+    def test_disabled_when_boost_is_zero(self):
+        scored = [
+            (Chunk(id="t", document_id="doc", text="t", modality=MODALITY_TABLE), 0.1),
+            (Chunk(id="p", document_id="doc", text="p"), 0.9),
+        ]
+        result = apply_modality_boost(scored, boost=0.0)
+        assert result == scored
+
+    def test_empty_input_returns_empty(self):
+        assert apply_modality_boost([], boost=1.0) == []
+
+    def test_boosts_table_and_caption_only(self):
+        table = Chunk(id="t", document_id="doc", text="t", modality=MODALITY_TABLE)
+        caption = Chunk(id="c", document_id="doc", text="c", modality=MODALITY_CAPTION)
+        prose = Chunk(id="p", document_id="doc", text="p")
+        result = apply_modality_boost([(table, 0.1), (caption, 0.1), (prose, 0.5)], boost=1.0)
+        scores = dict((c.id, s) for c, s in result)
+        assert scores["t"] == pytest.approx(1.1)
+        assert scores["c"] == pytest.approx(1.1)
+        assert scores["p"] == pytest.approx(0.5)
+
+    def test_result_sorted_descending(self):
+        table = Chunk(id="t", document_id="doc", text="t", modality=MODALITY_TABLE)
+        prose = Chunk(id="p", document_id="doc", text="p")
+        result = apply_modality_boost([(table, 0.1), (prose, 0.9)], boost=1.0)
+        assert [c.id for c, _ in result] == ["t", "p"]

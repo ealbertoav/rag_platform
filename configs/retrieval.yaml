@@ -65,10 +65,11 @@ retrieval:
     lambda: 0.7                  # 1.0 = pure relevance, 0.0 = max diversity
 
 reranker:
-  provider: bge_reranker
+  provider: bge_reranker         # bge_reranker | qwen_reranker (T-262; Qwen/Qwen3-Reranker-0.6B via sentence-transformers)
   model_path: models/rerankers/bge-reranker-v2-m3
   top_k: 10
   batch_size: 16
+  modality_boost: 0.0            # T-262: additive score boost for table/caption chunks; 0.0 = disabled
 
 query_expansion:
   enabled: true
