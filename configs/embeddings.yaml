@@ -1,11 +1,14 @@
 embeddings:
-  provider: bge_m3            # bge_m3 | nomic | qwen_embedding | openai | voyage | cohere | gemini
+  provider: bge_m3            # bge_m3 | nomic | qwen_embedding | clip | openai | voyage | cohere | gemini
   model_path: models/embeddings/bge-m3
   batch_size: 32
   device: mps                 # mps | cuda | cpu
   normalize: true
   dense_dim: 1024
   sparse_dim: 30522           # BGE-M3 lexical output; 0 for dense-only providers
+
+  # clip (T-251): self-hosted CLIP (default model_path: sentence-transformers/clip-ViT-B-32,
+  # 512-dim); embed() and embed_image() share the same space for cross-modal search.
 
   # ── API provider model names (credentials go in .env — never commit keys here) ─
   # Set EMBEDDINGS__<PROVIDER>__API_KEY in .env to activate an API provider.
@@ -17,6 +20,7 @@ embeddings:
   voyage:
     model: voyage-large-2     # voyage-code-2 is optimized for code/technical docs
     dimensions: 1536
+    multimodal_model: voyage-multimodal-3  # used by embed_image() (T-251)
 
   cohere:
     model: embed-english-v3.0 # embed-multilingual-v3.0 for mixed-language corpora

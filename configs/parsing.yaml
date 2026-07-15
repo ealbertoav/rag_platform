@@ -12,6 +12,10 @@ parsing:
   # T-250 (no feature flag): EmbeddingRepository.embed_image() — capability probe,
   # not config-driven. Default raises EmbeddingError; only multimodal providers
   # (CLIP / Voyage-multimodal, T-251) override it.
+  # T-251 (no feature flag): ClipEmbeddingProvider (embeddings.provider: clip) and
+  # VoyageEmbeddingProvider.embed_image() (embeddings.voyage.multimodal_model) both
+  # implement embed_image() from T-250 — each encodes images into the same space
+  # as its own embed(), enabling cross-modal similarity search.
   ocr:
     enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

@@ -200,6 +200,16 @@ class TestGetEmbeddingProvider:
             provider = get_embedding_provider()
         assert isinstance(provider, QwenEmbeddingProvider)
 
+    def test_clip_provider(self):
+        from src.infrastructure.embeddings.clip_provider import ClipEmbeddingProvider
+
+        with patch(
+            "src.core.settings.settings",
+            _mock_settings(**{"embeddings.provider": "clip"}),
+        ):
+            provider = get_embedding_provider()
+        assert isinstance(provider, ClipEmbeddingProvider)
+
     def test_unknown_provider_raises(self):
         bad_settings = _mock_settings(**{"embeddings.provider": "bad_provider"})
         with (
@@ -345,7 +355,12 @@ def _api_settings(provider: str = "openai", *, api_key: str = "sk-test") -> Magi
         model="text-embedding-3-small",
         dimensions=1536,
     )
-    emb.voyage = MagicMock(api_key=SecretStr(api_key), model="voyage-large-2", dimensions=1024)
+    emb.voyage = MagicMock(
+        api_key=SecretStr(api_key),
+        model="voyage-large-2",
+        dimensions=1024,
+        multimodal_model="voyage-multimodal-3",
+    )
     emb.cohere = MagicMock(api_key=SecretStr(api_key), model="embed-english-v3.0", dimensions=1024)
     emb.gemini = MagicMock(api_key=SecretStr(api_key), model="text-embedding-004", dimensions=768)
     settings.embeddings = emb
@@ -367,6 +382,12 @@ class TestProviderDenseDimExtended:
 
         settings = _mock_settings(**{"embeddings.provider": "nomic"})
         assert provider_dense_dim("nomic", settings) == 768
+
+    def test_clip_dim(self):
+        from src.infrastructure.embeddings import provider_dense_dim
+
+        settings = _mock_settings(**{"embeddings.provider": "clip"})
+        assert provider_dense_dim("clip", settings) == 512
 
     def test_unhandled_api_provider_raises(self, monkeypatch):
         from src.infrastructure.embeddings import provider_dense_dim

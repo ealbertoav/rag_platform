@@ -217,6 +217,56 @@ class TestVoyageEmbeddingProvider:
             provider.embed(["test"])
         assert mock_client.embed.call_count == 1
 
+    def test_embed_image_uses_multimodal_model(self, tmp_path) -> None:
+        from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
+        provider = VoyageEmbeddingProvider(api_key="voy-test")
+        img_path = tmp_path / "fig.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4)).save(img_path)
+
+        vecs = _fake_vecs(1)
+        mock_client = MagicMock()
+        mock_client.multimodal_embed.return_value = MagicMock(embeddings=vecs)
+        provider._client = mock_client
+
+        result = provider.embed_image([img_path])
+        assert len(result) == 1
+        _, kwargs = mock_client.multimodal_embed.call_args
+        assert kwargs["model"] == "voyage-multimodal-3"
+        assert kwargs["input_type"] == "document"
+        assert len(kwargs["inputs"]) == 1
+
+    def test_embed_image_empty_list_returns_empty(self) -> None:
+        from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
+        provider = VoyageEmbeddingProvider(api_key="voy-test")
+        assert provider.embed_image([]) == []
+
+    def test_embed_image_missing_file_raises_embedding_error(self, tmp_path) -> None:
+        from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
+        provider = VoyageEmbeddingProvider(api_key="voy-test")
+        with pytest.raises(EmbeddingError):
+            provider.embed_image([tmp_path / "missing.png"])
+
+    def test_embed_image_api_failure_raises_embedding_error(self, tmp_path) -> None:
+        from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
+
+        provider = VoyageEmbeddingProvider(api_key="voy-test")
+        img_path = tmp_path / "fig.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4)).save(img_path)
+
+        mock_client = MagicMock()
+        mock_client.multimodal_embed.side_effect = Exception("Invalid model")
+        provider._client = mock_client
+
+        with pytest.raises(EmbeddingError):
+            provider.embed_image([img_path])
+
 
 # ── CohereEmbeddingProvider ───────────────────────────────────────────────────
 
@@ -420,11 +470,13 @@ class TestFromSettings:
         mock_settings.embeddings.voyage = MagicMock(
             api_key=SecretStr("voy-test"),
             model="voyage-code-2",
+            multimodal_model="voyage-multimodal-3",
         )
         with patch("src.core.settings.settings", mock_settings):
             provider = VoyageEmbeddingProvider.from_settings()
         assert provider.api_key == "voy-test"
         assert provider.model == "voyage-code-2"
+        assert provider.multimodal_model == "voyage-multimodal-3"
 
     def test_cohere_from_settings(self) -> None:
         from pydantic import SecretStr
