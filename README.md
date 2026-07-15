@@ -517,7 +517,7 @@ Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptiv
 | Hierarchical summaries (T-125) | `chunking.hierarchical` | Qdrant only (`type=summary` + `type=detail`) | Two-stage summary→detail dense search → RRF source |
 | Structured table chunks (T-202) | `parsing.table_chunks` | Qdrant + BM25 (`type=table`) | Standard dense/BM25 (same as passage chunks) |
 | Image caption chunks (T-232) | `parsing.caption_chunks` | Qdrant + BM25 (`type=caption`) | Standard dense/BM25 (linked via `figure_id`) |
-| Structured figure chunks (T-253) | `parsing.figure_chunks` | Qdrant + BM25 (`type=figure`); `image_dense` too when `embeddings.provider` is `clip`/`voyage` | Standard dense/BM25, plus cross-modal `image_dense` search when populated |
+| Structured figure chunks (T-253) | `parsing.figure_chunks` | Qdrant + BM25 (`type=figure`); `image_dense` too when `embeddings.provider` is `clip`/`voyage` | Standard dense/BM25, plus `ImageDenseRetriever` (T-260) cross-modal `image_dense` search — library code, not yet wired into `HybridRetriever` (T-261) |
 | Scanned-PDF OCR fallback (T-223) | `parsing.ocr` | Replaces document text before chunk/embed | Standard dense/BM25 (OCR text becomes passage chunks) |
 | Figure assets (T-230) | `parsing.figure_assets` | Local files under `store_dir` + `figures[].asset_path` | Assets on disk; use T-232 caption chunks for retrieval |
 | VLM figure captions (T-231) | `parsing.figure_captions` | Writes `figures[].caption` + hash-bound sidecars | Feeds T-232 `type=caption` indexing when enabled |
@@ -2507,6 +2507,14 @@ EMBEDDINGS__PROVIDER=clip                # or voyage — image_dense only appear
 ```
 
 Requires `parsing.figure_assets.enabled=true` (T-230) for `figures[].asset_path` to exist at all; works with any embedding provider, but only `clip`/`voyage` (`MULTIMODAL_EMBEDDING_PROVIDERS`) actually populate `image_dense` — every other provider gets `type=figure` chunks indexed for text search only, same as before this wiring existed.
+
+### Image dense retriever (T-260)
+
+`ImageDenseRetriever` (`src/rag/retrieval/image_dense_retriever.py`) is the read-side counterpart to [T-253](#multimodal-ingestion-wiring-t-253): it embeds a text query with the active `EmbeddingRepository` and searches Qdrant's optional `image_dense` named vector via the new `QdrantVectorStore.search_image_dense()`. This only produces meaningful results for a multimodal provider (`clip`/`voyage`, T-251), whose `embed()` and `embed_image()` share one embedding space — a text query embedding can match `image_dense` points directly, no separate image-to-image search needed.
+
+No feature flag: `ImageDenseRetriever.enabled` mirrors `QdrantVectorStore.image_dense_dim is not None`, and `retrieve()` returns `[]` instead of raising when the active provider has no image space, so the retriever can be constructed and called unconditionally regardless of `EMBEDDINGS__PROVIDER`. `QdrantVectorStore.search_image_dense()` itself raises `VectorStoreError` if called directly against a collection with no `image_dense` space — the retriever's `enabled` check is what keeps that from happening in normal use.
+
+Not yet wired into `HybridRetriever`/`RetrievalPipeline` — it is library code, callable standalone, the same way Graph RAG (T-070) shipped ahead of its runtime wiring. Adding it as a fusion leg alongside dense/BM25 is T-261 (Cross-Modal Hybrid Fusion).
 
 ### Embedding cache
 

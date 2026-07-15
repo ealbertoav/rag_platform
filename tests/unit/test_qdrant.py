@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -97,7 +97,7 @@ def _batch_update_existing_chunk_side_effect(point: MagicMock):
 
     def batch_update_side_effect(**batch_kwargs: object) -> None:
         update_operations = _require_update_operations(batch_kwargs["update_operations"])
-        payload = dict(point.payload or {})
+        payload = dict(cast("dict[str, object]", point.payload or {}))
         for operation in update_operations:
             if not isinstance(operation, SetPayloadOperation) or operation.set_payload is None:
                 continue
@@ -105,7 +105,7 @@ def _batch_update_existing_chunk_side_effect(point: MagicMock):
             update = set_payload.payload
             assert isinstance(update, dict)
             if set_payload.key == "metadata":
-                metadata = dict(payload.get("metadata") or {})
+                metadata = dict(cast("dict[str, object]", payload.get("metadata") or {}))
                 metadata.update(update)
                 payload["metadata"] = metadata
             else:
@@ -1900,36 +1900,39 @@ class TestQdrantFeedbackScore:
         assert point.payload["metadata"][FEEDBACK_REVISION_KEY] == 2
 
     def test_accumulate_feedback_score_serializes_concurrent_updates(self, store, mock_client):
-        current = {"score": 0.0, "revision": 0, "update_id": None}
         lock = threading.Lock()
+        current_score = 0.0
+        current_revision = 0
+        current_update_id: str | None = None
 
         def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
             point = MagicMock()
             with lock:
                 metadata: dict[str, object] = {
-                    "feedback_score": current["score"],
-                    "feedback_revision": current["revision"],
+                    "feedback_score": current_score,
+                    "feedback_revision": current_revision,
                 }
-                if current["update_id"] is not None:
-                    metadata["feedback_update_id"] = current["update_id"]
+                if current_update_id is not None:
+                    metadata["feedback_update_id"] = current_update_id
                 point.payload = {"metadata": metadata}
             return [point]
 
         def set_payload_side_effect(**set_payload_kwargs: object) -> None:
+            nonlocal current_score, current_revision, current_update_id
             payload = set_payload_kwargs["payload"]
             assert isinstance(payload, dict)
             with lock:
-                expected_score = current["score"] + 1.0
-                expected_revision = current["revision"] + 1
+                expected_score = current_score + 1.0
+                expected_revision = current_revision + 1
                 requested_score = float(payload["feedback_score"])
                 requested_revision = int(payload["feedback_revision"])
                 if abs(requested_score - expected_score) > FEEDBACK_SCORE_EPSILON:
                     return
                 if requested_revision != expected_revision:
                     return
-                current["score"] = requested_score
-                current["revision"] = requested_revision
-                current["update_id"] = payload.get("feedback_update_id")
+                current_score = requested_score
+                current_revision = requested_revision
+                current_update_id = payload.get("feedback_update_id")
 
         mock_client.retrieve.side_effect = retrieve_side_effect
         mock_client.set_payload.side_effect = set_payload_side_effect
@@ -1939,8 +1942,8 @@ class TestQdrantFeedbackScore:
                 pool.map(lambda _: store.accumulate_feedback_score("chunk-a", 1.0), range(10))
             )
 
-        assert current["score"] == 10.0
-        assert current["revision"] == 10
+        assert current_score == 10.0
+        assert current_revision == 10
         assert sorted(results) == list(range(1, 11))
 
     def test_accumulate_feedback_score_raises_after_retry_exhaustion(self, store, mock_client):
@@ -2427,6 +2430,71 @@ class TestImageDenseSchema:
         _, kwargs = mock_client.upsert.call_args
         inserted_point = kwargs["points"][0]
         assert inserted_point.vector["image_dense"] == [0.3, 0.4]
+
+
+# ── search_image_dense (T-260) ───────────────────────────────────────────────────
+
+
+class TestSearchImageDense:
+    @pytest.fixture
+    def image_store(self, mock_client: MagicMock) -> QdrantVectorStore:
+        s = QdrantVectorStore(collection="test_col", dense_dim=4, image_dense_dim=512)
+        s._client = mock_client
+        s._collection_ready = True
+        s._model_validated = True
+        return s
+
+    def test_raises_when_provider_not_multimodal(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        with pytest.raises(VectorStoreError, match="image_dense"):
+            store.search_image_dense([0.1] * 4, top_k=5)
+        mock_client.query_points.assert_not_called()
+
+    def test_returns_list_of_tuples(self, image_store: QdrantVectorStore, mock_client: MagicMock):
+        c = _chunk(0)
+        mock_client.query_points.return_value = _query_response([_scored_point(c.id, 0.9, c)])
+        results = image_store.search_image_dense([0.1, 0.2, 0.3, 0.4], top_k=5)
+        assert isinstance(results, list)
+        assert isinstance(results[0], tuple)
+
+    def test_chunk_and_score_types(self, image_store: QdrantVectorStore, mock_client: MagicMock):
+        c = _chunk(0)
+        mock_client.query_points.return_value = _query_response([_scored_point(c.id, 0.85, c)])
+        chunk, score = image_store.search_image_dense([0.1] * 4, top_k=1)[0]
+        assert isinstance(chunk, Chunk)
+        assert isinstance(score, float)
+
+    def test_uses_image_dense_vector_name(
+        self, image_store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        mock_client.query_points.return_value = _query_response([])
+        image_store.search_image_dense([0.1] * 4, top_k=5)
+        _, kwargs = mock_client.query_points.call_args
+        assert kwargs["using"] == "image_dense"
+
+    def test_passes_top_k_as_limit(self, image_store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.query_points.return_value = _query_response([])
+        image_store.search_image_dense([0.1] * 4, top_k=7)
+        _, kwargs = mock_client.query_points.call_args
+        assert kwargs["limit"] == 7
+
+    def test_document_ids_filter(self, image_store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.query_points.return_value = _query_response([])
+        image_store.search_image_dense(
+            [0.1] * 4,
+            top_k=5,
+            document_ids=frozenset({"doc-a"}),
+        )
+        _, kwargs = mock_client.query_points.call_args
+        query_filter = kwargs["query_filter"]
+        assert query_filter.must[0].key == "document_id"
+
+    def test_wraps_error(self, image_store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.query_points.side_effect = RuntimeError("boom")
+        with pytest.raises(VectorStoreError, match="image-dense search failed") as exc_info:
+            image_store.search_image_dense([0.1] * 4, top_k=1)
+        assert exc_info.value.cause is not None
 
 
 class TestCollectionExists:

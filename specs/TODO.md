@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 26 — **T-260** ← next (Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 26 — **T-261** ← next (T-260 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2344,7 +2344,7 @@
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
-> | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
+> | **26** | 16 | T-260 → T-263 | Phase 25 | T-260 ✅ · T-261–T-263 pending |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
@@ -2827,15 +2827,20 @@
 ---
 
 ### T-260 · Image Dense Retriever
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Search `image_dense` named vector.
 - **Inputs:** T-251, T-252, T-021
 - **Outputs:** `ImageDenseRetriever`
-- **Files:** `image_dense_retriever.py`, tests
+- **Files:**
+  - `src/rag/retrieval/image_dense_retriever.py` — new `ImageDenseRetriever`, mirroring `DenseRetriever`: `retrieve(query, top_k)` embeds the query text via `EmbeddingRepository.embed_query()` (reusing `query.embedding` if already set) and searches `QdrantVectorStore.search_image_dense()`; `.enabled` mirrors `image_dense_dim is not None` and gates `retrieve()` to return `[]` instead of raising for non-multimodal providers _(done)_
+  - `src/infrastructure/vectordb/qdrant.py` — new `QdrantVectorStore.search_image_dense()`, raises `VectorStoreError` when `image_dense_dim is None`; `search_dense()` and `search_image_dense()` now share a private `_search_named_vector()` helper (`using=` parameterized) _(done)_
+  - `configs/parsing.yaml` — T-260 note _(done)_
+  - `tests/unit/test_image_dense_retriever.py`, `tests/unit/test_qdrant.py` (`TestSearchImageDense`) _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** No feature flag — matches the T-251/T-252/T-253 convention: `ImageDenseRetriever.enabled` mirrors the collection's `image_dense_dim`, so the retriever can be constructed and called unconditionally regardless of `embeddings.provider`. Library code only, same as Graph RAG (T-070): not called from `HybridRetriever`/`RetrievalPipeline` yet — cross-modal fusion wiring is T-261.
 
 ---
 
