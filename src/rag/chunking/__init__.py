@@ -5,6 +5,7 @@ from typing import Any, Protocol, cast
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.document import Document
 from src.rag.chunking.contextual_headers import ContextualHeadersChunker
+from src.rag.chunking.page_chunker import PageAwareChunker
 from src.rag.chunking.parent_child_chunker import ParentChildChunker
 from src.rag.chunking.proposition_chunker import PropositionChunker
 from src.rag.chunking.recursive_chunker import RecursiveChunker
@@ -34,6 +35,8 @@ def get_chunker(
             chunker = PropositionChunker(**cast(Any, kwargs))
         case "section":
             chunker = SectionChunker(**cast(Any, kwargs))
+        case "page":
+            chunker = PageAwareChunker(**cast(Any, kwargs))
         case _:
             raise ValueError(f"Unknown chunking strategy: {strategy!r}")
 
@@ -45,6 +48,7 @@ def get_chunker(
 __all__ = [
     "Chunker",
     "ContextualHeadersChunker",
+    "PageAwareChunker",
     "ParentChildChunker",
     "PropositionChunker",
     "RecursiveChunker",

@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 24 — **T-241** ← next (T-240 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 24 — **T-242** ← next (T-240 ✅, T-241 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2642,7 +2642,7 @@
 >
 > **Preconditions:** Phases 20–21
 >
-> **Status:** **in progress** — T-240 ✅ · **T-241** ← next
+> **Status:** **in progress** — T-240 ✅ · T-241 ✅ · **T-242** ← next
 
 ---
 
@@ -2670,15 +2670,24 @@
 
 
 ### T-241 · Page-Boundary Chunker & Per-Chunk Page Metadata
-- **Status:** `[ ]` ← **start here**
+- **Status:** `[x]`
 - **Goal:** Set `metadata.page` per chunk.
 - **Inputs:** T-200, T-240
 - **Outputs:** `PageAwareChunker`
-- **Files:** `page_chunker.py`, tests
+- **Files:**
+  - `src/rag/chunking/page_chunker.py` — `PageAwareChunker` with inner `RecursiveChunker`, segments `document.metadata["pages"]` first (mirrors `SectionChunker`) _(done)_
+  - `src/rag/chunking/__init__.py` — register `page` strategy _(done)_
+  - `src/core/settings.py` — `ChunkingSettings.strategy` includes `page` _(done)_
+  - `src/core/constants.py` — `LAYOUT_DOCUMENT_METADATA_KEYS` now excludes `pages` (bug fix: was leaking full page-text array onto every chunk from any strategy) _(done)_
+  - `configs/retrieval.yaml` / `.env.example` — strategy comment _(done)_
+  - `tests/unit/test_page_chunker.py`, `tests/unit/test_chunk_metadata.py`, `tests/unit/test_parsing_repositories.py` _(done)_
+  - `README.md` — enablement, mermaid, T-241 subsection _(done)_
+  - `docs/adr/0001-page-boundary-chunking-strategy.md` — exclusive segment-first strategy decision _(done)_
 - **Acceptance Criteria:**
   - Feature-flagged or backward-compatible defaults preserved
   - Unit tests pass for new modules
   - Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Opt-in via `chunking.strategy: page` (default remains `recursive`). A chunk never spans two pages — page text comes from `PdfLoader`'s `document.metadata["pages"]` list, 1-indexed to match the existing Docling-sourced `CHUNK_PAGE_KEY` convention. Sources without `pages` metadata (DOCX/HTML/Markdown/PPTX) fall back to a single recursive split with `CHUNK_PAGE_KEY` omitted (never defaulted to `1`). Not composable with `section` in the same pass — see ADR 0001.
 
 ---
 

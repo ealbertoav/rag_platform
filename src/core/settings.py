@@ -341,7 +341,7 @@ class PropositionSettings(BaseModel):
 
 
 class ChunkingSettings(BaseModel):
-    strategy: Literal["recursive", "semantic", "parent_child", "proposition", "section"] = (
+    strategy: Literal["recursive", "semantic", "parent_child", "proposition", "section", "page"] = (
         "recursive"
     )
     chunk_size: int = Field(default=500, gt=0)
