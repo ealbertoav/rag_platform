@@ -357,14 +357,10 @@ class TestRrfLegWeights:
         default_results = await default_hr.retrieve(_query(), top_k=2)
         assert default_results[0][0].id == c0.id
 
-        boosted_hr = HybridRetriever(
-            dense=dense_mock, bm25=bm25_mock, rrf_weights={"bm25": 5.0}
-        )
+        boosted_hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, rrf_weights={"bm25": 5.0})
         boosted_results = await boosted_hr.retrieve(_query(), top_k=2)
         assert boosted_results[0][0].id == c1.id
 
     def test_rrf_weights_stored(self):
-        hr = HybridRetriever(
-            dense=MagicMock(), bm25=MagicMock(), rrf_weights={"dense": 1.5}
-        )
+        hr = HybridRetriever(dense=MagicMock(), bm25=MagicMock(), rrf_weights={"dense": 1.5})
         assert hr.rrf_weights == {"dense": 1.5}
