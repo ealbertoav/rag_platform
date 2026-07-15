@@ -319,6 +319,7 @@ REDIS__URL=redis://localhost:6379
 RETRIEVAL__TOP_K_FINAL=5
 RETRIEVAL__HYBRID_FUSION=rrf              # rrf | weighted_linear
 RETRIEVAL__HYBRID_ALPHA=0.7               # weighted_linear only
+# RETRIEVAL__RRF_WEIGHTS__DENSE=1.0         # per-leg RRF weight override (T-263); all default to 1.0
 RETRIEVAL__BM25__BACKEND=memory           # memory (default) | disk (T-165 scale)
 # RETRIEVAL__BM25__DISK_PATH=data/processed/bm25_disk
 # RETRIEVAL__BM25__SEGMENT_SIZE=10000
@@ -2538,6 +2539,27 @@ reranker:
   model_path: Qwen/Qwen3-Reranker-0.6B
   modality_boost: 0.5             # 0.0 (default) = disabled
 ```
+
+### Per-leg RRF weight configuration (T-263)
+
+`rrf_fuse()` (`src/rag/ranking/score_fusion.py`) accepts an optional `weights` list, one entry per positional ranked list, so `score = Σ weight_i / (k + rank_i)` instead of the plain `Σ 1/(k + rank_i)`. `HybridRetriever` exposes this as `rrf_weights: dict[str, float] | None`, keyed by leg name (`dense`, `bm25`, `graph`, `hype`, `hyde`, `hierarchical`, `image`) rather than by position, so config doesn't need to track the internal call order; a missing key defaults to `1.0`.
+
+Configured via `retrieval.rrf_weights` in `configs/retrieval.yaml`, all legs default to `1.0` — unweighted RRF, byte-identical to before T-263:
+
+```yaml
+# configs/retrieval.yaml
+retrieval:
+  rrf_weights:
+    dense: 1.0
+    bm25: 1.0
+    graph: 1.0
+    hype: 1.0
+    hyde: 1.0
+    hierarchical: 1.0
+    image: 1.0
+```
+
+Raise a leg's weight (e.g. `dense: 1.5`) to favor it over the others when it consistently retrieves more relevant chunks for your corpus. Only affects `hybrid_fusion: rrf` (the default) — `weighted_linear` mode still uses `hybrid_alpha` and ignores per-leg weights.
 
 ### Embedding cache
 

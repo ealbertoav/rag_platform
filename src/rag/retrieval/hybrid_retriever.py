@@ -27,6 +27,9 @@ _EXPANSION = 3  # candidate multiplier fed to each retriever before fusion
 _MAX_CANDIDATES = 50
 _MAX_CANDIDATES_FEEDBACK = 150  # allow pool growth when feedback can reorder results
 
+# Order must match the positional legs passed to rrf_fuse() in retrieve().
+_RRF_LEG_ORDER = ("dense", "bm25", "graph", "hype", "hyde", "hierarchical", "image")
+
 
 class HybridRetriever:
     """Fuses dense (HNSW) and sparse (BM25) retrieval.
@@ -34,6 +37,11 @@ class HybridRetriever:
     The default mode is Reciprocal Rank Fusion (RRF), which is alpha-independent.
     Set *fusion_mode* to "weighted_linear" to blend dense/sparse scores using
     *alpha* (1.0 = dense only, 0.0 = BM25 only).
+
+    *rrf_weights* (T-263) optionally overrides the per-leg weight used during
+    RRF fusion, keyed by leg name ("dense", "bm25", "graph", "hype", "hyde",
+    "hierarchical", "image"); omitted legs default to 1.0. Leaving it "None"
+    (the default) reproduces unweighted RRF exactly.
 
     Both searches run concurrently via "asyncio.gather".  Dense and BM25 use
     "asyncio.to_thread"; the graph leg uses the native async Neo4j driver.
@@ -52,6 +60,7 @@ class HybridRetriever:
         fusion_mode: str = "rrf",
         feedback_boost_multiplier: float = 0.0,
         feedback_expand_pool: bool = True,
+        rrf_weights: dict[str, float] | None = None,
     ) -> None:
         self._dense: DenseRetriever = dense
         self._bm25: BM25Retriever = bm25
@@ -64,6 +73,17 @@ class HybridRetriever:
         self._fusion_mode: str = fusion_mode
         self._feedback_boost_multiplier: float = feedback_boost_multiplier
         self._feedback_expand_pool: bool = feedback_expand_pool
+        self.rrf_weights: dict[str, float] | None = rrf_weights
+
+    def _rrf_leg_weights(self) -> list[float] | None:
+        """Per-leg weight vector for "rrf_fuse", ordered as "_RRF_LEG_ORDER".
+
+        Returns "None" (unweighted RRF) when no weights were configured, so
+        the default behaviour is byte-identical to pre-T-263 RRF fusion.
+        """
+        if self.rrf_weights is None:
+            return None
+        return [self.rrf_weights.get(leg, 1.0) for leg in _RRF_LEG_ORDER]
 
     def _uses_expanded_pool(self) -> bool:
         return self._feedback_boost_multiplier > 0 and self._feedback_expand_pool
@@ -189,6 +209,7 @@ class HybridRetriever:
                 hierarchical_results,
                 image_results,
                 top_k=fusion_top_k,
+                weights=self._rrf_leg_weights(),
             )
         fused = apply_feedback_boost(
             fused,

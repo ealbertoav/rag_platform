@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.core.settings import RRFWeightsSettings
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
 from src.domain.services.retrieval_service import RetrievalResult, RetrievalService
@@ -314,6 +315,46 @@ class TestRetrievalPipelineFromSettings:
 
         assert isinstance(pipeline, RetrievalPipeline)
         assert isinstance(pipeline.service, RetrievalService)
+
+    def test_from_settings_wires_rrf_weights(self):
+        with (
+            patch("src.core.settings.settings") as mock_settings,
+            patch(
+                "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings"
+            ) as mock_llm,
+            patch("src.infrastructure.embeddings.get_embedding_provider"),
+            patch("src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings"),
+            patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
+            patch("src.rag.retrieval.bm25_retriever.BM25Retriever"),
+            patch("src.rag.retrieval.dense_retriever.DenseRetriever"),
+            patch("src.rag.retrieval.hybrid_retriever.HybridRetriever") as mock_hybrid,
+            patch("src.rag.ranking.cross_encoder.CrossEncoder.from_settings"),
+        ):
+            mock_settings.retrieval = MagicMock(
+                hybrid_alpha=0.7,
+                top_k_dense=10,
+                top_k_final=5,
+                hybrid_fusion="rrf",
+                rse=MagicMock(enabled=False, max_segment_tokens=1500),
+                rrf_weights=RRFWeightsSettings(dense=2.0, bm25=0.5),
+            )
+            mock_settings.neo4j = MagicMock(enabled=False)
+            mock_settings.reranker = MagicMock(top_k=5)
+            mock_settings.query_expansion = MagicMock(enabled=False)
+            mock_settings.compression = MagicMock(enabled=False)
+            mock_llm.return_value = MagicMock()
+            RetrievalPipeline.from_settings()
+
+        _, kwargs = mock_hybrid.call_args
+        assert kwargs["rrf_weights"] == {
+            "dense": 2.0,
+            "bm25": 0.5,
+            "graph": 1.0,
+            "hype": 1.0,
+            "hyde": 1.0,
+            "hierarchical": 1.0,
+            "image": 1.0,
+        }
 
     def test_from_settings_with_expansion_and_compression(self):
         with (

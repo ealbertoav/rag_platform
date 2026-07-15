@@ -249,12 +249,26 @@ class QualitySettings(BaseModel):
     feedback_loop: FeedbackLoopSettings = Field(default_factory=FeedbackLoopSettings)
 
 
+class RRFWeightsSettings(BaseModel):
+    """Per-leg RRF weight multipliers (T-263). 1.0 = unweighted (pre-T-263 default)."""
+
+    dense: float = Field(default=1.0, ge=0.0)
+    bm25: float = Field(default=1.0, ge=0.0)
+    graph: float = Field(default=1.0, ge=0.0)
+    hype: float = Field(default=1.0, ge=0.0)
+    hyde: float = Field(default=1.0, ge=0.0)
+    hierarchical: float = Field(default=1.0, ge=0.0)
+    image: float = Field(default=1.0, ge=0.0)
+
+
 class RetrievalSettings(BaseModel):
     top_k_dense: int = 50
     top_k_final: int = 5
     # Used only when hybrid_fusion=weighted_linear. RRF (default) ignores this value.
     hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0)
     hybrid_fusion: Literal["rrf", "weighted_linear"] = "rrf"
+    # Per-leg weight override for RRF fusion (T-263); all-1.0 default is unweighted RRF.
+    rrf_weights: RRFWeightsSettings = Field(default_factory=RRFWeightsSettings)
     bm25: BM25Settings = Field(default_factory=BM25Settings)
     hype: HyPESettings = Field(default_factory=HyPESettings)
     hyde: HyDESettings = Field(default_factory=HyDESettings)
