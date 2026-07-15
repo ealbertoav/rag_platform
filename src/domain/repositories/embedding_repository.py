@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
+
+from src.core.exceptions import EmbeddingError
 
 # Domain-layer type aliases — kept here so both repositories and infrastructure
 # share the same definitions without any external dependency.
@@ -46,3 +49,13 @@ class EmbeddingRepository(ABC):
         Default: two separate calls. Override for a single model forward pass.
         """
         return self.embed(texts), self.embed_sparse(texts)
+
+    def embed_image(self, paths: list[Path]) -> list[DenseVector]:
+        """Return one dense vector per image asset, in the same order.
+
+        Unlike embed_query/embed_passage, there is no text-based fallback for
+        image embeddings — only multimodal providers (CLIP, Voyage-multimodal
+        — T-251) can implement this. The default raises so callers get a
+        clear failure instead of a silent, meaningless result.
+        """
+        raise EmbeddingError(f"{type(self).__name__} does not support image embeddings")
