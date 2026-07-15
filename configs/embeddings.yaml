@@ -21,6 +21,7 @@ embeddings:
     model: voyage-large-2     # voyage-code-2 is optimized for code/technical docs
     dimensions: 1536
     multimodal_model: voyage-multimodal-3  # used by embed_image() (T-251)
+    multimodal_dimensions: 1024  # voyage-multimodal-3 output dim; sizes Qdrant's image_dense (T-252)
 
   cohere:
     model: embed-english-v3.0 # embed-multilingual-v3.0 for mixed-language corpora

@@ -16,6 +16,12 @@ parsing:
   # VoyageEmbeddingProvider.embed_image() (embeddings.voyage.multimodal_model) both
   # implement embed_image() from T-250 — each encodes images into the same space
   # as its own embed(), enabling cross-modal similarity search.
+  # T-252 (no feature flag): QdrantVectorStore adds an optional image_dense named
+  # vector, sized via provider_image_dim() — present only when embeddings.provider
+  # is clip/voyage (MULTIMODAL_EMBEDDING_PROVIDERS); other providers keep the
+  # original dense+sparse-only schema. Existing collections gaining a multimodal
+  # provider need scripts/migrate_qdrant_image_dense.py (Qdrant cannot add a named
+  # vector in place, so it rebuilds the collection and restores existing points).
   ocr:
     enabled: false              # T-220/T-223 get_ocr_provider() + scanned-PDF fallback; off by default
     provider: tesseract         # tesseract | easyocr | docling | azure_di

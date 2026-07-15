@@ -19,6 +19,9 @@ from qdrant_client.models import (
     UpdateVectors,
     UpdateVectorsOperation,
 )
+from qdrant_client.models import (
+    SparseVector as QSparseVector,
+)
 
 from src.core.constants import FEEDBACK_REVISION_KEY, FEEDBACK_SCORE_KEY
 from src.core.exceptions import VectorStoreError
@@ -2331,3 +2334,224 @@ class TestCollectionEmbeddingModelHelpers:
         store = QdrantVectorStore(collection="test_col", dense_dim=4)
         store._client = mock_client
         assert store._scan_payload_embedding_models() == {"model-a"}
+
+
+# ── T-252: image_dense schema extension ─────────────────────────────────────────
+
+
+class TestImageDenseSchema:
+    def test_from_settings_uses_provider_image_dim(self):
+        from unittest.mock import MagicMock as _MM
+
+        settings = _MM()
+        settings.qdrant = _MM(url="http://localhost:6333", collection="rag_documents", api_key="")
+        emb = _MM()
+        emb.provider = "clip"
+        emb.dense_dim = 512
+        settings.embeddings = emb
+
+        with (
+            patch("src.core.settings.settings", settings),
+            patch("src.infrastructure.vectordb.qdrant.QdrantClient"),
+        ):
+            instance = QdrantVectorStore.from_settings()
+
+        assert instance.image_dense_dim == 512
+
+    def test_from_settings_none_for_text_only_provider(self):
+        with patch("src.infrastructure.vectordb.qdrant.QdrantClient"):
+            instance = QdrantVectorStore.from_settings()
+        assert instance.image_dense_dim is None
+
+    def test_default_constructor_leaves_image_dense_dim_none(self):
+        store = QdrantVectorStore(collection="col", dense_dim=4)
+        assert store.image_dense_dim is None
+
+    def test_create_collection_omits_image_dense_by_default(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = False
+        s = QdrantVectorStore(collection="new_col", dense_dim=4)
+        s._client = mock_client
+        s._ensure_collection()
+        _, kwargs = mock_client.create_collection.call_args
+        assert "image_dense" not in kwargs["vectors_config"]
+
+    def test_create_collection_includes_image_dense_when_configured(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = False
+        s = QdrantVectorStore(collection="new_col", dense_dim=4, image_dense_dim=512)
+        s._client = mock_client
+        s._ensure_collection()
+        _, kwargs = mock_client.create_collection.call_args
+        vectors_config = kwargs["vectors_config"]
+        assert "image_dense" in vectors_config
+        assert vectors_config["image_dense"].size == 512
+
+    def test_vectors_from_chunk_omits_image_dense_without_embedding(self):
+        chunk = Chunk(document_id="d1", text="hi", embedding=[0.1, 0.2], sparse_vector={1: 0.5})
+        vectors = QdrantVectorStore._vectors_from_chunk(chunk)
+        assert "image_dense" not in vectors
+
+    def test_vectors_from_chunk_includes_image_dense_when_present(self):
+        chunk = Chunk(
+            document_id="d1",
+            text="hi",
+            embedding=[0.1, 0.2],
+            sparse_vector={1: 0.5},
+            image_embedding=[0.3, 0.4],
+        )
+        vectors = QdrantVectorStore._vectors_from_chunk(chunk)
+        assert vectors["image_dense"] == [0.3, 0.4]
+
+    def test_upsert_stores_image_dense_vector(
+        self, store: QdrantVectorStore, mock_client: MagicMock
+    ):
+        chunk = Chunk(
+            document_id="d1",
+            text="hi",
+            embedding=[0.1, 0.2],
+            sparse_vector={1: 0.5},
+            image_embedding=[0.3, 0.4],
+        )
+        point = MagicMock()
+        point.id = chunk.id
+        point.payload = {"metadata": {"feedback_score": 0.0, "feedback_revision": 0}}
+        reads = {"count": 0}
+
+        def retrieve_side_effect(**_kwargs: object) -> list[MagicMock]:
+            reads["count"] += 1
+            return [] if reads["count"] <= 2 else [point]
+
+        mock_client.retrieve.side_effect = retrieve_side_effect
+
+        store.upsert([chunk])
+
+        _, kwargs = mock_client.upsert.call_args
+        inserted_point = kwargs["points"][0]
+        assert inserted_point.vector["image_dense"] == [0.3, 0.4]
+
+
+class TestCollectionExists:
+    def test_true_when_present(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.collection_exists() is True
+
+    def test_false_when_missing(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = False
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.collection_exists() is False
+
+    def test_wraps_errors(self, mock_client: MagicMock):
+        mock_client.collection_exists.side_effect = RuntimeError("down")
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        with pytest.raises(VectorStoreError, match="collection_exists check failed"):
+            store.collection_exists()
+
+
+class TestHasNamedVector:
+    def test_false_when_collection_missing(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = False
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.has_named_vector("image_dense") is False
+        mock_client.get_collection.assert_not_called()
+
+    def test_true_when_vector_present(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(
+                params=MagicMock(vectors={"dense": MagicMock(), "image_dense": MagicMock()})
+            )
+        )
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.has_named_vector("image_dense") is True
+
+    def test_false_when_vector_absent(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(params=MagicMock(vectors={"dense": MagicMock()}))
+        )
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.has_named_vector("image_dense") is False
+
+    def test_false_when_vectors_config_not_a_dict(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.return_value = MagicMock(
+            config=MagicMock(params=MagicMock(vectors=MagicMock()))
+        )
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.has_named_vector("image_dense") is False
+
+    def test_wraps_get_collection_errors(self, mock_client: MagicMock):
+        mock_client.collection_exists.return_value = True
+        mock_client.get_collection.side_effect = RuntimeError("down")
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        with pytest.raises(VectorStoreError, match="get_collection failed"):
+            store.has_named_vector("image_dense")
+
+
+class TestExportAllPoints:
+    def test_reconstructs_chunk_from_dense_and_sparse_vectors(self, mock_client: MagicMock):
+        point = MagicMock()
+        point.payload = {"id": "c1", "document_id": "d1", "text": "hi", "metadata": {}}
+        point.vector = {
+            "dense": [0.1, 0.2],
+            "sparse": QSparseVector(indices=[1, 2], values=[0.5, 0.25]),
+        }
+        mock_client.scroll.return_value = ([point], None)
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+
+        chunks = store.export_all_points()
+
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk.id == "c1"
+        assert chunk.embedding == [0.1, 0.2]
+        assert chunk.sparse_vector == {1: 0.5, 2: 0.25}
+        assert chunk.image_embedding is None
+
+    def test_includes_image_embedding_when_present(self, mock_client: MagicMock):
+        point = MagicMock()
+        point.payload = {"id": "c1", "document_id": "d1", "text": "hi", "metadata": {}}
+        point.vector = {
+            "dense": [0.1, 0.2],
+            "sparse": QSparseVector(indices=[1], values=[0.5]),
+            "image_dense": [0.3, 0.4],
+        }
+        mock_client.scroll.return_value = ([point], None)
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+
+        chunks = store.export_all_points()
+
+        assert chunks[0].image_embedding == [0.3, 0.4]
+
+    def test_paginates_until_offset_none(self, mock_client: MagicMock):
+        def _point(chunk_id: str) -> MagicMock:
+            p = MagicMock()
+            p.payload = {"id": chunk_id, "document_id": "d1", "text": "hi", "metadata": {}}
+            p.vector = {"dense": [0.1], "sparse": QSparseVector(indices=[], values=[])}
+            return p
+
+        mock_client.scroll.side_effect = [
+            ([_point("c1")], "page-2"),
+            ([_point("c2")], None),
+        ]
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+
+        chunks = store.export_all_points()
+        assert [c.id for c in chunks] == ["c1", "c2"]
+
+    def test_empty_collection_returns_empty_list(self, mock_client: MagicMock):
+        mock_client.scroll.return_value = ([], None)
+        store = QdrantVectorStore(collection="test_col", dense_dim=4)
+        store._client = mock_client
+        assert store.export_all_points() == []

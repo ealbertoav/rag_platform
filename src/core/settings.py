@@ -64,6 +64,7 @@ class VoyageEmbeddingConfig(BaseModel):
     model: str = "voyage-large-2"
     dimensions: int = 1536
     multimodal_model: str = "voyage-multimodal-3"  # used by embed_image() (T-251)
+    multimodal_dimensions: int = 1024  # voyage-multimodal-3 output dim; sizes image_dense (T-252)
 
 
 class CohereEmbeddingConfig(BaseModel):

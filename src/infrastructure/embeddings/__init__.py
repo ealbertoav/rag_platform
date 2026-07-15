@@ -6,6 +6,7 @@ from pydantic import SecretStr
 
 from src.core.constants import (
     API_EMBEDDING_PROVIDERS,
+    MULTIMODAL_EMBEDDING_PROVIDERS,
     SELF_HOSTED_EMBEDDING_DEFAULT_DIMS,
     SELF_HOSTED_EMBEDDING_MODEL_PATHS,
 )
@@ -108,6 +109,24 @@ def provider_dense_dim(name: str, settings: Settings) -> int:
             case _:
                 raise AssertionError(f"Unhandled API embedding provider: {name!r}")
     return SELF_HOSTED_EMBEDDING_DEFAULT_DIMS[name]
+
+
+def provider_image_dim(name: str, settings: Settings) -> int | None:
+    """Return the image_dense vector dimension for *name*, or None if it has no
+    image embedding space.
+
+    Only providers in MULTIMODAL_EMBEDDING_PROVIDERS (clip, voyage) override
+    embed_image() with real vectors (T-250/T-251); every other provider keeps
+    raising EmbeddingError, so no image_dense vector is needed in the Qdrant
+    schema (T-252).
+    """
+    if name not in MULTIMODAL_EMBEDDING_PROVIDERS:
+        return None
+    if name == "clip":
+        return SELF_HOSTED_EMBEDDING_DEFAULT_DIMS["clip"]
+    if name == "voyage":
+        return settings.embeddings.voyage.multimodal_dimensions
+    raise AssertionError(f"Unhandled multimodal embedding provider: {name!r}")
 
 
 def embedding_model_identifier(provider_name: str, settings: Settings) -> str:
@@ -249,4 +268,5 @@ __all__ = [
     "embedding_model_identifier",
     "get_embedding_provider",
     "provider_dense_dim",
+    "provider_image_dim",
 ]

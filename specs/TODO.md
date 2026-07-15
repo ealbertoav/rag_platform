@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 25 — **T-252** ← next (T-250 ✅, T-251 ✅; Phase 24 complete: T-240 ✅, T-241 ✅, T-242 ✅, T-243 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 25 — **T-253** ← next (T-250 ✅, T-251 ✅, T-252 ✅; Phase 24 complete: T-240 ✅, T-241 ✅, T-242 ✅, T-243 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2343,7 +2343,7 @@
 > | **22** | 12 | T-220 → T-223 | Phases 19–20 | ✅ complete — T-220 ✅ · T-221 ✅ · T-222 ✅ · T-223 ✅ |
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
-> | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252–T-253 pending |
+> | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 pending |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | pending |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
@@ -2777,15 +2777,23 @@
 
 
 ### T-252 · Qdrant Multimodal Schema Extension
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Add optional `image_dense` vector.
 - **Inputs:** T-013, T-251, T-105
 - **Outputs:** Schema v2
-- **Files:** `qdrant.py`, migration script, tests
+- **Files:**
+  - `src/core/constants.py` — `IMAGE_DENSE_VECTOR_NAME`, `MULTIMODAL_EMBEDDING_PROVIDERS = {"clip", "voyage"}` _(done)_
+  - `src/core/settings.py` — `VoyageEmbeddingConfig.multimodal_dimensions` (sizes voyage-multimodal-3's image_dense) _(done)_
+  - `src/infrastructure/embeddings/__init__.py` — `provider_image_dim(name, settings) -> int | None`, mirrors `provider_dense_dim`; `None` for non-multimodal providers _(done)_
+  - `src/infrastructure/vectordb/qdrant.py` — `QdrantVectorStore(image_dense_dim=...)`, `from_settings()` wires `provider_image_dim()`; `_ensure_collection()` adds the `image_dense` named vector only when set; `_vectors_from_chunk()` writes it only when `chunk.image_embedding is not None`; new `collection_exists()`, `has_named_vector()`, `export_all_points()` helpers _(done)_
+  - `scripts/migrate_qdrant_image_dense.py` — rebuilds an existing collection to add `image_dense` without losing data (Qdrant can't add a named vector in place); no-op when the provider has no image space, the collection doesn't exist, or it's already migrated _(done)_
+  - `configs/embeddings.yaml`, `configs/parsing.yaml` — T-252 notes _(done)_
+  - `tests/unit/test_embedding_providers.py`, `tests/unit/test_qdrant.py`, `tests/unit/test_migrate_qdrant_image_dense.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** No feature flag — matches the T-210/T-250/T-251 convention: the `image_dense` vector activates automatically when `embeddings.provider` is `clip` or `voyage` (`MULTIMODAL_EMBEDDING_PROVIDERS`), leaving the schema byte-identical for every other provider. Schema-only — `Chunk.image_embedding` is still never populated by the ingestion pipeline; wiring `embed_image()` into ingestion is T-253.
 
 ---
 
