@@ -300,7 +300,7 @@ All configuration lives in `configs/*.yaml` with environment variable overrides.
 LLM__MODEL_PATH=models/llm/your-model.gguf
 LLM__N_GPU_LAYERS=-1                       # -1 = all layers on Metal
 LLM__DISABLE_DISK_CACHE=false              # true disables llama.cpp prompt cache (T-162)
-EMBEDDINGS__PROVIDER=bge_m3                # bge_m3 | nomic | qwen_embedding | openai | voyage | cohere | gemini
+EMBEDDINGS__PROVIDER=bge_m3                # bge_m3 | nomic | qwen_embedding | clip | openai | voyage | cohere | gemini
 EMBEDDINGS__DEVICE=mps                     # mps | cuda | cpu
 QDRANT__URL=http://localhost:6333
 QDRANT__COLLECTION=rag_documents
@@ -2427,7 +2427,7 @@ print("Self-RAG steps:", result.self_rag_decisions)
 
 ## Embedding Providers
 
-Seven providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER` (env var or `configs/embeddings.yaml`). After switching, update `EMBEDDINGS__DENSE_DIM` to match the new model and run `python scripts/rebuild_embeddings.py --recreate-collection`.
+Eight providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER` (env var or `configs/embeddings.yaml`). After switching, update `EMBEDDINGS__DENSE_DIM` to match the new model and run `python scripts/rebuild_embeddings.py --recreate-collection`.
 
 ### Self-hosted (no API key, run locally)
 
@@ -2436,6 +2436,7 @@ Seven providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER
 | BGE-M3 **(default)** | `bge_m3` | 1024 | ✓ native | `models/embeddings/bge-m3` |
 | Nomic-Embed-Text v1.5 | `nomic` | 768 | ✗ (BM25) | `nomic-ai/nomic-embed-text-v1.5` |
 | Qwen3-Embedding-0.6B | `qwen_embedding` | 1024 | ✗ (BM25) | `Qwen/Qwen3-Embedding-0.6B` |
+| CLIP (text + image) | `clip` | 512 | ✗ (BM25) | `sentence-transformers/clip-ViT-B-32` |
 
 ### API-based (requires key + `uv sync --extra api-embeddings`)
 
@@ -2447,6 +2448,15 @@ Seven providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER
 | Gemini | `gemini` | 768 | `text-embedding-004` | `EMBEDDINGS__GEMINI__API_KEY` |
 
 All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`; changing dimensions after indexing requires `--recreate-collection`.
+
+### Multimodal embedding (T-251)
+
+`EmbeddingRepository.embed_image()` (T-250) defaults to raising `EmbeddingError` — only providers that genuinely embed images override it. Two do, each into their *own* text embedding space (not cross-compatible with each other):
+
+- **`clip`** — self-hosted, no API key or extra dependency. `embed()` and `embed_image()` route through the same CLIP model instance, so text and image vectors are directly comparable (cross-modal similarity search).
+- **`voyage`** — `embed()`/`embed_query()` keep using `voyage-large-2` (or whatever `EMBEDDINGS__VOYAGE__MODEL` is set to); `embed_image()` uses the separate `voyage-multimodal-3` model (`EMBEDDINGS__VOYAGE__MULTIMODAL_MODEL`) via the Voyage `multimodal_embed` API, since Voyage's text and multimodal models are not interchangeable.
+
+All other providers (BGE-M3, Nomic, Qwen, OpenAI, Cohere, Gemini) still raise on `embed_image()`. Ingestion/retrieval wiring for image chunks (Qdrant `image_dense`, ingest pipeline) lands in T-252/T-253.
 
 When [MMR diversity (T-135)](#diversity-retrieval--mmr-t-135) is enabled and reranked chunks lack stored vectors, the pipeline calls `embed_passage()` to embed chunk text for pairwise similarity. Cohere (`search_document`), Voyage (`document`), and Gemini (`RETRIEVAL_DOCUMENT`) use their document embedding modes; self-hosted providers and OpenAI delegate to `embed()`.
 
