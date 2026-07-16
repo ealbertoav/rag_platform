@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 27 — **T-270** ← next (Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 27 — **T-271** ← next (T-270 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2345,7 +2345,7 @@
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
-> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
+> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271–T-274 pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
@@ -2905,19 +2905,42 @@
 > **Motivation:** Mixed-modality prompts, vision LLM, rich citations, chunk API.
 >
 > **Preconditions:** Phases 21, 24–25
+>
+> **Status:** T-270 ✅ · T-271–T-274 pending
 
 ---
 
 ### T-270 · Mixed-Modality System Prompts
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** `rag_assistant_multimodal.txt`.
 - **Inputs:** T-031, T-202/T-232
 - **Outputs:** Multimodal prompt
-- **Files:** prompts + `generation_service.py`, tests
+- **Files:**
+  - `src/prompts/system/rag_assistant_multimodal.txt` — new system prompt explaining bracketed
+    modality labels (`[TEXT]`/`[TABLE]`/`[FIGURE CAPTION]`/...) to the model _(done)_
+  - `src/rag/chunking/contextual_headers.py` — `has_mixed_modality()`, `join_chunk_context_multimodal()` _(done)_
+  - `src/core/constants.py` — `MODALITY_PROMPT_LABELS` _(done)_
+  - `src/domain/services/generation_service.py` — `generate()`/`stream()` gain an optional
+    `chunks` param; template selection swaps in the multimodal prompt only when enabled AND
+    chunks span more than one modality _(done)_
+  - `src/rag/pipelines/chat_pipeline.py` — `chat()`/`chat_full()`/`benchmark()` pass
+    `resolution.chunks_for_explanation` through to generation _(done)_
+  - `src/core/settings.py` — `GenerationSettings`, `MultimodalPromptSettings` _(done)_
+  - `configs/generation.yaml`, `.env.example` — `generation.multimodal_prompt.enabled` (off by default) _(done)_
+  - `src/type_regression/contextual_headers.py` — `check_multimodal_context_types()` _(done)_
+  - `tests/unit/test_contextual_headers.py`, `tests/unit/test_coverage_gaps.py`,
+    `tests/unit/test_chat_pipeline.py`, `tests/unit/test_settings.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (`generation.multimodal_prompt.enabled: false`)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable (`configs/generation.yaml`)
+- **Notes:** Disabled by default — `GenerationService._build_prompt()` only swaps to the multimodal
+  template when `multimodal_prompt_enabled=True` *and* the passed `chunks` contain more than one
+  `Chunk.modality` (T-210); single-modality context (today's common case) and callers that don't
+  pass `chunks` keep the exact pre-T-270 prompt/context. `join_chunk_context_multimodal()` mirrors
+  `join_chunk_context()` (same passage dedup via `group_chunks_by_passage`) but prefixes each
+  passage with its modality label. Pairs naturally with table chunks (T-202) and caption chunks
+  (T-232) once both are enabled.
 
 ---
 

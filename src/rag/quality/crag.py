@@ -61,7 +61,12 @@ class ContextResolution:
     sources: list[str]
     eval_contexts: list[str]
     chunks_for_explanation: list[Chunk] | None = None
-    """Chunks whose text matches generation context; None when CRAG refined away chunk text."""
+    """Chunks whose text matches generation context; None when CRAG refined away chunk text.
+
+    Also passed to "GenerationService" as the "chunks" arg (T-270) — it drives
+    mixed-modality prompt selection, so "None" here also means generation
+    falls back to the plain single-modality prompt.
+    """
 
 
 def score_retrieval_quality(

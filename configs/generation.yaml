@@ -1,0 +1,9 @@
+generation:
+  multimodal_prompt:
+    enabled: false              # T-270 rag_assistant_multimodal.txt; off by default
+    # When true and the chunks feeding a chat/full response span more than one
+    # Chunk.modality (T-210) — e.g. text + table (T-202) or text + caption
+    # (T-232) — GenerationService swaps in rag_assistant_multimodal.txt and
+    # labels each passage ([TEXT]/[TABLE]/[FIGURE CAPTION]/...) instead of the
+    # plain rag_assistant.txt prompt. Single-modality context (the common case
+    # today) always uses the base prompt, even when enabled.

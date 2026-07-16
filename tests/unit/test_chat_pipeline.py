@@ -410,6 +410,52 @@ class TestChatPipelineBenchmark:
         assert set(run.answer.sources) == {"c0", "c1"}
 
 
+class TestChatPipelineMultimodalPrompt:
+    """T-270 — retrieved chunks flow into GenerationService template selection."""
+
+    @pytest.mark.asyncio
+    async def test_chat_full_uses_multimodal_template_for_mixed_modality_chunks(self):
+        from src.core.constants import MODALITY_TABLE
+
+        llm = _llm_mock("answer")
+        chunks = [
+            _chunk(0),
+            Chunk(id="c1", document_id="doc", text="| a |", modality=MODALITY_TABLE),
+        ]
+        generation = GenerationService(llm=llm, multimodal_prompt_enabled=True)
+        p = ChatPipeline(retrieval=_retrieval_mock("plain context", chunks), generation=generation)
+        await p.chat_full("question")
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "[TABLE]" in prompt
+        assert "plain context" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_chat_full_single_modality_keeps_base_template(self):
+        llm = _llm_mock("answer")
+        chunks = [_chunk(0), _chunk(1)]
+        generation = GenerationService(llm=llm, multimodal_prompt_enabled=True)
+        p = ChatPipeline(retrieval=_retrieval_mock("plain context", chunks), generation=generation)
+        await p.chat_full("question")
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "plain context" in prompt
+
+    @pytest.mark.asyncio
+    async def test_chat_streams_multimodal_template_for_mixed_modality_chunks(self):
+        from src.core.constants import MODALITY_CAPTION
+
+        llm = _llm_mock()
+        chunks = [
+            _chunk(0),
+            Chunk(id="c1", document_id="doc", text="a chart.", modality=MODALITY_CAPTION),
+        ]
+        generation = GenerationService(llm=llm, multimodal_prompt_enabled=True)
+        p = ChatPipeline(retrieval=_retrieval_mock("plain context", chunks), generation=generation)
+        async for _ in await p.chat("question"):
+            pass
+        prompt = llm.generate_stream.call_args.kwargs["prompt"]
+        assert "[FIGURE CAPTION]" in prompt
+
+
 class TestChatPipelineFromSettings:
     def test_from_settings_builds_pipeline(self):
         mock_retrieval = MagicMock()

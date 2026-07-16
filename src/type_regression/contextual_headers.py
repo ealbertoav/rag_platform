@@ -9,7 +9,9 @@ from src.rag.chunking.contextual_headers import (
     build_header_line,
     chunk_context_text,
     group_chunks_by_passage,
+    has_mixed_modality,
     join_chunk_context,
+    join_chunk_context_multimodal,
     passage_context_key,
     prepend_headers,
 )
@@ -35,3 +37,10 @@ def check_contextual_headers_chunker_returns_chunks(doc: Document) -> list[Chunk
     chunker: ContextualHeadersChunker = ContextualHeadersChunker(RecursiveChunker(chunk_size=500))
     chunks: list[Chunk] = chunker.chunk(doc)
     return chunks
+
+
+def check_multimodal_context_types(chunks: list[Chunk]) -> tuple[bool, str]:
+    """Exercise mixed-modality context helper return types (T-270)."""
+    mixed: bool = has_mixed_modality(chunks)
+    joined: str = join_chunk_context_multimodal(chunks)
+    return mixed, joined

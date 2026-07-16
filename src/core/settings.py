@@ -239,6 +239,16 @@ class FeedbackLoopSettings(BaseModel):
     postgres_url: str = ""
 
 
+class MultimodalPromptSettings(BaseModel):
+    """Mixed-modality system prompt for generation (T-270)."""
+
+    enabled: bool = False
+
+
+class GenerationSettings(BaseModel):
+    multimodal_prompt: MultimodalPromptSettings = Field(default_factory=MultimodalPromptSettings)
+
+
 class QualitySettings(BaseModel):
     reliable_rag: ReliableRAGSettings = Field(default_factory=ReliableRAGSettings)
     self_rag: SelfRAGSettings = Field(default_factory=SelfRAGSettings)
@@ -488,6 +498,7 @@ class Settings(BaseSettings):
     metadata: MetadataSettings = Field(default_factory=MetadataSettings)
     query_expansion: QueryExpansionSettings = Field(default_factory=QueryExpansionSettings)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
+    generation: GenerationSettings = Field(default_factory=GenerationSettings)
     quality: QualitySettings = Field(default_factory=QualitySettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
