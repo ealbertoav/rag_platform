@@ -229,6 +229,94 @@ class TestGenerationServiceGaps:
         assert svc._template is not None
         assert llm.generate.call_count == 2
 
+    def test_multimodal_prompt_disabled_ignores_mixed_chunks(self):
+        """T-270: default (disabled) is byte-identical to pre-T-270 behavior."""
+        from src.core.constants import MODALITY_TABLE
+
+        llm = MagicMock()
+        llm.generate.return_value = "answer"
+        svc = GenerationService(llm=llm, multimodal_prompt_enabled=False)
+        chunks = [
+            Chunk(document_id="d1", text="prose."),
+            Chunk(document_id="d1", text="| a |", modality=MODALITY_TABLE),
+        ]
+        svc.generate("q1", "plain context", ["c0"], chunks)
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "plain context" in prompt
+        assert "[TABLE]" not in prompt
+        assert svc._multimodal_template is None
+
+    def test_multimodal_prompt_enabled_without_chunks_uses_base_template(self):
+        """T-270: no chunks passed → falls back to the base template."""
+        llm = MagicMock()
+        llm.generate.return_value = "answer"
+        svc = GenerationService(llm=llm, multimodal_prompt_enabled=True)
+        svc.generate("q1", "plain context", ["c0"])
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "plain context" in prompt
+        assert svc._multimodal_template is None
+
+    def test_multimodal_prompt_enabled_single_modality_uses_base_template(self):
+        """T-270: enabled but chunks share one modality → still uses base template."""
+        llm = MagicMock()
+        llm.generate.return_value = "answer"
+        svc = GenerationService(llm=llm, multimodal_prompt_enabled=True)
+        chunks = [Chunk(document_id="d1", text="prose one."), Chunk(document_id="d1", text="p2.")]
+        svc.generate("q1", "plain context", ["c0"], chunks)
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "plain context" in prompt
+        assert svc._multimodal_template is None
+
+    def test_multimodal_prompt_enabled_mixed_modality_uses_multimodal_template(self):
+        """T-270: enabled + mixed modality → swaps in the labeled multimodal context."""
+        from src.core.constants import MODALITY_TABLE
+
+        llm = MagicMock()
+        llm.generate.return_value = "answer"
+        svc = GenerationService(llm=llm, multimodal_prompt_enabled=True)
+        chunks = [
+            Chunk(document_id="d1", text="prose passage."),
+            Chunk(document_id="d1", text="| a | b |", modality=MODALITY_TABLE),
+        ]
+        svc.generate("q1", "plain context", ["c0"], chunks)
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "plain context" not in prompt
+        assert "[TEXT]\nprose passage." in prompt
+        assert "[TABLE]\n| a | b |" in prompt
+        assert svc._multimodal_template is not None
+
+    def test_multimodal_prompt_enabled_mixed_modality_affects_stream(self):
+        """T-270: stream() applies the same template selection as generate()."""
+        import asyncio
+
+        from src.core.constants import MODALITY_CAPTION
+
+        async def _tokens():
+            yield "ok"
+
+        llm = MagicMock()
+        llm.generate_stream.return_value = _tokens()
+        svc = GenerationService(llm=llm, multimodal_prompt_enabled=True)
+        chunks = [
+            Chunk(document_id="d1", text="prose passage."),
+            Chunk(document_id="d1", text="a chart.", modality=MODALITY_CAPTION),
+        ]
+
+        async def _drain():
+            async for _ in svc.stream("q1", "plain context", chunks):
+                pass
+
+        asyncio.run(_drain())
+        prompt = llm.generate_stream.call_args.kwargs["prompt"]
+        assert "[FIGURE CAPTION]\na chart." in prompt
+
+    def test_from_settings_reads_multimodal_prompt_flag(self):
+        llm = MagicMock()
+        with patch("src.core.settings.settings") as mock_settings:
+            mock_settings.generation.multimodal_prompt.enabled = True
+            svc = GenerationService.from_settings(llm)
+        assert svc._multimodal_prompt_enabled is True
+
 
 class TestRetrievalServiceGaps:
     def test_hybrid_property(self):

@@ -6,6 +6,7 @@ from src.core.settings import (
     ChunkingSettings,
     CompressionSettings,
     EmbeddingSettings,
+    GenerationSettings,
     LLMSettings,
     LoggingSettings,
     MetadataSettings,
@@ -38,6 +39,7 @@ class TestSettingsSingleton:
         assert isinstance(settings.metadata, MetadataSettings)
         assert isinstance(settings.chunking, ChunkingSettings)
         assert isinstance(settings.parsing, ParsingSettings)
+        assert isinstance(settings.generation, GenerationSettings)
 
 
 class TestYamlDefaults:
@@ -164,6 +166,9 @@ class TestYamlDefaults:
     def test_proposition_defaults_from_yaml(self):
         assert settings.chunking.proposition.quality_threshold == 7
 
+    def test_generation_defaults_from_yaml(self):
+        assert settings.generation.multimodal_prompt.enabled is False
+
     def test_parsing_defaults_from_yaml(self):
         assert settings.parsing.layout_parser.enabled is False
         assert settings.parsing.layout_parser.provider == "docling"
@@ -288,6 +293,11 @@ class TestEnvVarOverride:
         assert s.parsing.figure_captions.openai.model == "gpt-4o"
         assert s.parsing.figure_captions.gemini.api_key.get_secret_value() == "gemini-secret"
         assert s.parsing.figure_captions.gemini.model == "gemini-1.5-flash"
+
+    def test_generation_multimodal_prompt_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("GENERATION__MULTIMODAL_PROMPT__ENABLED", "true")
+        s = Settings()
+        assert s.generation.multimodal_prompt.enabled is True
 
 
 class TestValidation:

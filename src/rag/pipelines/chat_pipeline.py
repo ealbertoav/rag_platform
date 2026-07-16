@@ -90,7 +90,9 @@ class ChatPipeline:
         query = question if isinstance(question, Query) else Query(text=question)
         result = await self.retrieval.retrieve(query)
         resolution = await self._resolve_context(query.text, result)
-        return self.generation.stream(query.text, resolution.context)
+        return self.generation.stream(
+            query.text, resolution.context, resolution.chunks_for_explanation
+        )
 
     async def chat_full(
         self,
@@ -118,6 +120,7 @@ class ChatPipeline:
             query.text,
             resolution.context,
             resolution.sources,
+            resolution.chunks_for_explanation,
         )
 
         highlighting_requested = highlights or self._source_highlighting_enabled
@@ -208,6 +211,7 @@ class ChatPipeline:
             question,
             resolution.context,
             resolution.sources,
+            resolution.chunks_for_explanation,
         )
 
         elapsed = (time.monotonic() - t0) * 1000

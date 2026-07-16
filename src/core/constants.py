@@ -59,6 +59,16 @@ CHUNK_TYPE_TO_MODALITY: dict[str, str] = {
     CHUNK_TYPE_CAPTION: MODALITY_CAPTION,
     CHUNK_TYPE_PAGE: MODALITY_PAGE,
 }
+# Bracketed labels for mixed-modality generation context (T-270); unknown
+# modalities fall back to their upper-cased name.
+MODALITY_PROMPT_LABELS: dict[str, str] = {
+    MODALITY_TEXT: "TEXT",
+    MODALITY_TABLE: "TABLE",
+    MODALITY_FIGURE: "FIGURE",
+    MODALITY_CAPTION: "FIGURE CAPTION",
+    MODALITY_PAGE: "PAGE",
+    MODALITY_IMAGE: "IMAGE",
+}
 # Document-level layout/outline metadata; excluded from per-chunk spreads.
 # Per-chunk section labels use CHUNK_SECTION_KEY (promoted by chunk_metadata).
 LAYOUT_DOCUMENT_METADATA_KEYS: frozenset[str] = frozenset(

@@ -10,6 +10,7 @@ from src.core.constants import (
     CHUNK_RAW_TEXT_KEY,
     CHUNK_SECTION_KEY,
     MERGED_CHUNK_IDS_KEY,
+    MODALITY_PROMPT_LABELS,
     PARENT_CONTEXT_TEXT_KEY,
 )
 from src.domain.entities.chunk import Chunk
@@ -138,6 +139,31 @@ def join_chunk_context(chunks: list[Chunk]) -> str:
         text = chunk_context_text(representative)
         if text:
             parts.append(text)
+    return "\n\n".join(parts)
+
+
+def has_mixed_modality(chunks: list[Chunk]) -> bool:
+    """True when *chunks* span more than one "Chunk.modality" value (T-270)."""
+    modalities = {chunk.modality for chunk in chunks}
+    return len(modalities) > 1
+
+
+def join_chunk_context_multimodal(chunks: list[Chunk]) -> str:
+    """Join chunk passages like "join_chunk_context", prefixed with a bracketed
+    modality label per passage (T-270), e.g. "[TABLE]" or "[FIGURE CAPTION]".
+
+    Pairs with "rag_assistant_multimodal.txt", which explains the label scheme
+    to the model. The representative chunk of each passage group determines
+    the label.
+    """
+    parts: list[str] = []
+    for representative, _group in group_chunks_by_passage(chunks):
+        text = chunk_context_text(representative)
+        if text:
+            label = MODALITY_PROMPT_LABELS.get(
+                representative.modality, representative.modality.upper()
+            )
+            parts.append(f"[{label}]\n{text}")
     return "\n\n".join(parts)
 
 

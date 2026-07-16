@@ -58,6 +58,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Image caption chunks (T-232):** When `parsing.caption_chunks.enabled=true`, ingest indexes `type=caption` chunks from `figures[].caption` (stable UUIDv5 IDs, skip-path backfill like T-202 tables). Off by default. See [Image Caption Chunks (T-232)](#image-caption-chunks-t-232).
 
+> **Mixed-modality system prompts (T-270):** When `generation.multimodal_prompt.enabled=true`, `/chat` and `/chat/full` swap in `rag_assistant_multimodal.txt` — but only when the chunks feeding the answer actually span more than one `Chunk.modality` (T-210), e.g. text plus table (T-202) or caption (T-232) chunks. Each passage is prefixed with its modality (`[TEXT]`/`[TABLE]`/`[FIGURE CAPTION]`/...) so the model knows to call out non-prose evidence. Single-modality context keeps the original `rag_assistant.txt` prompt even when enabled. Off by default. See [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270).
+
 ---
 
 ## Table of Contents
@@ -86,6 +88,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Explainable retrieval in standard chat (T-143)](#explainable-retrieval-in-standard-chat-t-143)
     - [Source highlighting in standard chat (T-144)](#source-highlighting-in-standard-chat-t-144)
     - [Retrieval feedback (T-145)](#retrieval-feedback-t-145)
+    - [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
@@ -409,6 +412,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), caption chunks (T-232), figure assets (T-230), VLM figure captions (T-231), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
+| `configs/generation.yaml` | Mixed-modality system prompt (T-270) — `generation.multimodal_prompt.enabled`, off by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -1343,6 +1347,31 @@ curl -X POST http://localhost:8000/feedback \
 ```
 
 See [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) and [Multi-Replica Feedback (T-146)](#multi-replica-feedback-t-146) in Retrieval Pipeline Details. Enable [API Rate Limiting (T-160)](#api-rate-limiting-t-160) before exposing `/feedback` on a public API with HPA ≥ 2.
+
+#### Mixed-Modality System Prompts (T-270)
+
+When `generation.multimodal_prompt.enabled=true`, `GenerationService` picks between two system prompts per request:
+
+| Condition | Prompt used |
+|---|---|
+| `generation.multimodal_prompt.enabled=false` (default) | `rag_assistant.txt` — unchanged pre-T-270 behavior |
+| Enabled, but retrieved chunks share one `Chunk.modality` (T-210) | `rag_assistant.txt` — most queries today (plain text retrieval) |
+| Enabled, and chunks span more than one modality (e.g. text + table from T-202, or text + caption from T-232) | `rag_assistant_multimodal.txt`, with each passage labeled `[TEXT]`, `[TABLE]`, `[FIGURE CAPTION]`, `[FIGURE]`, `[PAGE]`, or `[IMAGE]` |
+
+`join_chunk_context_multimodal()` (`src/rag/chunking/contextual_headers.py`) builds the labeled context, mirroring `join_chunk_context()`'s passage dedup (`group_chunks_by_passage`). `ChatPipeline` passes the same chunks used to build generation context (`resolution.chunks_for_explanation`) into `GenerationService.generate()` / `.stream()`; that value is `None` when Corrective RAG (T-142) refines context to a non-chunk passage, in which case the base prompt is always used.
+
+```yaml
+# configs/generation.yaml
+generation:
+  multimodal_prompt:
+    enabled: false   # T-270 — off by default
+```
+
+```bash
+GENERATION__MULTIMODAL_PROMPT__ENABLED=true
+```
+
+Requires table chunks (T-202) and/or caption chunks (T-232) enabled at ingest for retrieval to actually surface a second modality — enabling this flag alone has no effect on text-only corpora.
 
 **Python client:**
 ```python
@@ -2626,6 +2655,7 @@ rag_implementation/
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
 │   ├── parsing.yaml            # Layout parser (T-200), table/caption chunks (T-202/T-232), figure assets/captions (T-230/T-231), OCR T-220–T-223; T-210 domain note
+│   ├── generation.yaml         # Mixed-modality system prompt (T-270), off by default
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml
