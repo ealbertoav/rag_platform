@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 26 — **T-263** ← next (T-260 ✅, T-261 ✅, T-262 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 27 — **T-270** ← next (Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2344,7 +2344,7 @@
 > | **23** | 13 | T-230 → T-232 | Phases 20–21 | **complete** — T-230 ✅ → T-231 ✅ → T-232 ✅ |
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
-> | **26** | 16 | T-260 → T-263 | Phase 25 | T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 pending |
+> | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
@@ -2886,15 +2886,16 @@
 
 
 ### T-263 · Per-Leg RRF Weight Configuration
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Configurable RRF weights per leg.
 - **Inputs:** T-022, T-261
 - **Outputs:** Weighted RRF
-- **Files:** `score_fusion.py`, tests
+- **Files:** `score_fusion.py`, `hybrid_retriever.py`, `settings.py`, `retrieval_pipeline.py`, `configs/retrieval.yaml`, `.env.example`, tests
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** `rrf_fuse()` takes an optional `weights: list[float] | None` parallel to its positional ranked lists (`score = Σ weight_i / (k + rank_i)`); omitting it (default) is byte-identical to pre-T-263 unweighted RRF. `HybridRetriever` takes `rrf_weights: dict[str, float] | None` keyed by leg name (`dense, bm25, graph, hype, hyde, hierarchical, image`, matching the fixed `_RRF_LEG_ORDER` used to build the positional vector for `rrf_fuse`); missing keys default to `1.0`. Wired end-to-end via `RetrievalSettings.rrf_weights` (new `RRFWeightsSettings`, all fields default `1.0`) → `configs/retrieval.yaml` → `RetrievalPipeline.from_settings()`. Only meaningful under `hybrid_fusion: rrf` (the default); `weighted_linear` mode is unaffected.
 
 ---
 
@@ -3137,6 +3138,6 @@ T-150 + T-281 ──► T-282
 23. **Phase 23 — Priority 13 (VLM):** T-230 ✅ → T-231 ✅ → T-232 ✅ _(complete)_
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 ✅ → T-241 ✅ → T-242 ✅ → T-243 ✅ _(complete)_
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 ✅ → T-251 ✅ → T-252 ✅ → T-253 ✅ _(complete)_
-26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 ✅ → T-263
+26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 ✅ → T-263 ✅ _(complete)_
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274
 28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 → T-281 → T-282

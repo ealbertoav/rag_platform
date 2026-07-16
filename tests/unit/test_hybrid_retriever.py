@@ -303,3 +303,64 @@ class TestImageLeg:
             else:
                 wl.assert_called_once()
                 rrf.assert_not_called()
+
+
+# ── per-leg RRF weights (T-263) ───────────────────────────────────────────────
+
+
+class TestRrfLegWeights:
+    @pytest.mark.asyncio
+    async def test_default_rrf_weights_none_passed_to_rrf_fuse(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock)
+        with patch("src.rag.retrieval.hybrid_retriever.rrf_fuse") as rrf:
+            rrf.return_value = [(_chunk(0), 0.5)]
+            await hr.retrieve(_query(), top_k=3)
+            _, kwargs = rrf.call_args
+            assert kwargs["weights"] is None
+
+    @pytest.mark.asyncio
+    async def test_configured_weights_forwarded_in_leg_order(self):
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(_chunk(0), 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(_chunk(1), 1.2)]
+        image_mock = MagicMock()
+        image_mock.enabled = True
+        image_mock.retrieve.return_value = [(_chunk(2), 0.6)]
+        hr = HybridRetriever(
+            dense=dense_mock,
+            bm25=bm25_mock,
+            image_retriever=image_mock,
+            rrf_weights={"dense": 2.0, "image": 0.5},
+        )
+        with patch("src.rag.retrieval.hybrid_retriever.rrf_fuse") as rrf:
+            rrf.return_value = [(_chunk(0), 0.5)]
+            await hr.retrieve(_query(), top_k=3)
+            _, kwargs = rrf.call_args
+            # order: dense, bm25, graph, hype, hyde, hierarchical, image
+            assert kwargs["weights"] == [2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5]
+
+    @pytest.mark.asyncio
+    async def test_configured_weights_change_fusion_outcome(self):
+        c0 = _chunk(0)  # ranked #1 in dense
+        c1 = _chunk(1)  # sole hit in bm25, would otherwise lose to c0
+        dense_mock = MagicMock()
+        dense_mock.retrieve.return_value = [(c0, 0.9)]
+        bm25_mock = MagicMock()
+        bm25_mock.search.return_value = [(c1, 0.8)]
+
+        default_hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock)
+        default_results = await default_hr.retrieve(_query(), top_k=2)
+        assert default_results[0][0].id == c0.id
+
+        boosted_hr = HybridRetriever(dense=dense_mock, bm25=bm25_mock, rrf_weights={"bm25": 5.0})
+        boosted_results = await boosted_hr.retrieve(_query(), top_k=2)
+        assert boosted_results[0][0].id == c1.id
+
+    def test_rrf_weights_stored(self):
+        hr = HybridRetriever(dense=MagicMock(), bm25=MagicMock(), rrf_weights={"dense": 1.5})
+        assert hr.rrf_weights == {"dense": 1.5}

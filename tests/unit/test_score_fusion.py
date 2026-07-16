@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from src.core.constants import FEEDBACK_SCORE_KEY
 from src.domain.entities.chunk import Chunk
 from src.rag.ranking.score_fusion import rrf_fuse, weighted_linear_fuse
@@ -91,6 +93,50 @@ class TestRrfFuse:
         fused = rrf_fuse([(dense_chunk, 0.9)], [(sparse_chunk, 0.8)], top_k=1)
         assert fused[0][0].text == "dense view"
         assert FEEDBACK_SCORE_KEY not in fused[0][0].metadata
+
+
+# ── rrf_fuse — per-leg weights (T-263) ───────────────────────────────────────
+
+
+class TestRrfFuseWeights:
+    def test_no_weights_matches_all_ones(self):
+        dense = [_r(0), _r(1)]
+        sparse = [_r(1), _r(2)]
+        unweighted = rrf_fuse(dense, sparse, top_k=3)
+        all_ones = rrf_fuse(dense, sparse, top_k=3, weights=[1.0, 1.0])
+        assert unweighted == all_ones
+
+    def test_higher_weight_flips_relative_ranking(self):
+        # c0 is the sole (rank 0) hit in list_a. c1 sits behind a filler in
+        # list_b (rank 1), so unweighted it scores lower than c0.
+        list_a = [_r(0)]
+        list_b = [_r(6), _r(1)]
+        unweighted = {c.id: s for c, s in rrf_fuse(list_a, list_b, top_k=3, weights=[1.0, 1.0])}
+        assert unweighted["c0"] > unweighted["c1"]
+        # Boosting list_b's weight is enough to flip c1 above c0.
+        weighted = {c.id: s for c, s in rrf_fuse(list_a, list_b, top_k=3, weights=[1.0, 1.1])}
+        assert weighted["c1"] > weighted["c0"]
+
+    def test_zero_weight_excludes_list_contribution(self):
+        dense = [_r(0)]
+        sparse = [_r(1)]
+        fused = rrf_fuse(dense, sparse, top_k=2, weights=[1.0, 0.0])
+        scores = {c.id: s for c, s in fused}
+        assert scores["c1"] == 0.0
+        assert scores["c0"] > 0.0
+
+    def test_weight_scales_score_linearly(self):
+        single = rrf_fuse([_r(0)], top_k=1, weights=[1.0])[0][1]
+        doubled = rrf_fuse([_r(0)], top_k=1, weights=[2.0])[0][1]
+        assert doubled == pytest.approx(single * 2.0)
+
+    def test_mismatched_weights_length_raises(self):
+        with pytest.raises(ValueError, match="weights"):
+            rrf_fuse([_r(0)], [_r(1)], top_k=2, weights=[1.0])
+
+    def test_weights_none_is_default(self):
+        results = rrf_fuse([_r(0), _r(1)], top_k=2, weights=None)
+        assert len(results) == 2
 
 
 # ── weighted_linear_fuse ──────────────────────────────────────────────────────

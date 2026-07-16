@@ -66,6 +66,16 @@ class TestYamlDefaults:
         assert settings.retrieval.bm25.disk_path == "data/processed/bm25_disk"
         assert settings.retrieval.bm25.segment_size == 10_000
 
+    def test_rrf_weights_default_from_yaml(self):
+        weights = settings.retrieval.rrf_weights
+        assert weights.dense == pytest.approx(1.0)
+        assert weights.bm25 == pytest.approx(1.0)
+        assert weights.graph == pytest.approx(1.0)
+        assert weights.hype == pytest.approx(1.0)
+        assert weights.hyde == pytest.approx(1.0)
+        assert weights.hierarchical == pytest.approx(1.0)
+        assert weights.image == pytest.approx(1.0)
+
     def test_neo4j_defaults_from_yaml(self):
         assert settings.neo4j.enabled is False
 
@@ -209,6 +219,14 @@ class TestEnvVarOverride:
         s = Settings()
         assert s.retrieval.hybrid_alpha == pytest.approx(0.5)
 
+    def test_rrf_weights_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("RETRIEVAL__RRF_WEIGHTS__DENSE", "2.0")
+        monkeypatch.setenv("RETRIEVAL__RRF_WEIGHTS__BM25", "0.5")
+        s = Settings()
+        assert s.retrieval.rrf_weights.dense == pytest.approx(2.0)
+        assert s.retrieval.rrf_weights.bm25 == pytest.approx(0.5)
+        assert s.retrieval.rrf_weights.graph == pytest.approx(1.0)
+
     def test_disable_disk_cache_override(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("LLM__DISABLE_DISK_CACHE", "true")
         s = Settings()
@@ -276,6 +294,10 @@ class TestValidation:
     def test_hybrid_alpha_out_of_range(self):
         with pytest.raises(ValidationError):
             RetrievalSettings(hybrid_alpha=1.5)
+
+    def test_rrf_weight_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            RetrievalSettings(rrf_weights={"dense": -1.0})
 
     def test_api_port_out_of_range(self):
         with pytest.raises(ValidationError):

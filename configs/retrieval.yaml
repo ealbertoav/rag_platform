@@ -22,6 +22,14 @@ retrieval:
   top_k_final: 5               # max chunks passed to generation after rerank/compression
   hybrid_alpha: 0.7            # weighted_linear only: 1.0 = dense, 0.0 = BM25
   hybrid_fusion: rrf             # rrf (default) | weighted_linear
+  rrf_weights:                  # T-263: per-leg weight multiplier for RRF fusion; all 1.0 = unweighted (pre-T-263 default)
+    dense: 1.0
+    bm25: 1.0
+    graph: 1.0
+    hype: 1.0
+    hyde: 1.0
+    hierarchical: 1.0
+    image: 1.0
   bm25:
     backend: memory              # memory (default) | disk (mmap/segmented — T-165)
     disk_path: data/processed/bm25_disk

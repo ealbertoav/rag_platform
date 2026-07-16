@@ -18,25 +18,35 @@ def rrf_fuse(
     *ranked_lists: list[SearchResult],
     top_k: int,
     k: int = RRF_K,
+    weights: list[float] | None = None,
 ) -> list[SearchResult]:
     """Reciprocal Rank Fusion over any number of ranked result lists.
 
     For each chunk that appears in at least one list, its fused score is:
 
-        score = Σ 1 / (k + rank_i) for each list i that contains the chunk
+        score = Σ weight_i / (k + rank_i) for each list i that contains the chunk
 
     The constant k (default 60) controls how many early ranks are penalized.
     Higher k → less penalty for lower ranks; lower k → stronger top-rank boost.
 
+    *weights* assigns a per-list multiplier (e.g. to favor the dense leg over
+    BM25). It must have one entry per positional list in *ranked_lists* when
+    given. Omitting it (the default) weights every list at 1.0 — unweighted RRF.
+
     Chunks are deduplicated by "Chunk.id" — non-feedback metadata is merged
     across retriever views of the same chunk (feedback scores stay on the first view).
     """
+    if weights is not None and len(weights) != len(ranked_lists):
+        msg = f"weights must have {len(ranked_lists)} entries, got {len(weights)}"
+        raise ValueError(msg)
+
     scores: dict[str, float] = {}
     chunks: dict[str, Chunk] = {}
 
-    for ranked in ranked_lists:
+    for list_idx, ranked in enumerate(ranked_lists):
+        weight = weights[list_idx] if weights is not None else 1.0
         for rank, (chunk, _) in enumerate(ranked):
-            scores[chunk.id] = scores.get(chunk.id, 0.0) + 1.0 / (k + rank + 1)
+            scores[chunk.id] = scores.get(chunk.id, 0.0) + weight / (k + rank + 1)
             _register_chunk(chunks, chunk)
 
     return [

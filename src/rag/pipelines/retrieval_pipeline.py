@@ -240,6 +240,7 @@ class RetrievalPipeline:
                 _settings().quality.feedback_loop.enabled
                 and _settings().quality.feedback_loop.expand_candidate_pool
             ),
+            rrf_weights=cfg.rrf_weights.model_dump(),
         )
 
         expander = None
