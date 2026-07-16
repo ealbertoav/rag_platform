@@ -1,0 +1,5 @@
+Describe only what is visible in this image. Focus on details relevant to answering the question below, but do not guess or add information that is not actually shown.
+
+Question: $question
+
+Description:

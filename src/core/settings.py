@@ -245,8 +245,20 @@ class MultimodalPromptSettings(BaseModel):
     enabled: bool = False
 
 
+class VisionGenerationSettings(BaseModel):
+    """Query-time vision-LLM figure descriptions (T-271).
+
+    Reuses the `parsing.figure_captions` provider/credentials, but this flag is
+    independent of `parsing.figure_captions.enabled` — ingest-time captioning
+    (T-231) and generation-time vision description toggle separately.
+    """
+
+    enabled: bool = False
+
+
 class GenerationSettings(BaseModel):
     multimodal_prompt: MultimodalPromptSettings = Field(default_factory=MultimodalPromptSettings)
+    vision_generation: VisionGenerationSettings = Field(default_factory=VisionGenerationSettings)
 
 
 class QualitySettings(BaseModel):
