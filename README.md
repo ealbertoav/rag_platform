@@ -66,6 +66,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Vision-capable LLM generation path (T-271):** When `generation.vision_generation.enabled=true`, `GenerationService` describes each figure chunk's image with the T-231 vision provider, keyed to the live question, and swaps that description in for the chunk's static ingest-time caption before generation. Reuses `parsing.figure_captions` credentials but toggles independently. Off by default. See [Vision-Capable LLM Generation Path (T-271)](#vision-capable-llm-generation-path-t-271).
 
+> **Agent explain/highlight/source references (T-274):** `POST /chat/agent/full` accepts the same `explain`/`highlights`/`source_references` query params as `/chat/full` (T-143/T-144/T-272), and `AgentPipeline` passes retrieved chunks into generation so mixed-modality prompts (T-270) and vision generation (T-271) also apply to agent answers. Self-RAG (T-141) mode accepts the flags but leaves the fields at their defaults. See [Agent Explain, Highlight, and Source References (T-274)](#agent-explain-highlight-and-source-references-t-274).
+
 ---
 
 ## Table of Contents
@@ -121,6 +123,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Async Neo4j driver (T-164)](#async-neo4j-driver-t-164)
 - [Agentic RAG](#agentic-rag)
   - [Self-RAG decision loop (T-141)](#self-rag-decision-loop-t-141)
+  - [Agent Explain, Highlight, and Source References (T-274)](#agent-explain-highlight-and-source-references-t-274)
 - [Embedding Providers](#embedding-providers)
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
@@ -1232,7 +1235,7 @@ Example response (excerpt):
 }
 ```
 
-> `explain` and `highlights` default to `false`. When disabled or when post-generation steps cannot produce output, the corresponding fields are omitted (`response_model_exclude_none`). Streaming `/chat` and agent endpoints do not support explanations or highlights — use `/chat/full`.
+> `explain` and `highlights` default to `false`. When disabled or when post-generation steps cannot produce output, the corresponding fields are omitted (`response_model_exclude_none`). Streaming `/chat` does not support explanations or highlights — use `/chat/full`. `/chat/agent/full` accepts the same `explain`/`highlights`/`source_references` query params (T-274); see [Agent Explain, Highlight, and Source References (T-274)](#agent-explain-highlight-and-source-references-t-274).
 
 #### Scoped retrieval filters (T-134)
 
@@ -2550,6 +2553,20 @@ print("Self-RAG steps:", result.self_rag_decisions)
 
 `GRAPH_LOOKUP` is active when `NEO4J__ENABLED=true` — `RetrievalPipeline.from_settings()` wires `GraphRetriever` automatically, and the agent awaits the async Neo4j lookup (T-164). Without Neo4j, the agent still works; it skips graph lookups and relies on dense + BM25 (+ multi-query RRF fusion).
 
+### Agent Explain, Highlight, and Source References (T-274)
+
+`POST /chat/agent/full` accepts the same `explain`, `highlights`, and `source_references` query params as `/chat/full` (T-143/T-144/T-272) — same defaults, same combined-call-then-fallback behavior, same `response_model_exclude_none` omission of unset fields.
+
+```bash
+curl -X POST "http://localhost:8000/chat/agent/full?explain=true&highlights=true&source_references=true" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do IAM roles work in EKS?", "max_iterations": 3}'
+```
+
+`AgentPipeline.chat()`/`chat_full()` also pass the chunks used for the final answer into `GenerationService.stream()`/`generate()`, so the mixed-modality prompt (T-270) and vision-capable generation (T-271) apply to agent answers exactly as they do on `/chat`/`/chat/full`.
+
+> These flags only affect the **standard agent loop**. When `quality.self_rag.enabled=true`, the Self-RAG loop's multi-branch gates don't thread a resolved chunk list out to `chat_full()`, so `explanations`/`highlights`/`source_references` stay at their defaults (`null`/`null`/`[]`) regardless of the flags — Self-RAG multimodal generation still works (chunks are still passed to `generate()` per draft), only the post-generation explain/highlight/reference side-outputs are unaffected.
+
 ---
 
 ## Embedding Providers
@@ -2723,7 +2740,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 | `POST` | `/chat` | Stream answer as Server-Sent Events; optional `document_ids`, `metadata_filters`, `min_score` (T-134) |
 | `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat`; optional `?explain=true` for per-source retrieval explanations (T-143); optional `?highlights=true` or `quality.source_highlighting.enabled` for supporting spans (T-144); optional `?source_references=true` or `quality.source_references.enabled` for structured multimodal citations (T-272) |
 | `POST` | `/chat/agent` | Agentic RAG — multistep retrieval, streaming answer (`max_iterations` 1–5) |
-| `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata |
+| `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata; same optional `?explain=true`/`?highlights=true`/`?source_references=true` as `/chat/full` (T-274, standard agent loop only) |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
 | `POST` | `/ingest/upload` | Ingest an uploaded file (multipart) |
 | `POST` | `/feedback` | Record user relevance feedback on a retrieved chunk — body: `{query_id, chunk_id, relevant}`; returns `204` / `404` / `502` (T-145); subject to rate limit when enabled (T-160) |

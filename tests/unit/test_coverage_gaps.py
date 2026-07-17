@@ -1516,6 +1516,6 @@ class TestFinalCoverageGaps:
             generation=generation,
             llm=MagicMock(),
         )
-        with patch("src.rag.pipelines.chat_pipeline.explain_and_highlight") as combined:
+        with patch("src.rag.quality.post_generation.explain_and_highlight") as combined:
             await pipeline.chat_full("q", explain=True)
             combined.assert_not_called()

@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 27 — **T-274** ← next (T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 28 — **T-280** ← next (Phase 27 complete: T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅, T-274 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -3070,15 +3070,44 @@
 
 
 ### T-274 · Agent & Streaming Multimodal Explain/Highlight
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** T-143/T-144 on agent endpoints.
 - **Inputs:** T-114, T-144, T-270
 - **Outputs:** Agent explain/highlight
-- **Files:** `agent_pipeline.py`, tests
+- **Files:**
+  - `src/rag/pipelines/agent_pipeline.py` — `chat()`/`chat_full()` pass retrieved
+    chunks into `GenerationService.stream()`/`generate()` (multimodal prompt +
+    vision selection, T-270/T-271); `chat_full()` gains `explain`/`highlights`/
+    `source_references` params, populating `AgentRunResult` for the standard
+    agentic-retrieve loop (Self-RAG leaves them at their defaults) _(done)_
+  - `src/rag/quality/post_generation.py` — `resolve_explain_and_highlight()`
+    extracted so `ChatPipeline.chat_full` and `AgentPipeline.chat_full` share
+    one explain/highlight/source-reference resolution path _(done)_
+  - `src/rag/pipelines/chat_pipeline.py` — `llm`/`source_highlighting_enabled`/
+    `source_references_enabled` public properties for agent reuse; `chat_full()`
+    refactored onto the shared resolver (behavior unchanged) _(done)_
+  - `src/api/routers/chat.py` — `/chat/agent/full` gains `explain`/`highlights`/
+    `source_references` query params, `response_model_exclude_none=True` _(done)_
+  - `src/api/schemas/agent.py` — `AgentChatResponse` gains optional
+    `explanations`/`highlights`/`source_references` fields _(done)_
+  - `tests/unit/test_agent_pipeline.py`, `tests/unit/test_self_rag.py`,
+    `tests/unit/test_api.py`, `tests/unit/test_coverage_gaps.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved — `/chat/agent`
+    and `/chat/agent/full` responses are unchanged unless the new query params
+    are passed or `quality.source_highlighting`/`quality.source_references` are
+    enabled in config
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable —
+    reuses existing `quality.source_highlighting.enabled` / `quality.source_references.enabled`
+    (`configs/retrieval.yaml`, T-144/T-272) and `generation.multimodal_prompt.enabled`
+    (`configs/generation.yaml`, T-270); no new config keys introduced
+- **Notes:** Self-RAG (T-141) drafts now also pass retrieved chunks through to
+  `generate()` for multimodal prompt selection, but the Self-RAG loop doesn't
+  thread a `chunks_for_explanation` list through its multi-branch gates, so
+  `explain`/`highlights`/`source_references` are accepted but have no effect
+  when `quality.self_rag.enabled=true` — documented as a known limitation
+  rather than silently ignored.
 
 ---
 
@@ -3244,5 +3273,5 @@ T-150 + T-281 ──► T-282
 24. **Phase 24 — Priority 14 (Structure-Aware Chunking):** T-240 ✅ → T-241 ✅ → T-242 ✅ → T-243 ✅ _(complete)_
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 ✅ → T-251 ✅ → T-252 ✅ → T-253 ✅ _(complete)_
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 ✅ → T-263 ✅ _(complete)_
-27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 → T-271 → T-272 → T-273 → T-274
+27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 ✅ → T-271 ✅ → T-272 ✅ → T-273 ✅ → T-274 ✅ _(complete)_
 28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 → T-281 → T-282

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -11,15 +12,19 @@ from opentelemetry import trace
 from pydantic import BaseModel, Field, field_validator
 
 from src.domain.entities.chunk import Chunk
+from src.domain.entities.source_reference import SourceReference, source_references_for_chunks
 from src.domain.repositories.llm_repository import LLMRepository
 from src.rag.chunking.contextual_headers import format_passages_for_llm
 from src.rag.quality.explainable_retrieval import (
     ChunkExplanation,
+    explain_chunks,
     map_explanations_to_chunks,
     parse_explain_retrieval,
+    resolve_chunks_for_sources,
 )
 from src.rag.quality.source_highlighting import (
     ChunkHighlights,
+    extract_highlights,
     map_highlights_to_chunks,
     parse_source_highlighting,
 )
@@ -149,3 +154,82 @@ def explain_and_highlight(
         span.set_attribute("quality.highlight_chunk_count", len(highlights))
         span.set_attribute("latency_ms", round((time.monotonic() - t0) * 1000, 1))
         return explanations, highlights
+
+
+async def resolve_explain_and_highlight(
+    query_text: str,
+    answer: Answer,
+    chunks: list[Chunk] | None,
+    llm: LLMRepository | None,
+    *,
+    explain: bool,
+    highlighting_requested: bool,
+    source_references_requested: bool,
+) -> tuple[list[ChunkExplanation] | None, dict[str, list[str]] | None, list[SourceReference]]:
+    """Resolve T-143/T-144/T-272 side-outputs for a generated *answer*.
+
+    Shared by "ChatPipeline.chat_full" and "AgentPipeline.chat_full" so both
+    endpoints attach explanations, highlight spans, and structured source
+    references the same way — a combined call is tried first when both explain
+    and highlighting are requested, falling back to the dedicated explain or
+    highlight path for whichever side it didn't cover. Each side is omitted
+    (not returned empty) when disabled, no matching source chunks resolve, or
+    the LLM/parse step fails.
+    """
+    llm_side_requested = (explain or highlighting_requested) and llm is not None
+
+    source_chunks: list[Chunk] | None = None
+    if (
+        answer.sources
+        and chunks is not None
+        and (llm_side_requested or source_references_requested)
+    ):
+        source_chunks = resolve_chunks_for_sources(answer.sources, chunks)
+        if not source_chunks:
+            source_chunks = None
+
+    source_references_result: list[SourceReference] = []
+    if source_references_requested and source_chunks is not None:
+        source_references_result = source_references_for_chunks(source_chunks)
+
+    explanations: list[ChunkExplanation] | None = None
+    highlights_result: dict[str, list[str]] | None = None
+    if explain and highlighting_requested and source_chunks is not None and llm is not None:
+        explanation_list, highlight_map = await asyncio.to_thread(
+            explain_and_highlight,
+            query_text,
+            answer,
+            source_chunks,
+            llm,
+        )
+        if explanation_list:
+            explanations = explanation_list
+        if highlight_map:
+            highlights_result = highlight_map
+
+    if explain and explanations is None and source_chunks is not None and llm is not None:
+        explanation_list = await asyncio.to_thread(
+            explain_chunks,
+            query_text,
+            source_chunks,
+            llm,
+        )
+        if explanation_list:
+            explanations = explanation_list
+
+    if (
+        highlighting_requested
+        and highlights_result is None
+        and source_chunks is not None
+        and llm is not None
+    ):
+        highlight_map = await asyncio.to_thread(
+            extract_highlights,
+            answer,
+            source_chunks,
+            llm,
+        )
+        if highlight_map:
+            highlights_result = highlight_map
+
+    return explanations, highlights_result, source_references_result
