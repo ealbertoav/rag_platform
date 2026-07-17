@@ -231,6 +231,12 @@ class SourceHighlightingSettings(BaseModel):
     enabled: bool = False
 
 
+class SourceReferencesSettings(BaseModel):
+    """Structured multimodal citations on /chat/full (T-272)."""
+
+    enabled: bool = False
+
+
 class FeedbackLoopSettings(BaseModel):
     enabled: bool = False
     boost_multiplier: float = Field(default=0.05, ge=0.0)
@@ -267,6 +273,9 @@ class QualitySettings(BaseModel):
     crag: CRAGSettings = Field(default_factory=CRAGSettings)
     source_highlighting: SourceHighlightingSettings = Field(
         default_factory=SourceHighlightingSettings,
+    )
+    source_references: SourceReferencesSettings = Field(
+        default_factory=SourceReferencesSettings,
     )
     feedback_loop: FeedbackLoopSettings = Field(default_factory=FeedbackLoopSettings)
 

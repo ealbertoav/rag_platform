@@ -155,6 +155,9 @@ class TestYamlDefaults:
     def test_source_highlighting_defaults_from_yaml(self):
         assert settings.quality.source_highlighting.enabled is False
 
+    def test_source_references_defaults_from_yaml(self):
+        assert settings.quality.source_references.enabled is False
+
     def test_web_search_defaults_from_yaml(self):
         assert settings.web_search.provider == "none"
         assert settings.web_search.max_results == 5

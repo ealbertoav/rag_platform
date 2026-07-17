@@ -48,6 +48,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Multimodal domain model (T-210):** First-class modality fields on `Chunk` (`modality`, `image_embedding`, `asset_path`), structured `SourceReference` citations, and `Answer.source_references` — all with backward-compatible defaults (`modality=text`, empty references). Legacy `metadata.type` table/figure chunks still resolve via `resolve_modality` / `SourceReference.from_chunk`. Domain-only; API wiring is T-272. See [Multimodal Domain Model (T-210)](#multimodal-domain-model-t-210).
 
+> **Rich SourceReference API response (T-272):** Optional structured multimodal citations on `POST /chat/full?source_references=true` (or globally via `quality.source_references.enabled` in `configs/retrieval.yaml`) — one `SourceReference` (T-210) per cited chunk, with modality, page, section, table/figure ID, bbox, and asset path when available. Pure mapping from already-resolved source chunks; no extra LLM call. Off by default; `Answer.source_references` stays `[]`. See [Rich Source References (T-272)](#rich-source-references-t-272).
+
 > **Scanned-PDF OCR fallback (T-223):** When `parsing.ocr.enabled=true`, low-text / empty PDF loads run through `get_ocr_provider()` after `load_document` and replace document content before chunking. Dual-hash dedup (`content_hash` or PDF `source_file_hash`) preserves OCR-derived chunks when toggling OCR flags; failed OCR stores a pending hash for retry. Off by default. Providers: self-hosted (T-221) or Azure DI (T-222). See [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223) and [docs/ocr-providers.md](docs/ocr-providers.md).
 
 > **Azure Document Intelligence OCR (T-222):** Optional cloud OCR via `parsing.ocr.provider=azure_di` — REST `prebuilt-read`, credentials under `parsing.ocr.azure_di` / `PARSING__OCR__AZURE_DI__*`. Factory caches by Azure DI identity and disposes the previous `httpx` client on credential/config rotation. See [docs/ocr-providers.md](docs/ocr-providers.md).
@@ -92,6 +94,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Retrieval feedback (T-145)](#retrieval-feedback-t-145)
     - [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270)
     - [Vision-Capable LLM Generation Path (T-271)](#vision-capable-llm-generation-path-t-271)
+    - [Rich Source References in standard chat (T-272)](#rich-source-references-in-standard-chat-t-272)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
@@ -413,7 +416,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), rich source references (T-272), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), caption chunks (T-232), figure assets (T-230), VLM figure captions (T-231), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
 | `configs/generation.yaml` | Mixed-modality system prompt (T-270) — `generation.multimodal_prompt.enabled`; vision-capable generation (T-271) — `generation.vision_generation.enabled`; both off by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
@@ -515,7 +518,7 @@ Chunking **strategy** is selected via `chunking.strategy` (`recursive`, `semanti
 
 Several optional index-time techniques are configured in `configs/retrieval.yaml`. All are **off by default** — enabling any flag leaves behavior unchanged when it stays `false`.
 
-Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140, **retrieval feedback loop** · T-145) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details). **Corrective RAG** (T-142) runs in the chat pipeline after retrieval returns and is documented in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142). **Explainable retrieval** (T-143) is opt-in via `?explain=true` on `/chat/full`; **source highlighting** (T-144) via `?highlights=true` or `quality.source_highlighting.enabled` — both documented in [Explainable Retrieval (T-143)](#explainable-retrieval-t-143) and [Source Highlighting (T-144)](#source-highlighting-t-144). **Retrieval feedback** (T-145) is a separate `POST /feedback` API documented in [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145).
+Query-time retrieval techniques (**multi-faceted filtering** · T-134, **adaptive classification & strategies** · T-131/T-132, **HyDE** · T-130, **step-back** · T-133, **MMR diversity** · T-135, **RSE** · T-123, **parent context** · T-124, **Reliable RAG relevancy grading** · T-140, **retrieval feedback loop** · T-145) are configured under `retrieval.*`, `quality.*`, or `query_expansion.*` (or per-request on `/chat`) and documented in [Retrieval Pipeline Details](#retrieval-pipeline-details). **Corrective RAG** (T-142) runs in the chat pipeline after retrieval returns and is documented in [Corrective RAG — Web Search Fallback (T-142)](#corrective-rag--web-search-fallback-t-142). **Explainable retrieval** (T-143) is opt-in via `?explain=true` on `/chat/full`; **source highlighting** (T-144) via `?highlights=true` or `quality.source_highlighting.enabled`; **rich source references** (T-272) via `?source_references=true` or `quality.source_references.enabled` — all three documented in [Explainable Retrieval (T-143)](#explainable-retrieval-t-143), [Source Highlighting (T-144)](#source-highlighting-t-144), and [Rich Source References (T-272)](#rich-source-references-t-272). **Retrieval feedback** (T-145) is a separate `POST /feedback` API documented in [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145).
 
 | Technique | Config path | Indexed in | Retrieved via |
 |---|---|---|---|
@@ -1130,7 +1133,7 @@ parsing:
 
 #### Multimodal Domain Model (T-210)
 
-Phase 21 extends domain entities for multimodal retrieval and attribution. No feature flag — defaults preserve text-only behavior. Ingestion and API wiring land in later phases (T-230+, T-272).
+Phase 21 extends domain entities for multimodal retrieval and attribution. No feature flag — defaults preserve text-only behavior. Ingestion wiring lands in T-230+; API response wiring is [Rich Source References (T-272)](#rich-source-references-t-272).
 
 ```mermaid
 flowchart LR
@@ -1394,6 +1397,44 @@ GENERATION__VISION_GENERATION__ENABLED=true
 ```
 
 Soft-fails per figure chunk (vision generation disabled, no provider configured, missing asset file, vision-call error, or empty description) by falling back to the chunk's existing text — no effect on corpora without figure chunks. Pairs with [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270): when both are enabled and the answer's chunks span more than one modality, the live description is labeled `[FIGURE]` in the prompt like any other figure chunk.
+
+#### Rich Source References in standard chat (T-272)
+
+`POST /chat/full` accepts `?source_references=true` per request, or you can enable it for all `/chat/full` calls via `quality.source_references.enabled: true` in `configs/retrieval.yaml`. When requested and sources are present, the response includes `source_references` — one [`SourceReference`](#multimodal-domain-model-t-210) (T-210) per cited chunk ID, built with `source_references_for_chunks()`. Unlike `explain`/`highlights`, this is a pure mapping over already-resolved source chunks — it never issues an LLM call and never adds to `latency_ms` beyond the mapping itself.
+
+```yaml
+# configs/retrieval.yaml
+quality:
+  source_references:
+    enabled: false   # set true to attach structured citations on every /chat/full call
+```
+
+```bash
+curl -X POST "http://localhost:8000/chat/full?source_references=true" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was Q3 revenue?"}'
+```
+
+Example response (excerpt):
+```json
+{
+  "answer": "Q3 revenue was $12.4M...",
+  "sources": ["chunk-abc"],
+  "latency_ms": 3100.2,
+  "token_count": 48,
+  "source_references": [
+    {
+      "chunk_id": "chunk-abc",
+      "document_id": "annual-report-2023",
+      "modality": "table",
+      "page": 12,
+      "table_id": "table-3"
+    }
+  ]
+}
+```
+
+Disabled by default; `source_references` is always present as `[]` (never omitted) when no references were attached, matching `sources`. See [Rich Source References (T-272)](#rich-source-references-t-272) in Retrieval Pipeline Details.
 
 **Python client:**
 ```python
@@ -2648,7 +2689,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 |---|---|---|
 | `GET` | `/health` | Server status and model load state |
 | `POST` | `/chat` | Stream answer as Server-Sent Events; optional `document_ids`, `metadata_filters`, `min_score` (T-134) |
-| `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat`; optional `?explain=true` for per-source retrieval explanations (T-143); optional `?highlights=true` or `quality.source_highlighting.enabled` for supporting spans (T-144) |
+| `POST` | `/chat/full` | Non-streaming chat, returns complete answer; same optional filter fields as `/chat`; optional `?explain=true` for per-source retrieval explanations (T-143); optional `?highlights=true` or `quality.source_highlighting.enabled` for supporting spans (T-144); optional `?source_references=true` or `quality.source_references.enabled` for structured multimodal citations (T-272) |
 | `POST` | `/chat/agent` | Agentic RAG — multistep retrieval, streaming answer (`max_iterations` 1–5) |
 | `POST` | `/chat/agent/full` | Agentic RAG — complete answer plus `iterations`, `actions`, and `self_rag_decisions` metadata |
 | `POST` | `/ingest/path` | Ingest a local file or directory |
@@ -3447,6 +3488,35 @@ curl -X POST "http://localhost:8000/chat/full?explain=true&highlights=true" \
   -H "Content-Type: application/json" \
   -d '{"question": "What was Q3 revenue?"}'
 ```
+
+##### Rich Source References (T-272)
+
+Rich source references are an optional **response-shaping** step on `POST /chat/full` — unlike explain/highlights, they involve no LLM call. When `source_references=true` or `quality.source_references.enabled` is set, and sources are present, the pipeline resolves each cited chunk ID to its `Chunk` (same `resolve_chunks_for_sources()` used by T-143/T-144) and maps it to a [`SourceReference`](#multimodal-domain-model-t-210) (T-210) via `source_references_for_chunks()`.
+
+| Field | Type | Source |
+|---|---|---|
+| `chunk_id` | string | Citation chunk ID |
+| `document_id` | string \| null | `Chunk.document_id` |
+| `modality` | string | `resolve_modality()` — explicit `Chunk.modality` or inferred from `metadata.type` (T-210) |
+| `page`, `section` | int \| null, string \| null | Layout metadata (T-200) when present |
+| `table_id`, `figure_id` | string \| null | Set on table (T-202) / figure (T-230) chunks |
+| `bbox` | float[4] \| null | Layout bounding box when present |
+| `asset_path` | string \| null | `Chunk.asset_path` or `metadata.asset_path` (T-230) |
+| `snippet`, `score` | string \| null, float \| null | Reserved for future retrieval-score wiring; unset by the chat pipeline today |
+
+**Combines freely with T-143/T-144:** all three share the same resolved `source_chunks` list, so requesting `explain`, `highlights`, and `source_references` together costs no extra chunk-resolution work; only explain/highlights add an LLM call.
+
+**CRAG interaction:** same gate as T-143/T-144 — chunk-derived references are empty when CRAG refines context to a web-only passage (no chunks back the answer).
+
+**Trade-offs:** no extra LLM call and no measurable latency cost beyond the mapping. Configure globally via `quality.source_references.enabled` in `configs/retrieval.yaml`. `source_references` is always a list (`[]` when disabled or no sources), never omitted — unlike the optional `explanations`/`highlights` fields.
+
+```bash
+curl -X POST "http://localhost:8000/chat/full?source_references=true" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was Q3 revenue?"}'
+```
+
+**Tests:** `tests/unit/test_chat_pipeline.py` (`TestChatPipelineFull` — disabled by default, param/config enablement, no LLM call, empty-context handling, combined with explain/highlights); `tests/unit/test_api.py` (`TestChatFull` — query param wiring, response shape).
 
 ##### Retrieval Feedback Loop (T-145)
 

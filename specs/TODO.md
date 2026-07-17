@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 27 — **T-272** ← next (T-270 ✅, T-271 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 27 — **T-273** ← next (T-270 ✅, T-271 ✅, T-272 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2345,7 +2345,7 @@
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
-> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272–T-274 pending |
+> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273–T-274 pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
@@ -2906,7 +2906,7 @@
 >
 > **Preconditions:** Phases 21, 24–25
 >
-> **Status:** T-270 ✅ · T-271 ✅ · T-272–T-274 pending
+> **Status:** T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273–T-274 pending
 
 ---
 
@@ -2995,15 +2995,38 @@
 
 
 ### T-272 · Rich SourceReference Model & API Response
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Structured citations in API.
 - **Inputs:** T-210, T-144, T-032
 - **Outputs:** `source_references`
-- **Files:** entities + API schemas, tests
+- **Files:**
+  - `src/rag/pipelines/chat_pipeline.py` — `ChatPipeline.chat_full()` gains a `source_references`
+    param; reuses the same `resolve_chunks_for_sources()` call already made for T-143/T-144 to
+    map cited chunks to `SourceReference` via `source_references_for_chunks()` (T-210) — no LLM
+    call _(done)_
+  - `src/api/routers/chat.py` — `POST /chat/full?source_references=true` query param;
+    `ChatFullResponse.source_references: list[SourceReference]` (default `[]`, always present,
+    unlike the optional `explanations`/`highlights` fields) _(done)_
+  - `src/core/settings.py` — `SourceReferencesSettings`, `QualitySettings.source_references`
+    _(done)_
+  - `configs/retrieval.yaml`, `.env.example` — `quality.source_references.enabled` (off by
+    default) _(done)_
+  - `tests/unit/test_chat_pipeline.py`, `tests/unit/test_api.py`, `tests/unit/test_settings.py`
+    _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (`quality.source_references.enabled: false`; `source_references` defaults to `[]`)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable (`configs/retrieval.yaml`)
+- **Notes:** Disabled by default via `quality.source_references.enabled` or the per-request
+  `?source_references=true` query param — same "config OR per-request" pattern as T-144. Unlike
+  explain (T-143) and highlighting (T-144), this is a pure mapping over already-resolved source
+  chunks (`Chunk` → `SourceReference.from_chunk`); it never triggers an LLM call and adds no
+  latency beyond the mapping itself. Shares `source_chunks` resolution with the T-143/T-144 path
+  in `chat_full()`, so requesting all three together costs no extra chunk-resolution work.
+  `source_references` is a plain `list[SourceReference]` (not `Optional`) on `Answer`, so it is
+  always emitted on `/chat/full` — `[]` when disabled or no sources, never omitted — matching the
+  existing `sources: list[str]` field's behavior. `score`/`snippet` on `SourceReference` stay
+  unset by the chat pipeline (reserved for future retrieval-score wiring per T-210's design).
 
 ---
 

@@ -78,6 +78,7 @@ def _pipeline(
     llm: MagicMock | None = None,
     *,
     source_highlighting_enabled: bool = False,
+    source_references_enabled: bool = False,
 ) -> ChatPipeline:
     llm = llm or _llm_mock()
     return ChatPipeline(
@@ -85,6 +86,7 @@ def _pipeline(
         generation=_service(llm),
         llm=llm,
         source_highlighting_enabled=source_highlighting_enabled,
+        source_references_enabled=source_references_enabled,
     )
 
 
@@ -546,6 +548,52 @@ class TestChatPipelineFull:
         ]
         result = await _pipeline(llm=llm).chat_full("q", explain=True, highlights=True)
         _assert_both_post_gen(result, llm, call_count=4)
+
+    @pytest.mark.asyncio
+    async def test_chat_full_source_references_disabled_by_default(self):
+        llm = _llm_mock("answer text")
+        result = await _pipeline(llm=llm).chat_full("q")
+        assert result.source_references == []
+        assert llm.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_full_source_references_param_attaches_references(self):
+        chunks = [_chunk(0), _chunk(1)]
+        result = await _pipeline(chunks=chunks).chat_full("q", source_references=True)
+        assert {ref.chunk_id for ref in result.source_references} == {"c0", "c1"}
+
+    @pytest.mark.asyncio
+    async def test_chat_full_source_references_config_enabled(self):
+        chunks = [_chunk(0), _chunk(1)]
+        result = await _pipeline(
+            chunks=chunks,
+            source_references_enabled=True,
+        ).chat_full("q")
+        assert {ref.chunk_id for ref in result.source_references} == {"c0", "c1"}
+
+    @pytest.mark.asyncio
+    async def test_chat_full_source_references_no_llm_call(self):
+        llm = _llm_mock("answer text")
+        result = await _pipeline(llm=llm).chat_full("q", source_references=True)
+        assert result.source_references != []
+        assert llm.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_full_source_references_empty_context_yields_no_references(self):
+        result = await _pipeline(context="").chat_full("q", source_references=True)
+        assert result.source_references == []
+
+    @pytest.mark.asyncio
+    async def test_chat_full_source_references_combines_with_explain_and_highlights(self):
+        llm = _llm_with_post_gen_responses(_explain_json(highlights=_SAMPLE_HIGHLIGHT_ITEMS))
+        result = await _pipeline(llm=llm).chat_full(
+            "q",
+            explain=True,
+            highlights=True,
+            source_references=True,
+        )
+        _assert_both_post_gen(result, llm, call_count=2)
+        assert {ref.chunk_id for ref in result.source_references} == {"c0", "c1"}
 
 
 class TestChatPipelineAttributes:

@@ -354,6 +354,41 @@ class TestChatFull:
             data = (await c.post("/chat/full", json={"question": "q"})).json()
         assert data["highlights"] == {"c0": ["relevant text 0"]}
 
+    @pytest.mark.asyncio
+    async def test_source_references_empty_by_default(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/full", json={"question": "q"})).json()
+        assert data["source_references"] == []
+
+    @pytest.mark.asyncio
+    async def test_source_references_true_passes_flag_to_pipeline(
+        self, app_client, chat_pipeline_mock
+    ):
+        async with _client(app_client) as c:
+            await c.post("/chat/full?source_references=true", json={"question": "q"})
+        chat_pipeline_mock.chat_full.assert_awaited_once()
+        assert chat_pipeline_mock.chat_full.await_args.kwargs["source_references"] is True
+
+    @pytest.mark.asyncio
+    async def test_source_references_included_when_present(self, app_client, chat_pipeline_mock):
+        from src.domain.entities.source_reference import SourceReference
+
+        chat_pipeline_mock.chat_full = AsyncMock(
+            return_value=Answer(
+                query_id="q-1",
+                text="Hello world",
+                sources=["c0"],
+                latency_ms=42.0,
+                token_count=2,
+                source_references=[SourceReference(chunk_id="c0", document_id="doc")],
+            )
+        )
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/full", json={"question": "q"})).json()
+        assert data["source_references"] == [
+            {"chunk_id": "c0", "document_id": "doc", "modality": "text"}
+        ]
+
 
 # ── /chat/agent ────────────────────────────────────────────────────────────────
 
