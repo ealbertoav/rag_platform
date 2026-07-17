@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 28 — **T-280** ← next (Phase 27 complete: T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅, T-274 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 28 — **T-281** ← next (T-280 ✅; Phase 27 complete: T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅, T-274 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2346,7 +2346,7 @@
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273 ✅ · T-274 pending |
-> | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
+> | **28** | 18 | T-280 → T-282 | Phases 25–26 | T-280 ✅ · T-281–T-282 pending |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
 
@@ -3117,19 +3117,39 @@
 > **Motivation:** Golden dataset, modality metrics, regression gate.
 >
 > **Preconditions:** Phases 25–26
+>
+> **Status:** T-280 ✅ · T-281–T-282 pending
 
 ---
 
 ### T-280 · Multimodal Golden Dataset Builder
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Table/figure QA samples.
 - **Inputs:** T-040, T-253
 - **Outputs:** Golden JSONL
-- **Files:** `build_multimodal_golden.py`, tests
+- **Files:**
+  - `src/evals/multimodal_golden_dataset.py` — `chunk_modality()` (via T-210's `resolve_modality`),
+    `filter_multimodal_chunks()`, `build_multimodal_golden()` (reuses T-040's
+    `SyntheticDatasetBuilder.generate_from_chunks()`), `MultimodalQAPair`, `save_jsonl()` /
+    `load_jsonl()` _(done)_
+  - `scripts/build_multimodal_golden.py` — CLI mirroring `run_evals.py`: loads BM25, filters to
+    table/figure chunks, generates QA pairs, writes
+    `datasets/goldens/multimodal_qa_dataset.jsonl` _(done)_
+  - `Makefile` — `multimodal-golden` target _(done)_
+  - `configs/parsing.yaml` — T-280 note _(done)_
+  - `tests/unit/test_multimodal_golden_dataset.py`, `tests/unit/test_build_multimodal_golden.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (new opt-in script; no existing
+    code path changes)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** Table chunks (T-202) tag modality only via `metadata.type=table` (never set
+  `Chunk.modality`), while figure chunks (T-253) set `Chunk.modality="figure"` explicitly;
+  `chunk_modality()` reconciles both via T-210's `resolve_modality()` so filtering/tagging is
+  correct regardless of convention. Output is JSON Lines (one QA row per line), distinct from
+  T-040's `qa_dataset.json` array, so the multimodal golden can grow independently. No `min_pairs`
+  expansion (unlike `run_evals.py`) — table/figure corpora are typically small, so the script
+  processes every table/figure chunk found rather than searching for a target pair count.
 
 ---
 
