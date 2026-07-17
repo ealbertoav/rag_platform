@@ -12,6 +12,7 @@ from src.api.dependencies import get_agent_pipeline, get_chat_pipeline
 from src.api.schemas.agent import AgentChatResponse
 from src.api.security import require_api_key
 from src.domain.entities.query import Query
+from src.domain.entities.source_reference import SourceReference
 from src.rag.pipelines.agent_pipeline import AgentPipeline
 from src.rag.pipelines.chat_pipeline import ChatPipeline
 from src.rag.quality.explainable_retrieval import ChunkExplanation
@@ -59,6 +60,7 @@ class ChatFullResponse(BaseModel):
     token_count: int
     explanations: list[ChunkExplanation] | None = None
     highlights: dict[str, list[str]] | None = None
+    source_references: list[SourceReference] = Field(default_factory=list)
 
 
 @router.post("", response_class=StreamingResponse)
@@ -93,11 +95,23 @@ async def chat_full(
             + "quality.source_highlighting.enabled is true in config."
         ),
     ),
+    source_references: bool = QueryParam(
+        False,
+        description=(
+            "Attach structured multimodal citations per source chunk. Also enabled when "
+            + "quality.source_references.enabled is true in config."
+        ),
+    ),
     pipeline: ChatPipeline = Depends(get_chat_pipeline),
 ) -> ChatFullResponse:
     """Non-streaming endpoint — returns the complete answer once generated."""
     query = _query_from_request(body)
-    answer = await pipeline.chat_full(query, explain=explain, highlights=highlights)
+    answer = await pipeline.chat_full(
+        query,
+        explain=explain,
+        highlights=highlights,
+        source_references=source_references,
+    )
     return ChatFullResponse(
         answer=answer.text,
         sources=answer.sources,
@@ -105,6 +119,7 @@ async def chat_full(
         token_count=answer.token_count,
         explanations=answer.explanations,
         highlights=answer.highlights,
+        source_references=answer.source_references,
     )
 
 

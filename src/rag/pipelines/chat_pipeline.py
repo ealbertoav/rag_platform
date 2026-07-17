@@ -11,6 +11,7 @@ from opentelemetry import trace
 from src.domain.entities.answer import Answer
 from src.domain.entities.evaluation import BenchmarkRun
 from src.domain.entities.query import Query
+from src.domain.entities.source_reference import SourceReference, source_references_for_chunks
 from src.domain.services.generation_service import GenerationService
 from src.observability.metrics import record_generation, record_request
 from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
@@ -64,6 +65,7 @@ class ChatPipeline:
         web_search_max_results: int = 5,
         web_search_available: bool = True,
         source_highlighting_enabled: bool = False,
+        source_references_enabled: bool = False,
     ) -> None:
         self.retrieval: RetrievalPipeline = retrieval
         self.generation: GenerationService = generation
@@ -77,6 +79,7 @@ class ChatPipeline:
             web_search_available and web_search is not None and llm is not None
         )
         self._source_highlighting_enabled: Any = source_highlighting_enabled
+        self._source_references_enabled: Any = source_references_enabled
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -100,6 +103,7 @@ class ChatPipeline:
         *,
         explain: bool = False,
         highlights: bool = False,
+        source_references: bool = False,
     ) -> Answer:
         """Run the full pipeline and return a complete "Answer".
 
@@ -109,6 +113,9 @@ class ChatPipeline:
         attaches verbatim supporting spans from each cited passage.
         When both are requested, a single combined LLM call is tried first; any
         missing side falls back to the dedicated explained or highlight path.
+        When *source_references* is True or "quality.source_references.enabled" is
+        set, attaches structured multimodal citations (T-210/T-272) for each cited
+        chunk — no LLM call required.
         """
         query = question if isinstance(question, Query) else Query(text=question)
         t0 = time.monotonic()
@@ -124,13 +131,14 @@ class ChatPipeline:
         )
 
         highlighting_requested = highlights or self._source_highlighting_enabled
+        source_references_requested = source_references or self._source_references_enabled
         llm = self._llm
+        llm_side_requested = (explain or highlighting_requested) and llm is not None
         source_chunks = None
         if (
             answer.sources
-            and llm is not None
             and resolution.chunks_for_explanation is not None
-            and (explain or highlighting_requested)
+            and (llm_side_requested or source_references_requested)
         ):
             source_chunks = resolve_chunks_for_sources(
                 answer.sources,
@@ -138,6 +146,10 @@ class ChatPipeline:
             )
             if not source_chunks:
                 source_chunks = None
+
+        source_references_result: list[SourceReference] = []
+        if source_references_requested and source_chunks is not None:
+            source_references_result = source_references_for_chunks(source_chunks)
 
         explanations = None
         highlights_result = None
@@ -191,6 +203,7 @@ class ChatPipeline:
                 "token_count": token_count,
                 "explanations": explanations,
                 "highlights": highlights_result,
+                "source_references": source_references_result,
             }
         )
 
@@ -273,6 +286,7 @@ class ChatPipeline:
             web_search_max_results=settings.web_search.max_results,
             web_search_available=web_search_available,
             source_highlighting_enabled=settings.quality.source_highlighting.enabled,
+            source_references_enabled=settings.quality.source_references.enabled,
         )
 
     # ── Internals ──────────────────────────────────────────────────────────────
