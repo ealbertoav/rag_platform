@@ -68,6 +68,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Agent explain/highlight/source references (T-274):** `POST /chat/agent/full` accepts the same `explain`/`highlights`/`source_references` query params as `/chat/full` (T-143/T-144/T-272), and `AgentPipeline` passes retrieved chunks into generation so mixed-modality prompts (T-270) and vision generation (T-271) also apply to agent answers. Self-RAG (T-141) mode accepts the flags but leaves the fields at their defaults. See [Agent Explain, Highlight, and Source References (T-274)](#agent-explain-highlight-and-source-references-t-274).
 
+> **Multimodal golden dataset builder (T-280):** `make multimodal-golden` (`scripts/build_multimodal_golden.py`) generates a table/figure-only QA golden at `datasets/goldens/multimodal_qa_dataset.jsonl` — reuses T-040's `SyntheticDatasetBuilder` restricted to chunks whose resolved modality (T-210's `resolve_modality`) is table or figure, tagging each pair with its source chunk's modality. Requires `parsing.table_chunks.enabled` / `parsing.figure_chunks.enabled` and a prior `make ingest` with those chunk types present. Written as JSON Lines, independent of `qa_dataset.json`. See [Multimodal Golden Dataset Builder (T-280)](#multimodal-golden-dataset-builder-t-280).
+
 ---
 
 ## Table of Contents
@@ -106,6 +108,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Chunk Size Optimization Sweep (T-151)](#chunk-size-optimization-sweep-t-151)
   - [Infrastructure Performance Baseline (T-172)](#infrastructure-performance-baseline-t-172)
   - [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152)
+  - [Multimodal Golden Dataset Builder (T-280)](#multimodal-golden-dataset-builder-t-280)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
@@ -1918,6 +1921,23 @@ evals:
 
 ---
 
+### Multimodal Golden Dataset Builder (T-280)
+
+Generate a QA golden dataset restricted to table/figure chunks, for modality-specific retrieval metrics (table/figure recall — T-281):
+
+```bash
+make ingest SOURCE=data/raw/   # requires parsing.table_chunks / parsing.figure_chunks enabled
+make multimodal-golden
+# or directly:
+uv run python scripts/build_multimodal_golden.py --n-pairs 3
+```
+
+`filter_multimodal_chunks()` restricts the BM25 corpus to chunks whose resolved modality (`chunk_modality()`, via T-210's `resolve_modality()`) is `table` or `figure` — this reconciles table chunks (T-202, which only set `metadata.type=table`) and figure chunks (T-253, which set `Chunk.modality="figure"` explicitly). `build_multimodal_golden()` then reuses T-040's `SyntheticDatasetBuilder.generate_from_chunks()` unchanged for LLM-driven QA generation and cosine-similarity dedup, tagging each resulting pair with its source chunk's modality.
+
+Output is written as JSON Lines (one QA row per line) to `datasets/goldens/multimodal_qa_dataset.jsonl` — independent of `qa_dataset.json`/`retrieval_dataset.json` (T-152), so it can be regenerated or extended without touching the main golden dataset. Exits `1` if the BM25 index is empty, no table/figure chunks are found, or no QA pairs could be generated.
+
+---
+
 ### Compare Embedding Providers
 
 Benchmark multiple embedding providers against the same golden QA dataset and get a side-by-side quality, latency, and estimated cost table:
@@ -2823,6 +2843,7 @@ rag_implementation/
 │   ├── rebuild_embeddings.py   # Re-embed all chunks → Qdrant (streams via iter_chunks · T-165)
 │   ├── run_evals.py            # QA dataset generation CLI (iter_chunks · T-152/T-165)
 │   ├── sync_retrieval_golden.py # Sync retrieval goldens from QA without LLM (T-152)
+│   ├── build_multimodal_golden.py # Table/figure-only QA golden JSONL CLI (T-280)
 │   ├── check_regression_gate.py # CI regression gate entrypoint (T-152)
 │   ├── check_lint_gate.py      # Lint config alignment + mypy smoke (T-171)
 │   ├── check_dependencies.py   # pip-audit wrapper (T-161)
@@ -2843,6 +2864,7 @@ rag_implementation/
 │   ├── domain/                 # Entities (+ ParsedDocument T-190, SourceReference T-210), repository ABCs (+ LayoutParser/Ocr T-190), services
 │   ├── evals/                  # Retrieval/generation metrics, benchmarks
 │   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
+│   │   ├── multimodal_golden_dataset.py # Table/figure-only QA golden, JSONL I/O (T-280)
 │   │   ├── regression_gate.py  # CI regression gate logic (T-152)
 │   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
@@ -2982,6 +3004,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make ingest SOURCE=path` | Ingest a file or directory |
 | `make evals` | Generate golden QA + retrieval datasets (requires `make ingest` first; T-152) |
 | `make sync-retrieval-goldens` | Rebuild retrieval goldens from QA without LLM regeneration (T-152) |
+| `make multimodal-golden` | Generate table/figure-only QA golden JSONL (requires `make ingest` with table/figure chunks; T-280) |
 | `make benchmark` | Run E2E benchmark |
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |

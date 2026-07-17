@@ -1,4 +1,4 @@
-.PHONY: install sync serve ingest evals sync-retrieval-goldens benchmark lint format test test-unit test-slow test-e2e clean qdrant-up \
+.PHONY: install sync serve ingest evals sync-retrieval-goldens multimodal-golden benchmark lint format test test-unit test-slow test-e2e clean qdrant-up \
         docker-build docker-up docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
         benchmark-chunk-sizes benchmark-infra audit-deps
 
@@ -21,6 +21,10 @@ evals:
 sync-retrieval-goldens:
 	@echo "Sync retrieval_dataset.json from qa_dataset.json (no LLM regeneration)"
 	uv run python scripts/sync_retrieval_golden.py
+
+multimodal-golden:
+	@echo "Generate multimodal (table/figure) QA golden dataset (requires: make ingest with table/figure chunks enabled)"
+	uv run python scripts/build_multimodal_golden.py
 
 benchmark:
 	uv run python scripts/benchmark.py

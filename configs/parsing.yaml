@@ -109,3 +109,9 @@ parsing:
     # carries image_embedding and the collection was created with that named
     # vector (T-252). Re-ingest after enabling — unchanged documents backfill
     # missing figure chunks the same way table_chunks/caption_chunks do.
+  # T-280 (no feature flag, no new settings): `make multimodal-golden` /
+  # scripts/build_multimodal_golden.py builds a table/figure-only QA golden
+  # (datasets/goldens/multimodal_qa_dataset.jsonl) by filtering the BM25
+  # corpus to chunks resolving to modality table/figure — requires
+  # table_chunks.enabled / figure_chunks.enabled above and a prior
+  # `make ingest` with those chunk types present.
