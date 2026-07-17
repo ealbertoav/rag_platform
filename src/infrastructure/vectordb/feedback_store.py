@@ -278,6 +278,10 @@ class FeedbackDelegatingVectorStore(VectorStoreRepository):
         return self._inner.chunk_exists(chunk_id)
 
     @override
+    def get_chunk(self, chunk_id: str) -> Chunk | None:
+        return self._inner.get_chunk(chunk_id)
+
+    @override
     def get_feedback_score(self, chunk_id: str) -> float:
         return self._feedback.get_score(chunk_id)
 

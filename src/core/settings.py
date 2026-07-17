@@ -237,6 +237,12 @@ class SourceReferencesSettings(BaseModel):
     enabled: bool = False
 
 
+class ChunkLookupSettings(BaseModel):
+    """Direct chunk lookup via GET /chunks/{chunk_id} (T-273)."""
+
+    enabled: bool = False
+
+
 class FeedbackLoopSettings(BaseModel):
     enabled: bool = False
     boost_multiplier: float = Field(default=0.05, ge=0.0)
@@ -277,6 +283,7 @@ class QualitySettings(BaseModel):
     source_references: SourceReferencesSettings = Field(
         default_factory=SourceReferencesSettings,
     )
+    chunk_lookup: ChunkLookupSettings = Field(default_factory=ChunkLookupSettings)
     feedback_loop: FeedbackLoopSettings = Field(default_factory=FeedbackLoopSettings)
 
 

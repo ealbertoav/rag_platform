@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 27 — **T-273** ← next (T-270 ✅, T-271 ✅, T-272 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 27 — **T-274** ← next (T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2345,7 +2345,7 @@
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
-> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273–T-274 pending |
+> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273 ✅ · T-274 pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
@@ -2906,7 +2906,7 @@
 >
 > **Preconditions:** Phases 21, 24–25
 >
-> **Status:** T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273–T-274 pending
+> **Status:** T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273 ✅ · T-274 pending
 
 ---
 
@@ -3032,15 +3032,39 @@
 
 
 ### T-273 · Chunk Lookup API
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** `GET /chunks/{chunk_id}`.
 - **Inputs:** T-013, T-032, T-272
 - **Outputs:** Chunk API
-- **Files:** `routers/chunks.py`, tests
+- **Files:**
+  - `src/api/routers/chunks.py` — `GET /chunks/{chunk_id}`; returns `ChunkResponse` (a
+    `SourceReference` (T-210/T-272) plus `text`); 404 when disabled or chunk not found; 502 on
+    vector-store failure; gated behind `require_api_key` like every other router _(done)_
+  - `src/domain/repositories/vector_store_repository.py` — new abstract `get_chunk(chunk_id) ->
+    Chunk | None` alongside `chunk_exists` _(done)_
+  - `src/infrastructure/vectordb/qdrant.py` — `QdrantVectorStore.get_chunk()` via
+    `_retrieve_points()` (no vectors fetched) _(done)_
+  - `src/infrastructure/vectordb/feedback_store.py` — `FeedbackDelegatingVectorStore.get_chunk()`
+    delegates to the wrapped store _(done)_
+  - `src/core/settings.py` — `ChunkLookupSettings`, `QualitySettings.chunk_lookup` _(done)_
+  - `configs/retrieval.yaml`, `.env.example` — `quality.chunk_lookup.enabled` (off by default)
+    _(done)_
+  - `tests/unit/test_chunks.py`, `tests/unit/test_qdrant.py`, `tests/unit/test_feedback_store.py`,
+    `tests/unit/test_repositories.py`, `tests/unit/test_settings.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (`quality.chunk_lookup.enabled: false`; endpoint 404s until enabled)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable (`configs/retrieval.yaml`)
+- **Notes:** Disabled by default — `quality.chunk_lookup.enabled` gates the route to `404` (same
+  status as an unknown chunk ID, so a disabled deployment gives no signal the endpoint exists at
+  all). No per-request override like T-143/T-144/T-272 — a `GET` lookup has no request body to
+  carry a query flag equivalent, so it's config-only. `get_chunk()` deliberately fetches only the
+  payload (`with_vectors=False`) — the API only needs `SourceReference` fields plus `text`, and
+  the ABC docstring says so explicitly to avoid the implication that dense/sparse vectors come
+  back populated. Builds directly on T-272: the response reuses `SourceReference.from_chunk()`
+  for modality/page/section/table/figure/bbox/asset_path, so `/chat/full?source_references=true`
+  citations and `GET /chunks/{id}` share the exact same provenance shape — a client can look up
+  any `chunk_id` it received either from `Answer.sources` or from a `SourceReference`.
 
 ---
 

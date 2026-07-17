@@ -208,6 +208,13 @@ class TestFeedbackDelegatingVectorStore:
         assert wrapped.chunk_exists("chunk-a") is True
         inner.chunk_exists.assert_called_once_with("chunk-a")
 
+    def test_get_chunk_delegates_to_inner(self):
+        inner = MagicMock()
+        inner.get_chunk.return_value = None
+        wrapped = FeedbackDelegatingVectorStore(inner, MagicMock())
+        assert wrapped.get_chunk("chunk-a") is None
+        inner.get_chunk.assert_called_once_with("chunk-a")
+
     def test_delegates_vector_operations(self):
         inner = MagicMock()
         inner.chunk_exists.return_value = True

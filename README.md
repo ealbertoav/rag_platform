@@ -50,6 +50,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Rich SourceReference API response (T-272):** Optional structured multimodal citations on `POST /chat/full?source_references=true` (or globally via `quality.source_references.enabled` in `configs/retrieval.yaml`) — one `SourceReference` (T-210) per cited chunk, with modality, page, section, table/figure ID, bbox, and asset path when available. Pure mapping from already-resolved source chunks; no extra LLM call. Off by default; `Answer.source_references` stays `[]`. See [Rich Source References (T-272)](#rich-source-references-t-272).
 
+> **Chunk Lookup API (T-273):** `GET /chunks/{chunk_id}` returns a single stored chunk — the same `SourceReference` (T-210/T-272) shape plus its `text`. Off by default via `quality.chunk_lookup.enabled` in `configs/retrieval.yaml`; a disabled deployment and an unknown chunk ID both return `404`, so the flag leaks no signal. See [Chunk Lookup API (T-273)](#chunk-lookup-api-t-273).
+
 > **Scanned-PDF OCR fallback (T-223):** When `parsing.ocr.enabled=true`, low-text / empty PDF loads run through `get_ocr_provider()` after `load_document` and replace document content before chunking. Dual-hash dedup (`content_hash` or PDF `source_file_hash`) preserves OCR-derived chunks when toggling OCR flags; failed OCR stores a pending hash for retry. Off by default. Providers: self-hosted (T-221) or Azure DI (T-222). See [Scanned-PDF OCR Fallback (T-223)](#scanned-pdf-ocr-fallback-t-223) and [docs/ocr-providers.md](docs/ocr-providers.md).
 
 > **Azure Document Intelligence OCR (T-222):** Optional cloud OCR via `parsing.ocr.provider=azure_di` — REST `prebuilt-read`, credentials under `parsing.ocr.azure_di` / `PARSING__OCR__AZURE_DI__*`. Factory caches by Azure DI identity and disposes the previous `httpx` client on credential/config rotation. See [docs/ocr-providers.md](docs/ocr-providers.md).
@@ -95,6 +97,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270)
     - [Vision-Capable LLM Generation Path (T-271)](#vision-capable-llm-generation-path-t-271)
     - [Rich Source References in standard chat (T-272)](#rich-source-references-in-standard-chat-t-272)
+    - [Chunk Lookup API (T-273)](#chunk-lookup-api-t-273)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
@@ -416,7 +419,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/llm/qwen3-14b.yaml` | Lighter LLM profile (llama.cpp + Qwen3-14B) |
 | `configs/llm/ollama-*.yaml` | Ollama-backed profiles (GLM-5.2, Gemma3-27B, Llama3.3-70B) |
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
-| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), rich source references (T-272), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
+| `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), rich source references (T-272), chunk lookup API (T-273), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), caption chunks (T-232), figure assets (T-230), VLM figure captions (T-231), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
 | `configs/generation.yaml` | Mixed-modality system prompt (T-270) — `generation.multimodal_prompt.enabled`; vision-capable generation (T-271) — `generation.vision_generation.enabled`; both off by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
@@ -1435,6 +1438,35 @@ Example response (excerpt):
 ```
 
 Disabled by default; `source_references` is always present as `[]` (never omitted) when no references were attached, matching `sources`. See [Rich Source References (T-272)](#rich-source-references-t-272) in Retrieval Pipeline Details.
+
+#### Chunk Lookup API (T-273)
+
+`GET /chunks/{chunk_id}` returns a single stored chunk directly, without going through chat. Disabled by default via `quality.chunk_lookup.enabled: false` in `configs/retrieval.yaml` — no per-request override, since a `GET` lookup has no request body to carry an equivalent query flag. When disabled, the route returns `404` — the same status as an unknown chunk ID, so a disabled deployment gives no signal that the endpoint exists.
+
+```yaml
+# configs/retrieval.yaml
+quality:
+  chunk_lookup:
+    enabled: false   # set true to expose GET /chunks/{chunk_id}
+```
+
+```bash
+curl http://localhost:8000/chunks/chunk-abc
+```
+
+Example response:
+```json
+{
+  "chunk_id": "chunk-abc",
+  "document_id": "annual-report-2023",
+  "modality": "table",
+  "page": 12,
+  "table_id": "table-3",
+  "text": "Q3 revenue was $12.4M, up 8% YoY..."
+}
+```
+
+The response is a [`SourceReference`](#multimodal-domain-model-t-210) (T-210/T-272) plus the chunk's `text` — the same provenance shape `/chat/full?source_references=true` returns, so a client can resolve any `chunk_id` it received from either `Answer.sources` or a `SourceReference`. Returns `404` when the chunk ID doesn't exist and `502` if the vector store lookup itself fails. Subject to `X-API-Key` like every other route when `api.api_key` is configured.
 
 **Python client:**
 ```python
@@ -2695,6 +2727,7 @@ Legacy collections without metadata fall back to the first tagged point payload;
 | `POST` | `/ingest/path` | Ingest a local file or directory |
 | `POST` | `/ingest/upload` | Ingest an uploaded file (multipart) |
 | `POST` | `/feedback` | Record user relevance feedback on a retrieved chunk — body: `{query_id, chunk_id, relevant}`; returns `204` / `404` / `502` (T-145); subject to rate limit when enabled (T-160) |
+| `GET` | `/chunks/{chunk_id}` | Look up a single stored chunk — a `SourceReference` (T-210/T-272) plus `text`; returns `404` when disabled (`quality.chunk_lookup.enabled`) or not found, `502` on vector-store failure (T-273) |
 | `POST` | `/evals/run` | Run E2E benchmark — returns `204` until QA dataset is populated, `200` with Recall@5 / Faithfulness / Relevance / Context Precision report |
 | `GET` | `/metrics` | Prometheus metrics (text format) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
