@@ -168,6 +168,7 @@ class TestYamlDefaults:
 
     def test_generation_defaults_from_yaml(self):
         assert settings.generation.multimodal_prompt.enabled is False
+        assert settings.generation.vision_generation.enabled is False
 
     def test_parsing_defaults_from_yaml(self):
         assert settings.parsing.layout_parser.enabled is False
@@ -298,6 +299,11 @@ class TestEnvVarOverride:
         monkeypatch.setenv("GENERATION__MULTIMODAL_PROMPT__ENABLED", "true")
         s = Settings()
         assert s.generation.multimodal_prompt.enabled is True
+
+    def test_generation_vision_generation_override(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("GENERATION__VISION_GENERATION__ENABLED", "true")
+        s = Settings()
+        assert s.generation.vision_generation.enabled is True
 
 
 class TestValidation:

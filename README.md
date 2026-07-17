@@ -60,6 +60,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 
 > **Mixed-modality system prompts (T-270):** When `generation.multimodal_prompt.enabled=true`, `/chat` and `/chat/full` swap in `rag_assistant_multimodal.txt` — but only when the chunks feeding the answer actually span more than one `Chunk.modality` (T-210), e.g. text plus table (T-202) or caption (T-232) chunks. Each passage is prefixed with its modality (`[TEXT]`/`[TABLE]`/`[FIGURE CAPTION]`/...) so the model knows to call out non-prose evidence. Single-modality context keeps the original `rag_assistant.txt` prompt even when enabled. Off by default. See [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270).
 
+> **Vision-capable LLM generation path (T-271):** When `generation.vision_generation.enabled=true`, `GenerationService` describes each figure chunk's image with the T-231 vision provider, keyed to the live question, and swaps that description in for the chunk's static ingest-time caption before generation. Reuses `parsing.figure_captions` credentials but toggles independently. Off by default. See [Vision-Capable LLM Generation Path (T-271)](#vision-capable-llm-generation-path-t-271).
+
 ---
 
 ## Table of Contents
@@ -89,6 +91,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
     - [Source highlighting in standard chat (T-144)](#source-highlighting-in-standard-chat-t-144)
     - [Retrieval feedback (T-145)](#retrieval-feedback-t-145)
     - [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270)
+    - [Vision-Capable LLM Generation Path (T-271)](#vision-capable-llm-generation-path-t-271)
   - [Run Evaluations](#run-evaluations)
   - [Benchmark](#benchmark)
   - [Compare RAG Techniques (T-150)](#compare-rag-techniques-t-150)
@@ -412,7 +415,7 @@ API__RATE_LIMIT__BURST=10
 | `configs/embeddings.yaml` | Embedding provider, dimensions, API credentials, cache TTL |
 | `configs/retrieval.yaml` | Chunking (incl. proposition), contextual headers, synthetic-question augmentation, hierarchical summaries, HyPE, HyDE, adaptive classification & strategies, step-back query transformation, RSE, parent context, MMR diversity, BM25 backend (`memory`/`disk` — T-165), Reliable RAG relevancy grading, Corrective RAG thresholds, source highlighting (T-144), retrieval feedback loop + backend (T-145/T-146), hybrid fusion, reranker; explainable retrieval (T-143) is API-only via `/chat/full?explain=true` |
 | `configs/parsing.yaml` | Layout parser (T-200 Docling), structured table chunks (T-202), caption chunks (T-232), figure assets (T-230), VLM figure captions (T-231), OCR factory + scanned-PDF fallback + Azure DI (T-220–T-223), and T-210 domain-model notes — feature flags disabled by default |
-| `configs/generation.yaml` | Mixed-modality system prompt (T-270) — `generation.multimodal_prompt.enabled`, off by default |
+| `configs/generation.yaml` | Mixed-modality system prompt (T-270) — `generation.multimodal_prompt.enabled`; vision-capable generation (T-271) — `generation.vision_generation.enabled`; both off by default |
 | `configs/web_search.yaml` | Web search provider for Corrective RAG (T-142): `none`, `duckduckgo`, or `tavily` |
 | `configs/neo4j.yaml` | Neo4j connection, graph enable flag, async driver pool size (T-164), entity extraction on ingest |
 | `configs/evals.yaml` | Evaluation thresholds, dataset paths, regression config (T-152), technique benchmark matrix (T-150), chunk size sweep sizes/weights (T-151), infra benchmark thresholds (T-172) |
@@ -1372,6 +1375,25 @@ GENERATION__MULTIMODAL_PROMPT__ENABLED=true
 ```
 
 Requires table chunks (T-202) and/or caption chunks (T-232) enabled at ingest for retrieval to actually surface a second modality — enabling this flag alone has no effect on text-only corpora.
+
+#### Vision-Capable LLM Generation Path (T-271)
+
+When `generation.vision_generation.enabled=true`, `GenerationService` asks a vision-language model to describe each retrieved figure chunk (`Chunk.modality=figure`, `asset_path` set — T-230) against the *live question*, and swaps that description in for the chunk's stored (ingest-time, question-agnostic) caption before building the prompt — so a follow-up question about a different part of the same figure gets a fresh, relevant description instead of the static T-231 caption.
+
+Reuses the `parsing.figure_captions` provider/credentials (T-231) — same OpenAI/Gemini `VisionRepository` — but is gated by its own flag, so ingest-time captioning and query-time vision description toggle independently:
+
+```yaml
+# configs/generation.yaml
+generation:
+  vision_generation:
+    enabled: false   # T-271 — off by default
+```
+
+```bash
+GENERATION__VISION_GENERATION__ENABLED=true
+```
+
+Soft-fails per figure chunk (vision generation disabled, no provider configured, missing asset file, vision-call error, or empty description) by falling back to the chunk's existing text — no effect on corpora without figure chunks. Pairs with [Mixed-Modality System Prompts (T-270)](#mixed-modality-system-prompts-t-270): when both are enabled and the answer's chunks span more than one modality, the live description is labeled `[FIGURE]` in the prompt like any other figure chunk.
 
 **Python client:**
 ```python
@@ -2655,7 +2677,7 @@ rag_implementation/
 │   ├── embeddings.yaml
 │   ├── retrieval.yaml
 │   ├── parsing.yaml            # Layout parser (T-200), table/caption chunks (T-202/T-232), figure assets/captions (T-230/T-231), OCR T-220–T-223; T-210 domain note
-│   ├── generation.yaml         # Mixed-modality system prompt (T-270), off by default
+│   ├── generation.yaml         # Mixed-modality system prompt (T-270) + vision generation (T-271), off by default
 │   ├── web_search.yaml         # CRAG web providers: none · duckduckgo · tavily (T-142)
 │   ├── neo4j.yaml              # Graph RAG (async driver pool T-164) + SQLite metadata store settings
 │   ├── evals.yaml

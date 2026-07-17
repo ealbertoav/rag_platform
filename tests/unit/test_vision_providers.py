@@ -14,15 +14,18 @@ from src.core.exceptions import ConfigurationError, GenerationError
 from src.core.settings import (
     FigureCaptionSettings,
     GeminiVisionConfig,
+    GenerationSettings,
     OpenAIVisionConfig,
     ParsingSettings,
     Settings,
+    VisionGenerationSettings,
 )
 from src.domain.repositories.vision_repository import VisionRepository
 from src.infrastructure.vision import (
     GeminiVisionProvider,
     OpenAIVisionProvider,
     clear_vision_provider_cache,
+    get_generation_vision_provider,
     get_vision_provider,
 )
 from src.infrastructure.vision import gemini_vision_provider as gemini_mod
@@ -49,6 +52,7 @@ def _caption_settings(
     openai_model: str = "gpt-4o-mini",
     gemini_api_key: str = "gemini-key",
     gemini_model: str = "gemini-2.0-flash",
+    vision_generation_enabled: bool = False,
 ) -> Settings:
     return Settings(
         parsing=ParsingSettings(
@@ -58,7 +62,10 @@ def _caption_settings(
                 openai=OpenAIVisionConfig(api_key=openai_api_key, model=openai_model),
                 gemini=GeminiVisionConfig(api_key=gemini_api_key, model=gemini_model),
             )
-        )
+        ),
+        generation=GenerationSettings(
+            vision_generation=VisionGenerationSettings(enabled=vision_generation_enabled)
+        ),
     )
 
 
@@ -131,6 +138,64 @@ class TestGetVisionProvider:
     def test_missing_gemini_key_raises(self) -> None:
         with pytest.raises(ConfigurationError, match="gemini"):
             get_vision_provider(_caption_settings(provider="gemini", gemini_api_key=""))
+
+
+class TestGetGenerationVisionProvider:
+    """T-271 — query-time vision provider, gated by generation.vision_generation.enabled."""
+
+    def test_disabled_by_default_even_with_captions_enabled(self) -> None:
+        settings = _caption_settings(enabled=True, vision_generation_enabled=False)
+        assert get_generation_vision_provider(settings) is None
+
+    def test_enabled_returns_provider_independent_of_figure_captions_flag(self) -> None:
+        settings = _caption_settings(enabled=False, vision_generation_enabled=True)
+        provider = get_generation_vision_provider(settings)
+        assert isinstance(provider, OpenAIVisionProvider)
+
+    def test_reuses_figure_captions_credentials(self) -> None:
+        settings = _caption_settings(
+            provider="gemini",
+            gemini_api_key="shared-key",
+            gemini_model="gemini-pro",
+            vision_generation_enabled=True,
+        )
+        provider = get_generation_vision_provider(settings)
+        assert isinstance(provider, GeminiVisionProvider)
+        assert provider.api_key == "shared-key"
+        assert provider.model == "gemini-pro"
+
+    def test_does_not_share_cache_with_ingest_provider(self) -> None:
+        settings = _caption_settings(enabled=True, vision_generation_enabled=True)
+        ingest_provider = get_vision_provider(settings)
+        generation_provider = get_generation_vision_provider(settings)
+        assert ingest_provider is not generation_provider
+
+    def test_caches_same_instance(self) -> None:
+        settings = _caption_settings(vision_generation_enabled=True)
+        assert get_generation_vision_provider(settings) is get_generation_vision_provider(settings)
+
+    def test_rotating_api_key_rebuilds(self) -> None:
+        first = get_generation_vision_provider(
+            _caption_settings(openai_api_key="sk-one", vision_generation_enabled=True)
+        )
+        second = get_generation_vision_provider(
+            _caption_settings(openai_api_key="sk-two", vision_generation_enabled=True)
+        )
+        assert first is not second
+
+    def test_clear_cache(self) -> None:
+        settings = _caption_settings(vision_generation_enabled=True)
+        first = get_generation_vision_provider(settings)
+        clear_vision_provider_cache()
+        second = get_generation_vision_provider(settings)
+        assert first is not second
+
+    def test_uses_global_settings_when_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "src.infrastructure.vision._settings",
+            lambda: _caption_settings(vision_generation_enabled=False),
+        )
+        assert get_generation_vision_provider() is None
 
 
 class TestOpenAIVisionProvider:

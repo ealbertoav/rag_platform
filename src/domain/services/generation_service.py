@@ -8,10 +8,16 @@ from uuid import uuid4
 
 from opentelemetry import trace
 
+from src.core.constants import MODALITY_FIGURE, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.llm_repository import LLMRepository
-from src.rag.chunking.contextual_headers import has_mixed_modality, join_chunk_context_multimodal
+from src.domain.repositories.vision_repository import VisionRepository
+from src.rag.chunking.contextual_headers import (
+    has_mixed_modality,
+    join_chunk_context,
+    join_chunk_context_multimodal,
+)
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("rag-platform.generation")
@@ -19,6 +25,9 @@ _tracer = trace.get_tracer("rag-platform.generation")
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "system" / "rag_assistant.txt"
 _MULTIMODAL_PROMPT_PATH = (
     Path(__file__).parents[2] / "prompts" / "system" / "rag_assistant_multimodal.txt"
+)
+_VISION_PROMPT_PATH = (
+    Path(__file__).parents[2] / "prompts" / "system" / "vision_figure_description.txt"
 )
 _NO_CONTEXT_REPLY = "I don't have information about this."
 
@@ -30,11 +39,21 @@ class GenerationService:
     the LLM interface and the Answer entity.
     """
 
-    def __init__(self, llm: LLMRepository, *, multimodal_prompt_enabled: bool = False) -> None:
+    def __init__(
+        self,
+        llm: LLMRepository,
+        *,
+        multimodal_prompt_enabled: bool = False,
+        vision: VisionRepository | None = None,
+        vision_generation_enabled: bool = False,
+    ) -> None:
         self._llm: LLMRepository = llm
         self._template: Template | None = None
         self._multimodal_template: Template | None = None
         self._multimodal_prompt_enabled: bool = multimodal_prompt_enabled
+        self._vision: VisionRepository | None = vision
+        self._vision_generation_enabled: bool = vision_generation_enabled
+        self._vision_prompt_template: Template | None = None
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
@@ -53,6 +72,7 @@ class GenerationService:
 
         with _tracer.start_as_current_span("generation.llm") as span:
             span.set_attribute("chunk_count", len(sources))
+            chunks, context = self._apply_vision_descriptions(chunks, context, question)
             prompt = self._build_prompt(context, chunks)
             text = self._llm.generate(prompt=prompt, context=question)
             span.set_attribute("token_count", len(text.split()))
@@ -79,6 +99,7 @@ class GenerationService:
         """
         if not context.strip():
             return self._no_context_stream()
+        chunks, context = self._apply_vision_descriptions(chunks, context, question)
         prompt = self._build_prompt(context, chunks)
         return self._llm.generate_stream(prompt=prompt, context=question)
 
@@ -94,10 +115,15 @@ class GenerationService:
     @classmethod
     def from_settings(cls, llm: LLMRepository) -> GenerationService:
         from src.core.settings import settings
+        from src.infrastructure.vision import get_generation_vision_provider
 
+        vision_generation_enabled = settings.generation.vision_generation.enabled
+        vision = get_generation_vision_provider(settings) if vision_generation_enabled else None
         return cls(
             llm=llm,
             multimodal_prompt_enabled=settings.generation.multimodal_prompt.enabled,
+            vision=vision,
+            vision_generation_enabled=vision_generation_enabled,
         )
 
     # ── Internals ──────────────────────────────────────────────────────────────
@@ -114,6 +140,68 @@ class GenerationService:
             )
         return self._template_obj().substitute(context=context)
 
+    def _apply_vision_descriptions(
+        self,
+        chunks: list[Chunk] | None,
+        context: str,
+        question: str,
+    ) -> tuple[list[Chunk] | None, str]:
+        """Swap figure chunks' text for a live vision-LLM description (T-271).
+
+        For each chunk with ``modality=figure`` and a readable ``asset_path``,
+        calls the configured vision provider with the current *question* and
+        replaces the chunk's text with the returned description, then rebuilds
+        *context* from the updated chunks so the description reaches the LLM.
+        No-ops (returning *chunks*/*context* unchanged) when vision generation
+        is disabled, no vision provider is configured, no chunks are given, or
+        every figure description fails/comes back empty — byte-identical to
+        pre-T-271 behavior in those cases.
+        """
+        if not self._vision_generation_enabled or self._vision is None or not chunks:
+            return chunks, context
+
+        updated: list[Chunk] = []
+        changed = False
+        for chunk in chunks:
+            description = self._describe_figure(chunk, question)
+            if description is not None:
+                chunk = chunk.model_copy(
+                    update={
+                        "text": description,
+                        "metadata": {
+                            k: v for k, v in chunk.metadata.items() if k != PARENT_CONTEXT_TEXT_KEY
+                        },
+                    }
+                )
+                changed = True
+            updated.append(chunk)
+
+        if not changed:
+            return chunks, context
+        return updated, join_chunk_context(updated)
+
+    def _describe_figure(self, chunk: Chunk, question: str) -> str | None:
+        """Return a vision-LLM description of *chunk*'s image, or None to soft-fail."""
+        if self._vision is None or chunk.modality != MODALITY_FIGURE or not chunk.asset_path:
+            return None
+
+        path = Path(chunk.asset_path)
+        if not path.is_file():
+            logger.warning("Vision generation skipped for %s: asset missing at %s", chunk.id, path)
+            return None
+
+        try:
+            description = self._vision.caption_image(path, prompt=self._vision_prompt(question))
+        except Exception as exc:
+            logger.warning("Vision generation failed for figure chunk %s: %s", chunk.id, exc)
+            return None
+
+        description = description.strip()
+        return description or None
+
+    def _vision_prompt(self, question: str) -> str:
+        return self._vision_prompt_template_obj().substitute(question=question)
+
     def _template_obj(self) -> Template:
         if self._template is None:
             self._template = Template(_PROMPT_PATH.read_text(encoding="utf-8"))
@@ -125,6 +213,11 @@ class GenerationService:
                 _MULTIMODAL_PROMPT_PATH.read_text(encoding="utf-8")
             )
         return self._multimodal_template
+
+    def _vision_prompt_template_obj(self) -> Template:
+        if self._vision_prompt_template is None:
+            self._vision_prompt_template = Template(_VISION_PROMPT_PATH.read_text(encoding="utf-8"))
+        return self._vision_prompt_template
 
     @staticmethod
     async def _no_context_stream() -> AsyncGenerator[str, None]:

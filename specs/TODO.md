@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 27 — **T-271** ← next (T-270 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 27 — **T-272** ← next (T-270 ✅, T-271 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2345,7 +2345,7 @@
 > | **24** | 14 | T-240 → T-243 | Phases 20–21 | T-240 ✅ · T-241–T-243 pending |
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
-> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271–T-274 pending |
+> | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272–T-274 pending |
 > | **28** | 18 | T-280 → T-282 | Phases 25–26 | pending |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
@@ -2906,7 +2906,7 @@
 >
 > **Preconditions:** Phases 21, 24–25
 >
-> **Status:** T-270 ✅ · T-271–T-274 pending
+> **Status:** T-270 ✅ · T-271 ✅ · T-272–T-274 pending
 
 ---
 
@@ -2946,15 +2946,50 @@
 
 
 ### T-271 · Vision-Capable LLM Generation Path
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** Pass figure assets to vision LLM.
 - **Inputs:** T-231, T-031, T-230
 - **Outputs:** Vision generation
-- **Files:** LLM + `chat_pipeline.py`, tests
+- **Files:**
+  - `src/domain/services/generation_service.py` — `_apply_vision_descriptions()`,
+    `_describe_figure()`, `_vision_prompt()`; `generate()`/`stream()` call the vision provider
+    for figure chunks (`Chunk.modality=figure` + `asset_path`, T-210/T-230) before building the
+    prompt, keyed to the live question _(done)_
+  - `src/infrastructure/vision/__init__.py` — `get_generation_vision_provider()` reuses the
+    `parsing.figure_captions` provider/credentials (T-231) but gates on the independent
+    `generation.vision_generation.enabled` flag, via its own `EnabledProviderCache`; shared
+    `_create_vision_provider()` helper extracted for both factories _(done)_
+  - `src/prompts/system/vision_figure_description.txt` — question-aware vision prompt template
+    _(done)_
+  - `src/core/settings.py` — `VisionGenerationSettings`, `GenerationSettings.vision_generation`
+    _(done)_
+  - `configs/generation.yaml`, `.env.example` — `generation.vision_generation.enabled` (off by
+    default) _(done)_
+  - `tests/unit/test_chat_pipeline.py`, `tests/unit/test_vision_providers.py`,
+    `tests/unit/test_settings.py`, `tests/unit/test_coverage_gaps.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (`generation.vision_generation.enabled: false`)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable (`configs/generation.yaml`)
+- **Notes:** Reuses the T-231 `VisionRepository` (OpenAI/Gemini) instead of extending
+  `LLMRepository`/`LlamaCppProvider` — neither has any multimodal/image-input support today, and
+  `VisionRepository.caption_image(path, *, prompt)` already accepts an arbitrary prompt, so it
+  doubles as a query-time "ask about this figure" call. `chat_pipeline.py` needed no changes:
+  `resolution.chunks_for_explanation` (T-270) already carries figure chunks into
+  `GenerationService.generate()`/`stream()` unchanged. For each figure chunk with a readable
+  `asset_path`, the vision provider is asked the live question via
+  `vision_figure_description.txt`, and the chunk's text (its static ingest-time caption or
+  placeholder) is swapped for the returned description before the T-270 prompt/context join runs
+  — so a mixed-modality prompt (when also enabled) labels it `[FIGURE]` same as before, and a
+  plain prompt still gets the fresher description via `join_chunk_context()`. Also strips any
+  stale `metadata[parent_context_text]` (T-124 parent-child chunking) on the swapped chunk so the
+  description isn't shadowed by `chunk_context_text()`'s parent-context precedence. Soft-fails
+  per figure (disabled, no provider, missing asset file, vision-call error, empty description) by
+  falling back to the chunk's existing text — byte-identical to pre-T-271 behavior when
+  `vision_generation.enabled=false` or no figure chunks are present. `generation.vision_generation`
+  shares `parsing.figure_captions` credentials/provider via a second `EnabledProviderCache` keyed
+  on its own flag, so ingest-time captioning (T-231) and query-time vision description toggle
+  independently.
 
 ---
 

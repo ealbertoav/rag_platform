@@ -7,3 +7,13 @@ generation:
     # labels each passage ([TEXT]/[TABLE]/[FIGURE CAPTION]/...) instead of the
     # plain rag_assistant.txt prompt. Single-modality context (the common case
     # today) always uses the base prompt, even when enabled.
+  vision_generation:
+    enabled: false              # T-271 query-time vision-LLM figure descriptions
+    # When true, GenerationService describes each figure chunk's asset image
+    # (Chunk.modality=figure, Chunk.asset_path set — T-230) with the configured
+    # vision provider, keyed to the live question, and swaps the description in
+    # for the chunk's stored caption text before building the prompt. Reuses
+    # `parsing.figure_captions.provider/openai/gemini` credentials (T-231) —
+    # independent of `parsing.figure_captions.enabled`, which only controls
+    # ingest-time captioning. Soft-fails per figure (missing asset, vision
+    # error, empty description) and falls back to the existing chunk text.

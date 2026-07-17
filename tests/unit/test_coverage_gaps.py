@@ -314,6 +314,7 @@ class TestGenerationServiceGaps:
         llm = MagicMock()
         with patch("src.core.settings.settings") as mock_settings:
             mock_settings.generation.multimodal_prompt.enabled = True
+            mock_settings.generation.vision_generation.enabled = False
             svc = GenerationService.from_settings(llm)
         assert svc._multimodal_prompt_enabled is True
 

@@ -189,6 +189,168 @@ class TestGenerationService:
         assert isinstance(svc, GenerationService)
 
 
+class TestGenerationServiceVisionGeneration:
+    """T-271 — figure chunks get a live vision-LLM description before the LLM call."""
+
+    @staticmethod
+    def _figure_chunk(path, *, text: str = "stale ingest-time caption") -> Chunk:
+        from src.core.constants import MODALITY_FIGURE
+
+        return Chunk(
+            id="fig0",
+            document_id="doc",
+            text=text,
+            modality=MODALITY_FIGURE,
+            asset_path=str(path),
+        )
+
+    def test_disabled_by_default_keeps_stored_caption(self, tmp_path):
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.return_value = "live description"
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=False)
+        chunk = self._figure_chunk(path)
+        service.generate("question", "stale ingest-time caption", ["fig0"], [chunk])
+        vision.caption_image.assert_not_called()
+        assert "stale ingest-time caption" in llm.generate.call_args.kwargs["prompt"]
+
+    def test_enabled_replaces_figure_text_with_vision_description(self, tmp_path):
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.return_value = "a bar chart of quarterly revenue"
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        chunk = self._figure_chunk(path)
+        service.generate(
+            "what does the chart show?", "stale ingest-time caption", ["fig0"], [chunk]
+        )
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "a bar chart of quarterly revenue" in prompt
+        assert "stale ingest-time caption" not in prompt
+
+    def test_vision_prompt_includes_question(self, tmp_path):
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.return_value = "desc"
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        chunk = self._figure_chunk(path)
+        service.generate("what does the chart show?", "ctx", ["fig0"], [chunk])
+        vision_prompt = vision.caption_image.call_args.kwargs["prompt"]
+        assert "what does the chart show?" in vision_prompt
+
+    def test_no_vision_provider_configured_is_noop(self, tmp_path):
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=None, vision_generation_enabled=True)
+        chunk = self._figure_chunk(path)
+        service.generate("q", "stale ingest-time caption", ["fig0"], [chunk])
+        assert "stale ingest-time caption" in llm.generate.call_args.kwargs["prompt"]
+
+    def test_missing_asset_file_soft_fails(self, tmp_path):
+        missing_path = tmp_path / "missing.png"
+        vision = MagicMock()
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        chunk = self._figure_chunk(missing_path)
+        service.generate("q", "stale ingest-time caption", ["fig0"], [chunk])
+        vision.caption_image.assert_not_called()
+        assert "stale ingest-time caption" in llm.generate.call_args.kwargs["prompt"]
+
+    def test_vision_call_failure_soft_fails(self, tmp_path):
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.side_effect = RuntimeError("boom")
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        chunk = self._figure_chunk(path)
+        service.generate("q", "stale ingest-time caption", ["fig0"], [chunk])
+        assert "stale ingest-time caption" in llm.generate.call_args.kwargs["prompt"]
+
+    def test_empty_description_soft_fails(self, tmp_path):
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.return_value = "   "
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        chunk = self._figure_chunk(path)
+        service.generate("q", "stale ingest-time caption", ["fig0"], [chunk])
+        assert "stale ingest-time caption" in llm.generate.call_args.kwargs["prompt"]
+
+    def test_description_wins_over_stale_parent_context_metadata(self, tmp_path):
+        from src.core.constants import PARENT_CONTEXT_TEXT_KEY
+
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.return_value = "live description"
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        chunk = self._figure_chunk(path)
+        chunk = chunk.model_copy(
+            update={"metadata": {PARENT_CONTEXT_TEXT_KEY: "stale parent context"}}
+        )
+        service.generate("q", "stale ingest-time caption", ["fig0"], [chunk])
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "live description" in prompt
+        assert "stale parent context" not in prompt
+
+    def test_text_chunks_are_not_sent_to_vision(self):
+        vision = MagicMock()
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        service.generate("q", "relevant text 0", ["c0"], [_chunk(0)])
+        vision.caption_image.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_applies_vision_description(self, tmp_path):
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.return_value = "live description"
+        llm = _llm_mock()
+        service = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        chunk = self._figure_chunk(path)
+        stream = service.stream("q", "stale ingest-time caption", [chunk])
+        _ = [t async for t in stream]
+        prompt = llm.generate_stream.call_args.kwargs["prompt"]
+        assert "live description" in prompt
+
+    def test_from_settings_vision_disabled_by_default(self):
+        svc = GenerationService.from_settings(_llm_mock())
+        assert svc._vision is None
+        assert svc._vision_generation_enabled is False
+
+    def test_from_settings_wires_vision_provider_when_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from src.core.settings import GenerationSettings, Settings, VisionGenerationSettings
+
+        monkeypatch.setattr(
+            "src.core.settings.settings",
+            Settings(
+                generation=GenerationSettings(
+                    vision_generation=VisionGenerationSettings(enabled=True)
+                )
+            ),
+        )
+        mock_vision = MagicMock()
+        with patch(
+            "src.infrastructure.vision.get_generation_vision_provider",
+            return_value=mock_vision,
+        ):
+            svc = GenerationService.from_settings(_llm_mock())
+        assert svc._vision is mock_vision
+        assert svc._vision_generation_enabled is True
+
+
 # ── ChatPipeline ───────────────────────────────────────────────────────────────
 
 
@@ -454,6 +616,36 @@ class TestChatPipelineMultimodalPrompt:
             pass
         prompt = llm.generate_stream.call_args.kwargs["prompt"]
         assert "[FIGURE CAPTION]" in prompt
+
+
+class TestChatPipelineVisionGeneration:
+    """T-271 — figure chunks from resolution.chunks_for_explanation reach the vision provider."""
+
+    @pytest.mark.asyncio
+    async def test_chat_full_uses_vision_description_for_figure_chunks(self, tmp_path):
+        from src.core.constants import MODALITY_FIGURE
+
+        path = tmp_path / "fig.png"
+        path.write_bytes(b"\x89PNG")
+        vision = MagicMock()
+        vision.caption_image.return_value = "a line graph trending upward"
+        llm = _llm_mock("answer")
+        chunks = [
+            _chunk(0),
+            Chunk(
+                id="c1",
+                document_id="doc",
+                text="stale caption",
+                modality=MODALITY_FIGURE,
+                asset_path=str(path),
+            ),
+        ]
+        generation = GenerationService(llm=llm, vision=vision, vision_generation_enabled=True)
+        p = ChatPipeline(retrieval=_retrieval_mock("plain context", chunks), generation=generation)
+        await p.chat_full("question")
+        prompt = llm.generate.call_args.kwargs["prompt"]
+        assert "a line graph trending upward" in prompt
+        assert "stale caption" not in prompt
 
 
 class TestChatPipelineFromSettings:
