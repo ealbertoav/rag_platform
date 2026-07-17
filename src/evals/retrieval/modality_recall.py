@@ -17,6 +17,13 @@ class ModalityRetrievalSample:
     relevant_ids: list[str]  # ground-truth
 
 
+def samples_for_modality(
+    samples: Iterable[ModalityRetrievalSample], modality: str
+) -> list[ModalityRetrievalSample]:
+    """Return only *samples* whose modality equals *modality*."""
+    return [s for s in samples if s.modality == modality]
+
+
 def modality_recall_at_k(
     samples: Iterable[ModalityRetrievalSample], modality: str, k: int
 ) -> float:
@@ -25,7 +32,7 @@ def modality_recall_at_k(
     Returns 0.0 when no sample matches *modality*, mirroring recall_at_k's
     empty-input convention.
     """
-    matching = [s for s in samples if s.modality == modality]
+    matching = samples_for_modality(samples, modality)
     if not matching:
         return 0.0
     return sum(recall_at_k(s.retrieved_ids, s.relevant_ids, k) for s in matching) / len(matching)
@@ -73,5 +80,6 @@ __all__ = [
     "figure_recall_at_k",
     "load_modality_samples",
     "modality_recall_at_k",
+    "samples_for_modality",
     "table_recall_at_k",
 ]

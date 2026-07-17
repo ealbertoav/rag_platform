@@ -10,6 +10,7 @@ from src.evals.retrieval.modality_recall import (
     figure_recall_at_k,
     load_modality_samples,
     modality_recall_at_k,
+    samples_for_modality,
     table_recall_at_k,
 )
 
@@ -59,6 +60,17 @@ class TestTableAndFigureRecallAtK:
             _sample(MODALITY_FIGURE, [], ["b"]),
         ]
         assert figure_recall_at_k(samples, k=3) == pytest.approx(0.0)
+
+
+class TestSamplesForModality:
+    def test_filters_to_matching_modality(self):
+        table = _sample(MODALITY_TABLE, ["a"], ["a"])
+        figure = _sample(MODALITY_FIGURE, ["b"], ["b"])
+        assert samples_for_modality([table, figure], MODALITY_TABLE) == [table]
+
+    def test_returns_empty_list_when_no_match(self):
+        samples = [_sample(MODALITY_FIGURE, ["a"], ["a"])]
+        assert samples_for_modality(samples, MODALITY_TABLE) == []
 
 
 # ── load_modality_samples ───────────────────────────────────────────────────────
