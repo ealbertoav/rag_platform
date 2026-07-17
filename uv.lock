@@ -4560,6 +4560,9 @@ api-embeddings = [
     { name = "redis" },
     { name = "voyageai" },
 ]
+api-llm = [
+    { name = "openai" },
+]
 evals = [
     { name = "datasets" },
     { name = "deepeval" },
@@ -4600,6 +4603,7 @@ requires-dist = [
     { name = "neo4j", marker = "extra == 'graph'", specifier = ">=5.0.0" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "openai", marker = "extra == 'api-embeddings'", specifier = ">=1.0.0" },
+    { name = "openai", marker = "extra == 'api-llm'", specifier = ">=1.0.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.43.0" },
     { name = "opentelemetry-instrumentation-openai", specifier = ">=0.62.1" },
     { name = "opentelemetry-sdk", specifier = ">=1.43.0" },
@@ -4628,7 +4632,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "voyageai", marker = "extra == 'api-embeddings'", specifier = ">=0.3.0" },
 ]
-provides-extras = ["graph", "api-embeddings", "evals"]
+provides-extras = ["graph", "api-embeddings", "api-llm", "evals"]
 
 [package.metadata.requires-dev]
 dev = [

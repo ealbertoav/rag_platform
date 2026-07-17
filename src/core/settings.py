@@ -39,8 +39,14 @@ class YamlConfigSource(PydanticBaseSettingsSource):
 # ── Nested config models ───────────────────────────────────────────────────────
 
 
+class NvidiaNIMConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "meta/llama-3.1-8b-instruct"
+    base_url: str = "https://integrate.api.nvidia.com/v1"
+
+
 class LLMSettings(BaseModel):
-    provider: Literal["llama_cpp", "ollama", "mlx", "vllm"] = "llama_cpp"
+    provider: Literal["llama_cpp", "ollama", "mlx", "vllm", "nvidia_nim"] = "llama_cpp"
     model_path: str = "models/llm/qwen3-30b.gguf"
     context_size: int = 32768
     n_gpu_layers: int = -1
@@ -48,6 +54,9 @@ class LLMSettings(BaseModel):
     max_tokens: int = 2048
     stop_tokens: list[str] = Field(default_factory=lambda: ["<|im_end|>"])
     disable_disk_cache: bool = False
+
+    # Per-provider API config (populated from env vars or YAML)
+    nvidia_nim: NvidiaNIMConfig = Field(default_factory=NvidiaNIMConfig)
 
 
 # ── API embedding provider config blocks (all optional) ───────────────────────

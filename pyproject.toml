@@ -134,6 +134,9 @@ api-embeddings = [
     "cohere>=7.0.0",
     "google-generativeai>=0.8.0",
 ]
+api-llm = [
+    "openai>=1.0.0",
+]
 evals = [
     "ragas>=0.1.20",
     "deepeval>=0.21.0",
