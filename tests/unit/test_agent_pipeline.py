@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -66,6 +67,11 @@ def _chat_mock(
     m.generation.generate.return_value = Answer(query_id="q1", text="final answer", sources=["c0"])
     m.generation.call_llm.return_value = decision_response
     m.retrieval.service.hybrid.graph = None
+    # Match ChatPipeline's real defaults so explain/highlight/references stay
+    # opt-in in tests that don't request them (T-274).
+    m.source_highlighting_enabled = False
+    m.source_references_enabled = False
+    m.llm = None
     return m
 
 
@@ -183,7 +189,7 @@ class TestAgentPipelineChat:
         p = AgentPipeline(pipeline=chat)
         await p.chat_full("What was revenue growth?")
 
-        _, context, _ = chat.generation.generate.call_args[0]  # type: ignore[attr-defined]
+        _, context, _, _ = chat.generation.generate.call_args[0]  # type: ignore[attr-defined]
         assert "Revenue grew 12%." in context
         assert "[Document:" not in context
 
@@ -295,3 +301,113 @@ class TestAgentPipelineChat:
         run = await p._agentic_retrieve("ambiguous question")
         assert run.chunks == []
         assert run.actions == [AgentAction.CLARIFY]
+
+
+# ── T-274 — multimodal chunk passthrough ────────────────────────────────────────
+
+
+class TestAgentPipelineMultimodalChunks:
+    @pytest.mark.asyncio
+    async def test_chat_passes_retrieved_chunks_to_stream(self):
+        chunks = [_chunk(0), _chunk(1)]
+        chat = _chat_mock(retrieval_chunks=chunks)
+        p = AgentPipeline(pipeline=chat)
+        await p.chat("question")
+        chat.generation.stream.assert_called_once()
+        assert chat.generation.stream.call_args.args[0] == "question"
+        assert chat.generation.stream.call_args.args[2] == chunks
+
+    @pytest.mark.asyncio
+    async def test_chat_full_passes_retrieved_chunks_to_generate(self):
+        chunks = [_chunk(0), _chunk(1)]
+        chat = _chat_mock(retrieval_chunks=chunks)
+        p = AgentPipeline(pipeline=chat)
+        await p.chat_full("question")
+        chat.generation.generate.assert_called_once()
+        assert chat.generation.generate.call_args.args[3] == chunks
+
+
+# ── T-274 — explain/highlights/source_references on /chat/agent/full ───────────
+
+
+class TestAgentPipelineExplainHighlight:
+    @pytest.mark.asyncio
+    async def test_explain_false_omits_explanations(self):
+        chat = _chat_mock(retrieval_chunks=[_chunk(0)])
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q")
+        assert result.explanations is None
+
+    @pytest.mark.asyncio
+    async def test_explain_true_attaches_explanations(self):
+        chat = _chat_mock(retrieval_chunks=[_chunk(0)])
+        chat.llm = MagicMock()
+        chat.llm.generate.return_value = json.dumps(
+            {"explanations": [{"chunk_id": "c0", "reason": "Mentions the topic."}]}
+        )
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q", explain=True)
+        assert result.explanations is not None
+        assert result.explanations[0].chunk_id == "c0"
+
+    @pytest.mark.asyncio
+    async def test_highlights_omitted_by_default(self):
+        chat = _chat_mock(retrieval_chunks=[_chunk(0)])
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q")
+        assert result.highlights is None
+
+    @pytest.mark.asyncio
+    async def test_highlights_param_attaches_highlights(self):
+        chat = _chat_mock(retrieval_chunks=[_chunk(0)])
+        chat.llm = MagicMock()
+        chat.llm.generate.return_value = json.dumps(
+            {"highlights": [{"chunk_id": "c0", "spans": ["relevant text 0"]}]}
+        )
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q", highlights=True)
+        assert result.highlights == {"c0": ["relevant text 0"]}
+
+    @pytest.mark.asyncio
+    async def test_highlights_config_enabled_attaches_highlights(self):
+        chat = _chat_mock(retrieval_chunks=[_chunk(0)])
+        chat.source_highlighting_enabled = True
+        chat.llm = MagicMock()
+        chat.llm.generate.return_value = json.dumps(
+            {"highlights": [{"chunk_id": "c0", "spans": ["relevant text 0"]}]}
+        )
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q")
+        assert result.highlights == {"c0": ["relevant text 0"]}
+
+    @pytest.mark.asyncio
+    async def test_source_references_empty_by_default(self):
+        chat = _chat_mock(retrieval_chunks=[_chunk(0)])
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q")
+        assert result.source_references == []
+
+    @pytest.mark.asyncio
+    async def test_source_references_param_attaches_references(self):
+        chat = _chat_mock(retrieval_chunks=[_chunk(0)])
+        p = AgentPipeline(pipeline=chat)
+        result = await p.chat_full("q", source_references=True)
+        assert {ref.chunk_id for ref in result.source_references} == {"c0"}
+
+    @pytest.mark.asyncio
+    async def test_self_rag_mode_leaves_explain_highlight_at_defaults(self):
+        """Self-RAG (T-141) doesn't thread chunks_for_explanation through its
+        multi-branch loop — explain/highlights/source_references stay at their
+        AgentRunResult defaults even when requested."""
+        chat = _chat_mock(decision_response="")
+        chat.generation.call_llm.side_effect = [
+            json.dumps({"need_retrieval": True, "reasoning": "needs docs"}),
+            json.dumps({"supported": True, "reasoning": "grounded"}),
+            json.dumps({"score": 0.9, "action": "accept", "reasoning": "good"}),
+        ]
+        chat.llm = MagicMock()
+        p = AgentPipeline(pipeline=chat, self_rag_enabled=True)
+        result = await p.chat_full("q", explain=True, highlights=True, source_references=True)
+        assert result.explanations is None
+        assert result.highlights is None
+        assert result.source_references == []

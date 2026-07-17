@@ -139,6 +139,11 @@ def _chat_mock(
     )
     m.generation.call_llm.return_value = ""
     m.retrieval.service.hybrid.graph = None
+    # Match ChatPipeline's real defaults so explain/highlight/references stay
+    # opt-in in tests that don't request them (T-274).
+    m.source_highlighting_enabled = False
+    m.source_references_enabled = False
+    m.llm = None
     return m
 
 
@@ -364,6 +369,19 @@ class TestAgentPipelineSelfRAG:
         assert result.answer.text == "supported draft answer"
         assert result.parametric_answer is False
         assert result.context_texts == ["kubernetes deployment guide"]
+
+    @pytest.mark.asyncio
+    async def test_generate_receives_retrieved_chunks_for_multimodal(self):
+        """T-274 — Self-RAG drafts pass chunks through so GenerationService can
+        select the multimodal prompt / vision descriptions (T-270/T-271)."""
+        chunks = [_chunk("c0")]
+        chat = _chat_mock(retrieval_chunks=chunks)
+        chat.generation.call_llm.side_effect = _self_rag_responses()
+        pipeline = AgentPipeline(pipeline=chat, self_rag_enabled=True, max_iterations=3)
+        await pipeline.chat_full("kubernetes question")
+        chat.generation.generate.assert_called_once()
+        assert chat.generation.generate.call_args.args[0] == "kubernetes question"
+        assert chat.generation.generate.call_args.args[3] == chunks
 
     @pytest.mark.asyncio
     async def test_refuses_after_max_iterations_when_unsupported(self):

@@ -11,7 +11,6 @@ from opentelemetry import trace
 from src.domain.entities.answer import Answer
 from src.domain.entities.evaluation import BenchmarkRun
 from src.domain.entities.query import Query
-from src.domain.entities.source_reference import SourceReference, source_references_for_chunks
 from src.domain.services.generation_service import GenerationService
 from src.observability.metrics import record_generation, record_request
 from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
@@ -28,9 +27,7 @@ from src.rag.quality.crag import (
     refine_knowledge,
     score_retrieval_quality,
 )
-from src.rag.quality.explainable_retrieval import explain_chunks, resolve_chunks_for_sources
-from src.rag.quality.post_generation import explain_and_highlight
-from src.rag.quality.source_highlighting import extract_highlights
+from src.rag.quality.post_generation import resolve_explain_and_highlight
 
 if TYPE_CHECKING:
     from src.domain.repositories.llm_repository import LLMRepository
@@ -73,7 +70,7 @@ class ChatPipeline:
         self._crag_lower_threshold: Any = crag_lower_threshold
         self._crag_upper_threshold: Any = crag_upper_threshold
         self._web_search: Any = web_search
-        self._llm: Any = llm
+        self._llm: LLMRepository | None = llm
         self._web_search_max_results: Any = web_search_max_results
         self._web_search_available: Any = (
             web_search_available and web_search is not None and llm is not None
@@ -82,6 +79,19 @@ class ChatPipeline:
         self._source_references_enabled: Any = source_references_enabled
 
     # ── Public ─────────────────────────────────────────────────────────────────
+
+    @property
+    def llm(self) -> LLMRepository | None:
+        """The LLM used for CRAG/explain/highlight side calls (T-274 agent reuse)."""
+        return self._llm
+
+    @property
+    def source_highlighting_enabled(self) -> bool:
+        return bool(self._source_highlighting_enabled)
+
+    @property
+    def source_references_enabled(self) -> bool:
+        return bool(self._source_references_enabled)
 
     async def chat(self, question: str | Query) -> AsyncIterator[str]:
         """Return a token stream for *question*.
@@ -132,64 +142,19 @@ class ChatPipeline:
 
         highlighting_requested = highlights or self._source_highlighting_enabled
         source_references_requested = source_references or self._source_references_enabled
-        llm = self._llm
-        llm_side_requested = (explain or highlighting_requested) and llm is not None
-        source_chunks = None
-        if (
-            answer.sources
-            and resolution.chunks_for_explanation is not None
-            and (llm_side_requested or source_references_requested)
-        ):
-            source_chunks = resolve_chunks_for_sources(
-                answer.sources,
-                resolution.chunks_for_explanation,
-            )
-            if not source_chunks:
-                source_chunks = None
-
-        source_references_result: list[SourceReference] = []
-        if source_references_requested and source_chunks is not None:
-            source_references_result = source_references_for_chunks(source_chunks)
-
-        explanations = None
-        highlights_result = None
-        if explain and highlighting_requested and source_chunks is not None and llm is not None:
-            explanation_list, highlight_map = await asyncio.to_thread(
-                explain_and_highlight,
-                query.text,
-                answer,
-                source_chunks,
-                llm,
-            )
-            if explanation_list:
-                explanations = explanation_list
-            if highlight_map:
-                highlights_result = highlight_map
-
-        if explain and explanations is None and source_chunks is not None and llm is not None:
-            explanation_list = await asyncio.to_thread(
-                explain_chunks,
-                query.text,
-                source_chunks,
-                llm,
-            )
-            if explanation_list:
-                explanations = explanation_list
-
-        if (
-            highlighting_requested
-            and highlights_result is None
-            and source_chunks is not None
-            and llm is not None
-        ):
-            highlight_map = await asyncio.to_thread(
-                extract_highlights,
-                answer,
-                source_chunks,
-                llm,
-            )
-            if highlight_map:
-                highlights_result = highlight_map
+        (
+            explanations,
+            highlights_result,
+            source_references_result,
+        ) = await resolve_explain_and_highlight(
+            query.text,
+            answer,
+            resolution.chunks_for_explanation,
+            self._llm,
+            explain=explain,
+            highlighting_requested=highlighting_requested,
+            source_references_requested=source_references_requested,
+        )
 
         elapsed = (time.monotonic() - t0) * 1000
         token_count = len(answer.text.split())

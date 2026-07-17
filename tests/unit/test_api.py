@@ -409,6 +409,70 @@ class TestChatAgent:
         assert data["actions"] == ["ANSWER"]
         assert data["self_rag_decisions"] == []
 
+    @pytest.mark.asyncio
+    async def test_agent_full_explain_omitted_by_default(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/agent/full", json={"question": "q"})).json()
+        assert "explanations" not in data
+
+    @pytest.mark.asyncio
+    async def test_agent_full_explain_true_passes_flag_to_pipeline(
+        self, app_client, agent_pipeline_mock
+    ):
+        async with _client(app_client) as c:
+            await c.post("/chat/agent/full?explain=true", json={"question": "q"})
+        agent_pipeline_mock.chat_full.assert_awaited_once()
+        assert agent_pipeline_mock.chat_full.await_args.kwargs["explain"] is True
+
+    @pytest.mark.asyncio
+    async def test_agent_full_highlights_true_passes_flag_to_pipeline(
+        self, app_client, agent_pipeline_mock
+    ):
+        async with _client(app_client) as c:
+            await c.post("/chat/agent/full?highlights=true", json={"question": "q"})
+        agent_pipeline_mock.chat_full.assert_awaited_once()
+        assert agent_pipeline_mock.chat_full.await_args.kwargs["highlights"] is True
+
+    @pytest.mark.asyncio
+    async def test_agent_full_source_references_true_passes_flag_to_pipeline(
+        self, app_client, agent_pipeline_mock
+    ):
+        async with _client(app_client) as c:
+            await c.post("/chat/agent/full?source_references=true", json={"question": "q"})
+        agent_pipeline_mock.chat_full.assert_awaited_once()
+        assert agent_pipeline_mock.chat_full.await_args.kwargs["source_references"] is True
+
+    @pytest.mark.asyncio
+    async def test_agent_full_source_references_empty_by_default(self, app_client):
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/agent/full", json={"question": "q"})).json()
+        assert data["source_references"] == []
+
+    @pytest.mark.asyncio
+    async def test_agent_full_highlights_included_when_present(
+        self, app_client, agent_pipeline_mock
+    ):
+        from src.rag.pipelines.agent_pipeline import AgentAction, AgentRunResult
+
+        agent_pipeline_mock.chat_full = AsyncMock(
+            return_value=AgentRunResult(
+                answer=Answer(
+                    query_id="q-1",
+                    text="Agent answer",
+                    sources=["c0"],
+                    latency_ms=55.0,
+                    token_count=2,
+                ),
+                iterations=2,
+                actions=[AgentAction.ANSWER],
+                self_rag_decisions=[],
+                highlights={"c0": ["relevant text 0"]},
+            )
+        )
+        async with _client(app_client) as c:
+            data = (await c.post("/chat/agent/full", json={"question": "q"})).json()
+        assert data["highlights"] == {"c0": ["relevant text 0"]}
+
 
 # ── /evals/run ─────────────────────────────────────────────────────────────────
 

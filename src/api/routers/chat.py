@@ -139,12 +139,37 @@ async def chat_agent_stream(
     return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
-@router.post("/agent/full", response_model=AgentChatResponse)
+@router.post("/agent/full", response_model=AgentChatResponse, response_model_exclude_none=True)
 async def chat_agent_full(
     body: AgentChatRequest,
+    explain: bool = QueryParam(False, description="Attach per-source retrieval explanations."),
+    highlights: bool = QueryParam(
+        False,
+        description=(
+            "Attach verbatim supporting spans per source chunk. Also enabled when "
+            + "quality.source_highlighting.enabled is true in config."
+        ),
+    ),
+    source_references: bool = QueryParam(
+        False,
+        description=(
+            "Attach structured multimodal citations per source chunk. Also enabled when "
+            + "quality.source_references.enabled is true in config."
+        ),
+    ),
     pipeline: AgentPipeline = Depends(get_agent_pipeline),
 ) -> AgentChatResponse:
-    """Agentic RAG — returns a complete answer with iteration metadata."""
+    """Agentic RAG — returns a complete answer with iteration metadata.
+
+    *explain*/*highlights*/*source_references* only apply to the standard
+    agentic-retrieve loop — Self-RAG (T-141) is unaffected by these flags.
+    """
     max_iter = min(body.max_iterations, _MAX_AGENT_ITERATIONS)
-    result = await pipeline.chat_full(body.question, max_iterations=max_iter)
+    result = await pipeline.chat_full(
+        body.question,
+        max_iterations=max_iter,
+        explain=explain,
+        highlights=highlights,
+        source_references=source_references,
+    )
     return AgentChatResponse.from_run(result)

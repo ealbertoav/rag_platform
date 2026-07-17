@@ -14,11 +14,14 @@ from typing import TYPE_CHECKING, Any, override
 from src.domain.entities.answer import Answer
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.query import Query
+from src.domain.entities.source_reference import SourceReference
 from src.domain.repositories.llm_repository import LLMRepository
 from src.domain.services.generation_service import GenerationService
 from src.rag.chunking.contextual_headers import join_chunk_context
 from src.rag.enrichment.relevant_segment_extraction import chunk_source_ids
 from src.rag.pipelines.chat_pipeline import ChatPipeline
+from src.rag.quality.explainable_retrieval import ChunkExplanation
+from src.rag.quality.post_generation import resolve_explain_and_highlight
 from src.rag.quality.self_rag import (
     UtilityAction,
     UtilityScore,
@@ -72,7 +75,13 @@ class SelfRAGStepDecision:
 
 @dataclasses.dataclass
 class AgentRunResult:
-    """Output of an agentic retrieval and generation run."""
+    """Output of an agentic retrieval and generation run.
+
+    "explanations"/"highlights"/"source_references" (T-274) mirror
+    "ChatPipeline.chat_full" (T-143/T-144/T-272) but are only populated for the
+    standard agentic-retrieve loop — the Self-RAG loop (T-141) leaves them at
+    their defaults.
+    """
 
     answer: Answer
     iterations: int
@@ -80,6 +89,9 @@ class AgentRunResult:
     self_rag_decisions: list[SelfRAGStepDecision] = dataclasses.field(default_factory=list)
     context_texts: list[str] = dataclasses.field(default_factory=list)
     parametric_answer: bool = False
+    explanations: list[ChunkExplanation] | None = None
+    highlights: dict[str, list[str]] | None = None
+    source_references: list[SourceReference] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -153,15 +165,25 @@ class AgentPipeline:
             return self._stream_answer_text(result.answer.text)
         run = await self._agentic_retrieve(question, max_iterations=max_iter)
         context = self._build_context(run.chunks)
-        return self._pipeline.generation.stream(question, context)
+        return self._pipeline.generation.stream(question, context, run.chunks)
 
     async def chat_full(
         self,
         question: str,
         *,
         max_iterations: int | None = None,
+        explain: bool = False,
+        highlights: bool = False,
+        source_references: bool = False,
     ) -> AgentRunResult:
-        """Run the agentic loop and return a complete result."""
+        """Run the agentic loop and return a complete result.
+
+        *explain*/*highlights*/*source_references* mirror
+        "ChatPipeline.chat_full" (T-143/T-144/T-272) and only apply to the
+        standard agentic-retrieve loop — when Self-RAG (T-141) is enabled they
+        are accepted but have no effect, preserving that loop's existing
+        contract.
+        """
         import time
 
         max_iter = max_iterations if max_iterations is not None else self._max_iterations
@@ -192,6 +214,7 @@ class AgentPipeline:
             question,
             context,
             sources,
+            run.chunks,
         )
         elapsed = (time.monotonic() - t0) * 1000
         final_answer = answer.model_copy(
@@ -201,11 +224,29 @@ class AgentPipeline:
                 "token_count": len(answer.text.split()),
             }
         )
+        highlighting_requested = highlights or self._pipeline.source_highlighting_enabled
+        source_references_requested = source_references or self._pipeline.source_references_enabled
+        (
+            explanations,
+            highlights_result,
+            source_references_result,
+        ) = await resolve_explain_and_highlight(
+            question,
+            final_answer,
+            run.chunks,
+            self._pipeline.llm,
+            explain=explain,
+            highlighting_requested=highlighting_requested,
+            source_references_requested=source_references_requested,
+        )
         return AgentRunResult(
             answer=final_answer,
             iterations=run.iterations,
             actions=run.actions,
             context_texts=self._eval_contexts(run.chunks),
+            explanations=explanations,
+            highlights=highlights_result,
+            source_references=source_references_result,
         )
 
     # ── Factory ────────────────────────────────────────────────────────────────
@@ -300,7 +341,7 @@ class AgentPipeline:
                     return result
                 continue
 
-            draft = self._pipeline.generation.generate(question, context, sources)
+            draft = self._pipeline.generation.generate(question, context, sources, retrieval.chunks)
 
             support = check_support(question, draft.text, context, llm)
             step.supported = support.supported

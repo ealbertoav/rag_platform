@@ -3,7 +3,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 
+from src.domain.entities.source_reference import SourceReference
 from src.rag.pipelines.agent_pipeline import AgentRunResult, SelfRAGStepDecision
+from src.rag.quality.explainable_retrieval import ChunkExplanation
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,9 @@ class AgentChatResponse:
     iterations: int
     actions: list[str]
     self_rag_decisions: list[SelfRAGDecisionResponse]
+    explanations: list[ChunkExplanation] | None = None
+    highlights: dict[str, list[str]] | None = None
+    source_references: list[SourceReference] = dataclasses.field(default_factory=list)
 
     @classmethod
     def from_run(cls, result: AgentRunResult) -> AgentChatResponse:
@@ -59,4 +64,7 @@ class AgentChatResponse:
             self_rag_decisions=[
                 SelfRAGDecisionResponse.from_step(step) for step in result.self_rag_decisions
             ],
+            explanations=result.explanations,
+            highlights=result.highlights,
+            source_references=result.source_references,
         )
