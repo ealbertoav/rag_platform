@@ -68,6 +68,7 @@ jobs:
               - 'datasets/goldens/**'
               - 'scripts/check_regression_gate.py'
               - 'scripts/run_evals.py'
+              - 'scripts/check_multimodal_regression_gate.py'
 
   quality:
     name: Quality
@@ -142,3 +143,7 @@ jobs:
 
       - name: Assert golden dataset and Recall@5 regression gate
         run: uv run python scripts/check_regression_gate.py
+
+      - name: Assert multimodal (table/figure) regression gate (optional, T-282)
+        continue-on-error: true
+        run: uv run python scripts/check_multimodal_regression_gate.py

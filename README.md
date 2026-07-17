@@ -71,6 +71,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 > **Multimodal golden dataset builder (T-280):** `make multimodal-golden` (`scripts/build_multimodal_golden.py`) generates a table/figure-only QA golden at `datasets/goldens/multimodal_qa_dataset.jsonl` — reuses T-040's `SyntheticDatasetBuilder` restricted to chunks whose resolved modality (T-210's `resolve_modality`) is table or figure, tagging each pair with its source chunk's modality. Requires `parsing.table_chunks.enabled` / `parsing.figure_chunks.enabled` and a prior `make ingest` with those chunk types present. Written as JSON Lines, independent of `qa_dataset.json`. See [Multimodal Golden Dataset Builder (T-280)](#multimodal-golden-dataset-builder-t-280).
 >
 > **Table & figure retrieval evals (T-281):** `make benchmark-modality-recall` (`scripts/benchmark_modality_recall.py`) runs the live retrieval pipeline over the T-280 multimodal golden and reports `table_recall@k` / `figure_recall@k` separately, via `src/evals/retrieval/modality_evaluator.py`'s `ModalityRetrievalEvaluator`. Requires a populated `multimodal_qa_dataset.jsonl`. See [Table & Figure Retrieval Evals (T-281)](#table--figure-retrieval-evals-t-281).
+>
+> **Multimodal regression gate (T-282):** `make check-multimodal-regression` (`scripts/check_multimodal_regression_gate.py`, `src/evals/multimodal_regression_gate.py`) mirrors T-152's `check_regression_gate` for the T-280 multimodal golden — skips gracefully when no table/figure samples are present, otherwise enforces per-modality minimum sample counts and oracle Recall@5 floors from `datasets/goldens/multimodal_baseline.json`. Wired into the `Extended Tests` CI job with `continue-on-error: true`, so it is CI-optional and never blocks a merge. See [Multimodal Regression Gate (T-282)](#multimodal-regression-gate-t-282).
 
 ---
 
@@ -112,6 +114,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152)
   - [Multimodal Golden Dataset Builder (T-280)](#multimodal-golden-dataset-builder-t-280)
   - [Table & Figure Retrieval Evals (T-281)](#table--figure-retrieval-evals-t-281)
+  - [Multimodal Regression Gate (T-282)](#multimodal-regression-gate-t-282)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
@@ -1953,6 +1956,35 @@ uv run python scripts/benchmark_modality_recall.py --k 1 3 5
 ```
 
 `src/evals/retrieval/modality_recall.py` adds `table_recall_at_k()` / `figure_recall_at_k()` — thin wrappers over T-041's `recall_at_k()` scoped to `ModalityRetrievalSample`s whose `modality` field matches, plus `load_modality_samples()` to convert T-280's `MultimodalQAPair` rows into samples (empty `retrieved_ids`). This mirrors T-041's `recall_at_k.py` split: the metric-only file has no classes or I/O. `scripts/benchmark_modality_recall.py` runs the live `RetrievalPipeline` per question to fill in `retrieved_ids`, then `src/evals/retrieval/modality_evaluator.py`'s `ModalityRetrievalEvaluator` prints a Rich table of Recall@K per modality (mirrors T-041's `RetrievalEvaluator` in `src/evals/retrieval/__init__.py`). Exits `1` if the multimodal golden is empty or has no scoreable rows.
+
+---
+
+### Multimodal Regression Gate (T-282)
+
+A CI-optional regression check for table/figure retrieval quality, mirroring [T-152's `check_regression_gate`](#golden-dataset--eval-regression-gates-t-152) but scoped to the T-280 multimodal golden and T-281's per-modality metrics:
+
+```bash
+make multimodal-golden               # requires: datasets/goldens/multimodal_qa_dataset.jsonl populated
+make check-multimodal-regression
+# or directly:
+uv run python scripts/check_multimodal_regression_gate.py
+```
+
+`check_multimodal_regression_gate()` (`src/evals/multimodal_regression_gate.py`) loads the T-280 multimodal golden via `load_jsonl()` and converts rows to `ModalityRetrievalSample`s via T-281's `load_modality_samples()`. It **skips** (exit `0`) when the golden file is missing/empty or contains no table/figure-tagged rows — table/figure ingestion is opt-in (T-202/T-253), so most checkouts never populate this dataset. When samples are present, for each modality that has at least one sample it enforces, from `datasets/goldens/multimodal_baseline.json`:
+
+- minimum sample count (`min_table_samples` / `min_figure_samples`)
+- every sample has a non-empty `relevant_chunks`
+- oracle Recall@5 (T-152's `oracle_recall_at_k`, using ground-truth `relevant_chunks` — no live retrieval call) ≥ `min_{modality}_recall_at_5`
+
+A modality with zero samples in the golden is skipped rather than failed, so a corpus with only table chunks (no figures yet, or vice versa) still passes. Reuses T-152's `GateStatus`, `RegressionGateResult`, and baseline coercion helpers (`baseline_int`/`baseline_float`) rather than duplicating them.
+
+**CI wiring:** the `Extended Tests` job runs `scripts/check_multimodal_regression_gate.py` after the T-152 gate, with `continue-on-error: true` — a failure is visible in the job summary but never blocks a merge, which is what makes this gate "CI-optional" per its spec.
+
+| Module | Role |
+|--------|------|
+| `src/evals/multimodal_regression_gate.py` | `check_multimodal_regression_gate()` — per-modality sample counts + oracle Recall@5 floors |
+| `scripts/check_multimodal_regression_gate.py` | CI entrypoint (exit 1 on failure; step itself is non-blocking via `continue-on-error`) |
+| `datasets/goldens/multimodal_baseline.json` | Committed per-modality thresholds |
 
 ---
 

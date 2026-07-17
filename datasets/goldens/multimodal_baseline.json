@@ -1,0 +1,7 @@
+{
+  "min_table_samples": 1,
+  "min_figure_samples": 1,
+  "min_table_recall_at_5": 0.5,
+  "min_figure_recall_at_5": 0.5,
+  "description": "T-282 multimodal regression baseline — oracle retrieval uses ground-truth relevant_chunks per modality (T-280/T-281). A modality's threshold only applies when the golden dataset contains samples of that modality."
+}

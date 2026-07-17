@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 28 — **T-282** ← next (T-280 ✅, T-281 ✅; Phase 27 complete: T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅, T-274 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 28 complete — T-280 ✅, T-281 ✅, T-282 ✅; Phase 27 complete: T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅, T-274 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅. Phases 19–28 follow strict precondition order (see roadmap below). All Multimodal-RAG phases (19–28) are now complete.
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2346,7 +2346,7 @@
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273 ✅ · T-274 pending |
-> | **28** | 18 | T-280 → T-282 | Phases 25–26 | T-280 ✅ · T-281 ✅ · T-282 pending |
+> | **28** | 18 | T-280 → T-282 | Phases 25–26 | ✅ complete — T-280 ✅ · T-281 ✅ · T-282 ✅ |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
 
@@ -3118,7 +3118,7 @@
 >
 > **Preconditions:** Phases 25–26
 >
-> **Status:** T-280 ✅ · T-281 ✅ · T-282 pending
+> **Status:** T-280 ✅ · T-281 ✅ · T-282 ✅ — Phase 28 complete
 
 ---
 
@@ -3194,15 +3194,41 @@
 
 
 ### T-282 · Multimodal Regression Gate
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** CI-optional regression check.
 - **Inputs:** T-281, T-152, T-182
 - **Outputs:** Regression gate
-- **Files:** `regression_gate.py`, CI wiring, tests
+- **Files:**
+  - `src/evals/multimodal_regression_gate.py` — `check_multimodal_regression_gate()`: mirrors
+    T-152's `check_regression_gate()`, reusing its `GateStatus`, `RegressionGateResult`, and
+    baseline coercion helpers (`baseline_int`/`baseline_float`); scores per-modality oracle
+    Recall@5 (T-152's `oracle_recall_at_k`) over T-281's `ModalityRetrievalSample`s _(done)_
+  - `scripts/check_multimodal_regression_gate.py` — CI entrypoint (exit 1 on failure) _(done)_
+  - `datasets/goldens/multimodal_baseline.json` — committed per-modality thresholds _(done)_
+  - `.github/workflows/ci.yml` — `Extended Tests` job runs the gate with
+    `continue-on-error: true` after T-152's gate; path filter includes the new script _(done)_
+  - `Makefile` — `check-multimodal-regression` target _(done)_
+  - `configs/parsing.yaml` — T-282 note _(done)_
+  - `tests/unit/test_multimodal_regression_gate.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (skips gracefully when the
+    T-280 multimodal golden is absent/empty or has no table/figure samples; no existing code
+    path changes)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** "CI-optional" is satisfied two ways: (1) the gate itself skips (not fails) whenever
+  there is no multimodal golden data to evaluate — mirroring T-152's placeholder-skip behavior —
+  and (2) the CI step runs with `continue-on-error: true`, so even a genuine `FAILED` result never
+  blocks a merge, unlike T-152's mandatory `retrieval-regression` step. A modality with zero
+  samples in the golden (e.g. a corpus with tables but no figures yet) is skipped individually
+  rather than failed, so partial multimodal coverage doesn't trip the gate. Named
+  `multimodal_regression_gate.py` rather than the spec's literal `regression_gate.py` since T-152
+  already owns that filename; it deliberately imports and reuses T-152's types/helpers instead of
+  duplicating them. `configs/evals.yaml` intentionally gets no new keys for this gate — its
+  existing `retrieval_baseline_path`/`min_recall_at_5` entries already document, rather than
+  drive, T-152's committed baseline, and adding an equivalent unread `multimodal_regression` block
+  would be a config surface that silently does nothing if edited; `multimodal_baseline.json` is
+  the sole source of truth for thresholds.
 
 ---
 
@@ -3319,4 +3345,4 @@ T-150 + T-281 ──► T-282
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 ✅ → T-251 ✅ → T-252 ✅ → T-253 ✅ _(complete)_
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 ✅ → T-263 ✅ _(complete)_
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 ✅ → T-271 ✅ → T-272 ✅ → T-273 ✅ → T-274 ✅ _(complete)_
-28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 ✅ → T-281 ✅ → T-282
+28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 ✅ → T-281 ✅ → T-282 ✅ _(complete)_

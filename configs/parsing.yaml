@@ -120,3 +120,10 @@ parsing:
   # (src/evals/retrieval/modality_recall.py) by running the live retrieval
   # pipeline over the T-280 multimodal golden and grouping Recall@K by
   # question modality — requires a populated multimodal_qa_dataset.jsonl.
+  # T-282 (no feature flag, no new settings): `make check-multimodal-regression` /
+  # scripts/check_multimodal_regression_gate.py (src/evals/multimodal_regression_gate.py)
+  # is a CI-optional gate mirroring T-152's check_regression_gate — skips when
+  # multimodal_qa_dataset.jsonl is absent/empty or has no table/figure samples,
+  # otherwise enforces per-modality min sample counts and oracle Recall@5 floors
+  # from datasets/goldens/multimodal_baseline.json. Wired into the `Extended
+  # Tests` CI job with continue-on-error so it never blocks merges.
