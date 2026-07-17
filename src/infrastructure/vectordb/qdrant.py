@@ -555,6 +555,14 @@ class QdrantVectorStore(VectorStoreRepository):
         return bool(self._retrieve_points([chunk_id]))
 
     @override
+    def get_chunk(self, chunk_id: str) -> Chunk | None:
+        """Return the full chunk (metadata included) for *chunk_id*, or None if absent."""
+        points = self._retrieve_points([chunk_id])
+        if not points:
+            return None
+        return Chunk.model_validate(points[0].payload or {})
+
+    @override
     def get_feedback_score(self, chunk_id: str) -> float:
         """Return accumulated user feedback score stored in chunk metadata."""
         points = self._retrieve_points([chunk_id])

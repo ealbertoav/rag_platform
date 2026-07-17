@@ -1554,6 +1554,26 @@ class TestDeleteAndCount:
         assert store.chunk_exists("missing") is False
 
 
+class TestGetChunk:
+    def test_returns_chunk_when_present(self, store: QdrantVectorStore, mock_client: MagicMock):
+        chunk = _chunk(0)
+        mock_client.retrieve.return_value = [_scored_point(chunk.id, 0.0, chunk)]
+        result = store.get_chunk(chunk.id)
+        assert result is not None
+        assert result.id == chunk.id
+        assert result.text == chunk.text
+        assert result.metadata == chunk.metadata
+
+    def test_returns_none_when_absent(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.retrieve.return_value = []
+        assert store.get_chunk("missing") is None
+
+    def test_wraps_retrieve_failure(self, store: QdrantVectorStore, mock_client: MagicMock):
+        mock_client.retrieve.side_effect = RuntimeError("down")
+        with pytest.raises(VectorStoreError, match="retrieve failed"):
+            store.get_chunk("chunk-a")
+
+
 class TestQdrantFeedbackScore:
     def test_get_feedback_score_reads_metadata(self, store, mock_client):
         point = MagicMock()

@@ -71,6 +71,13 @@ class VectorStoreRepository(ABC):
         """Return True when *chunk_id* is stored in the vector index."""
 
     @abstractmethod
+    def get_chunk(self, chunk_id: str) -> Chunk | None:
+        """Return the stored Chunk (text + metadata; vectors excluded) for *chunk_id*.
+
+        Returns None when *chunk_id* is not stored.
+        """
+
+    @abstractmethod
     def get_feedback_score(self, chunk_id: str) -> float:
         """Return the accumulated feedback score for *chunk_id* (0.0 when unset)."""
 

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.rate_limit import RateLimitHTTPMiddleware, configure_rate_limit
-from src.api.routers import chat, evals, feedback, health, ingest
+from src.api.routers import chat, chunks, evals, feedback, health, ingest
 from src.api.routers.metrics_router import router as metrics_router
 from src.core.logging import configure_logging
 from src.core.settings import settings
@@ -102,6 +102,7 @@ def create_app() -> FastAPI:
     _app.include_router(health.router)
     _app.include_router(ingest.router)
     _app.include_router(chat.router)
+    _app.include_router(chunks.router)
     _app.include_router(feedback.router)
     _app.include_router(evals.router)
     _app.include_router(metrics_router)

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sys
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,15 +18,6 @@ from src.evals.golden_dataset import (
     SyntheticDatasetBuilder,
     chunks_needed_for_min_pairs,
 )
-
-
-@pytest.fixture
-def work_tmp() -> Iterator[Path]:
-    """Workspace-local temp dir (sandbox-safe)."""
-    base = Path("tests/.tmp_run_evals")
-    base.mkdir(parents=True, exist_ok=True)
-    yield base
-    shutil.rmtree(base, ignore_errors=True)
 
 
 def _chunk(i: int) -> Chunk:
@@ -62,8 +52,8 @@ def _bm25_mock(chunk_count: int = 10) -> MagicMock:
     return bm25
 
 
-def _output_paths(work_tmp: Path) -> tuple[Path, Path]:
-    return work_tmp / "qa.json", work_tmp / "retrieval.json"
+def _output_paths(tmp_path: Path) -> tuple[Path, Path]:
+    return tmp_path / "qa.json", tmp_path / "retrieval.json"
 
 
 @contextmanager
@@ -98,7 +88,7 @@ class TestRunEvalsMain:
             run_evals.main()
         assert exc.value.code == 1
 
-    def test_exits_when_below_min_pairs(self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path):
+    def test_exits_when_below_min_pairs(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         import run_evals
 
         bm25 = MagicMock()
@@ -108,7 +98,7 @@ class TestRunEvalsMain:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["run_evals.py", "--min-pairs", "5", "--output", str(work_tmp / "qa.json")],
+            ["run_evals.py", "--min-pairs", "5", "--output", str(tmp_path / "qa.json")],
         )
         with (
             _patch_run_evals(bm25, _mock_builder([_qa_pair(0)])),
@@ -117,12 +107,12 @@ class TestRunEvalsMain:
             run_evals.main()
         assert exc.value.code == 1
 
-    def test_writes_qa_and_retrieval_goldens(self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path):
+    def test_writes_qa_and_retrieval_goldens(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         import run_evals
 
         pairs = _golden_pairs()
         bm25 = _bm25_mock()
-        qa_out, retrieval_out = _output_paths(work_tmp)
+        qa_out, retrieval_out = _output_paths(tmp_path)
         monkeypatch.setattr(
             sys,
             "argv",
@@ -144,13 +134,13 @@ class TestRunEvalsMain:
         assert retrieval_data[0]["query"] == pairs[0].question
 
     def test_skips_retrieval_sync_when_disabled(
-        self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         import run_evals
 
         pairs = _golden_pairs()
         bm25 = _bm25_mock()
-        qa_out, retrieval_out = _output_paths(work_tmp)
+        qa_out, retrieval_out = _output_paths(tmp_path)
         monkeypatch.setattr(
             sys,
             "argv",
@@ -170,18 +160,18 @@ class TestRunEvalsMain:
         assert not retrieval_out.exists()
 
     def test_custom_output_syncs_sibling_retrieval_not_committed_golden(
-        self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         import run_evals
 
         pairs = _golden_pairs()
         bm25 = _bm25_mock()
-        committed_retrieval = work_tmp / "goldens" / "retrieval_dataset.json"
+        committed_retrieval = tmp_path / "goldens" / "retrieval_dataset.json"
         committed_retrieval.parent.mkdir(parents=True, exist_ok=True)
         committed_retrieval.write_text('{"sentinel": true}', encoding="utf-8")
 
-        qa_out = work_tmp / "custom" / "qa.json"
-        sibling_retrieval = work_tmp / "custom" / "retrieval_dataset.json"
+        qa_out = tmp_path / "custom" / "qa.json"
+        sibling_retrieval = tmp_path / "custom" / "retrieval_dataset.json"
 
         monkeypatch.setattr(
             run_evals,
@@ -202,14 +192,14 @@ class TestRunEvalsMain:
         assert len(retrieval_data) == MIN_QA_PAIRS
 
     def test_expands_chunks_when_initial_batch_below_min_pairs(
-        self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         import run_evals
 
         chunk_count = 100
         bm25 = _bm25_mock(chunk_count)
         initial = chunks_needed_for_min_pairs(MIN_QA_PAIRS, 3)
-        qa_out = work_tmp / "qa.json"
+        qa_out = tmp_path / "qa.json"
 
         builder = _mock_builder(_golden_pairs())
 
@@ -233,7 +223,7 @@ class TestRunEvalsMain:
         assert len(final_batch) > initial
 
     def test_default_max_chunks_uses_dedup_headroom(
-        self, monkeypatch: pytest.MonkeyPatch, work_tmp: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         import run_evals
 
@@ -242,7 +232,7 @@ class TestRunEvalsMain:
         bm25 = _bm25_mock(chunk_count)
         expected = chunks_needed_for_min_pairs(MIN_QA_PAIRS, 3)
 
-        qa_out = work_tmp / "qa.json"
+        qa_out = tmp_path / "qa.json"
         monkeypatch.setattr(
             sys,
             "argv",

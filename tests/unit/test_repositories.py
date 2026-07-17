@@ -102,6 +102,9 @@ class _VectorStore(VectorStoreRepository):
     def chunk_exists(self, chunk_id: str) -> bool:
         return False
 
+    def get_chunk(self, chunk_id: str) -> Chunk | None:
+        return None
+
     def get_feedback_score(self, chunk_id: str) -> float:
         return 0.0
 
