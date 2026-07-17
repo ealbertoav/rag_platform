@@ -115,3 +115,8 @@ parsing:
   # corpus to chunks resolving to modality table/figure — requires
   # table_chunks.enabled / figure_chunks.enabled above and a prior
   # `make ingest` with those chunk types present.
+  # T-281 (no feature flag, no new settings): `make benchmark-modality-recall` /
+  # scripts/benchmark_modality_recall.py scores table_recall@k / figure_recall@k
+  # (src/evals/retrieval/modality_recall.py) by running the live retrieval
+  # pipeline over the T-280 multimodal golden and grouping Recall@K by
+  # question modality — requires a populated multimodal_qa_dataset.jsonl.

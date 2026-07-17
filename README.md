@@ -69,6 +69,8 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
 > **Agent explain/highlight/source references (T-274):** `POST /chat/agent/full` accepts the same `explain`/`highlights`/`source_references` query params as `/chat/full` (T-143/T-144/T-272), and `AgentPipeline` passes retrieved chunks into generation so mixed-modality prompts (T-270) and vision generation (T-271) also apply to agent answers. Self-RAG (T-141) mode accepts the flags but leaves the fields at their defaults. See [Agent Explain, Highlight, and Source References (T-274)](#agent-explain-highlight-and-source-references-t-274).
 
 > **Multimodal golden dataset builder (T-280):** `make multimodal-golden` (`scripts/build_multimodal_golden.py`) generates a table/figure-only QA golden at `datasets/goldens/multimodal_qa_dataset.jsonl` — reuses T-040's `SyntheticDatasetBuilder` restricted to chunks whose resolved modality (T-210's `resolve_modality`) is table or figure, tagging each pair with its source chunk's modality. Requires `parsing.table_chunks.enabled` / `parsing.figure_chunks.enabled` and a prior `make ingest` with those chunk types present. Written as JSON Lines, independent of `qa_dataset.json`. See [Multimodal Golden Dataset Builder (T-280)](#multimodal-golden-dataset-builder-t-280).
+>
+> **Table & figure retrieval evals (T-281):** `make benchmark-modality-recall` (`scripts/benchmark_modality_recall.py`) runs the live retrieval pipeline over the T-280 multimodal golden and reports `table_recall@k` / `figure_recall@k` separately, via `src/evals/retrieval/modality_evaluator.py`'s `ModalityRetrievalEvaluator`. Requires a populated `multimodal_qa_dataset.jsonl`. See [Table & Figure Retrieval Evals (T-281)](#table--figure-retrieval-evals-t-281).
 
 ---
 
@@ -109,6 +111,7 @@ A production-grade Retrieval-Augmented Generation platform built with Clean Arch
   - [Infrastructure Performance Baseline (T-172)](#infrastructure-performance-baseline-t-172)
   - [Golden Dataset & Eval Regression Gates (T-152)](#golden-dataset--eval-regression-gates-t-152)
   - [Multimodal Golden Dataset Builder (T-280)](#multimodal-golden-dataset-builder-t-280)
+  - [Table & Figure Retrieval Evals (T-281)](#table--figure-retrieval-evals-t-281)
   - [Compare Embedding Providers](#compare-embedding-providers)
 - [Docker Compose](#docker-compose)
   - [Full Stack](#full-stack)
@@ -1938,6 +1941,21 @@ Output is written as JSON Lines (one QA row per line) to `datasets/goldens/multi
 
 ---
 
+### Table & Figure Retrieval Evals (T-281)
+
+Score Recall@K separately for table- and figure-modality questions against the T-280 multimodal golden, so a regression in structured-content retrieval is visible even when overall Recall@K (T-041) looks healthy:
+
+```bash
+make multimodal-golden   # requires: datasets/goldens/multimodal_qa_dataset.jsonl populated
+make benchmark-modality-recall
+# or directly:
+uv run python scripts/benchmark_modality_recall.py --k 1 3 5
+```
+
+`src/evals/retrieval/modality_recall.py` adds `table_recall_at_k()` / `figure_recall_at_k()` — thin wrappers over T-041's `recall_at_k()` scoped to `ModalityRetrievalSample`s whose `modality` field matches, plus `load_modality_samples()` to convert T-280's `MultimodalQAPair` rows into samples (empty `retrieved_ids`). This mirrors T-041's `recall_at_k.py` split: the metric-only file has no classes or I/O. `scripts/benchmark_modality_recall.py` runs the live `RetrievalPipeline` per question to fill in `retrieved_ids`, then `src/evals/retrieval/modality_evaluator.py`'s `ModalityRetrievalEvaluator` prints a Rich table of Recall@K per modality (mirrors T-041's `RetrievalEvaluator` in `src/evals/retrieval/__init__.py`). Exits `1` if the multimodal golden is empty or has no scoreable rows.
+
+---
+
 ### Compare Embedding Providers
 
 Benchmark multiple embedding providers against the same golden QA dataset and get a side-by-side quality, latency, and estimated cost table:
@@ -2844,6 +2862,7 @@ rag_implementation/
 │   ├── run_evals.py            # QA dataset generation CLI (iter_chunks · T-152/T-165)
 │   ├── sync_retrieval_golden.py # Sync retrieval goldens from QA without LLM (T-152)
 │   ├── build_multimodal_golden.py # Table/figure-only QA golden JSONL CLI (T-280)
+│   ├── benchmark_modality_recall.py # table_recall@k / figure_recall@k CLI (T-281)
 │   ├── check_regression_gate.py # CI regression gate entrypoint (T-152)
 │   ├── check_lint_gate.py      # Lint config alignment + mypy smoke (T-171)
 │   ├── check_dependencies.py   # pip-audit wrapper (T-161)
@@ -2866,7 +2885,7 @@ rag_implementation/
 │   │   ├── golden_dataset.py   # Placeholder filtering, QA→retrieval sync, chunk expansion (T-152)
 │   │   ├── multimodal_golden_dataset.py # Table/figure-only QA golden, JSONL I/O (T-280)
 │   │   ├── regression_gate.py  # CI regression gate logic (T-152)
-│   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152)
+│   │   ├── retrieval/          # Recall@K · Precision@K · NDCG · MRR · oracle_recall_at_k (T-152) · modality_recall.py + modality_evaluator.py table/figure Recall@K (T-281)
 │   │   ├── generation/         # Faithfulness · Relevance · Context Precision · Hallucination
 │   │   └── e2e/                # RAGBenchmark · TechniqueBenchmark (T-150) · ChunkSizeSweep (T-151) · InfraBenchmark (T-172) · benchmark_samples helpers
 │   ├── infrastructure/         # BGE-M3, Qdrant, BM25 (+ disk backend T-165), feedback_store (T-146), Redis client, Neo4j AsyncGraphDatabase (T-164), SQLite metadata, llama.cpp, web search, parsers (T-200), OCR (T-220–T-222)
@@ -3009,6 +3028,7 @@ EMBEDDINGS__DEVICE=cpu
 | `make benchmark-techniques` | Compare RAG techniques side-by-side (T-150) |
 | `make benchmark-chunk-sizes` | Sweep chunk sizes and recommend optimal size (T-151) |
 | `make benchmark-infra` | Infrastructure latency baseline (T-172) |
+| `make benchmark-modality-recall` | Table/figure Recall@K against the multimodal golden (requires `make multimodal-golden`; T-281) |
 | `make audit-deps` | Audit dependencies for high/critical CVEs (T-161) |
 | `make lint` | `ruff check` + `ruff format --check` + `mypy` + `basedpyright` |
 | `make format` | `ruff format` + `ruff check --fix` |
