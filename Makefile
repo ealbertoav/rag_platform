@@ -1,6 +1,6 @@
 .PHONY: install sync serve ingest evals sync-retrieval-goldens multimodal-golden benchmark lint format test test-unit test-slow test-e2e clean qdrant-up \
         docker-build docker-up docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
-        benchmark-chunk-sizes benchmark-infra audit-deps
+        benchmark-chunk-sizes benchmark-infra benchmark-modality-recall audit-deps
 
 install:
 	uv sync --group dev --extra evals
@@ -37,6 +37,10 @@ benchmark-chunk-sizes:
 
 benchmark-infra:
 	uv run python scripts/benchmark_infra.py
+
+benchmark-modality-recall:
+	@echo "Table/figure Recall@K against the multimodal golden (requires: make multimodal-golden)"
+	uv run python scripts/benchmark_modality_recall.py
 
 audit-deps:
 	./scripts/check_dependencies.sh

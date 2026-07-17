@@ -6,7 +6,7 @@
 
 > **Task numbering:** Phase *N* uses task IDs **T-(N×10)** onward (Phase 0 exception: T-001–T-005). Example: Phase 18 → T-180…T-182; Phase 20 → T-200…T-202.
 
-> **Current focus:** Phase 28 — **T-281** ← next (T-280 ✅; Phase 27 complete: T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅, T-274 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
+> **Current focus:** Phase 28 — **T-282** ← next (T-280 ✅, T-281 ✅; Phase 27 complete: T-270 ✅, T-271 ✅, T-272 ✅, T-273 ✅, T-274 ✅; Phase 26 complete: T-260 ✅, T-261 ✅, T-262 ✅, T-263 ✅; Phase 25 complete: T-250 ✅, T-251 ✅, T-252 ✅, T-253 ✅). Phases 19–28 follow strict precondition order (see roadmap below).
 >
 > **Post-merge:** run `./scripts/migrate_ci_checks.sh` and update branch protection to **Quality**, **Unit Tests**, **Extended Tests**.
 
@@ -2346,7 +2346,7 @@
 > | **25** | 15 | T-250 → T-253 | Phase 21 | T-250 ✅ · T-251 ✅ · T-252 ✅ · T-253 ✅ |
 > | **26** | 16 | T-260 → T-263 | Phase 25 | ✅ complete — T-260 ✅ · T-261 ✅ · T-262 ✅ · T-263 ✅ |
 > | **27** | 17 | T-270 → T-274 | Phases 21, 24–25 | T-270 ✅ · T-271 ✅ · T-272 ✅ · T-273 ✅ · T-274 pending |
-> | **28** | 18 | T-280 → T-282 | Phases 25–26 | T-280 ✅ · T-281–T-282 pending |
+> | **28** | 18 | T-280 → T-282 | Phases 25–26 | T-280 ✅ · T-281 ✅ · T-282 pending |
 
 ## Phase 19 — Multimodal Parsing Contracts (Priority 9)
 
@@ -3118,7 +3118,7 @@
 >
 > **Preconditions:** Phases 25–26
 >
-> **Status:** T-280 ✅ · T-281–T-282 pending
+> **Status:** T-280 ✅ · T-281 ✅ · T-282 pending
 
 ---
 
@@ -3155,15 +3155,40 @@
 
 
 ### T-281 · Table & Figure Retrieval Evals
-- **Status:** `[ ]`
+- **Status:** `[x]`
 - **Goal:** `table_recall@k`, `figure_recall@k`.
 - **Inputs:** T-280, T-041, T-260
 - **Outputs:** Modality metrics
-- **Files:** `modality_recall.py`, benchmark CLI, tests
+- **Files:**
+  - `src/evals/retrieval/modality_recall.py` — pure metric layer: `ModalityRetrievalSample`,
+    `modality_recall_at_k()`, `table_recall_at_k()`, `figure_recall_at_k()`,
+    `load_modality_samples()` (converts T-280 QA pair dicts into scoreable samples) — no
+    classes/Rich, mirrors T-041's `recall_at_k.py` _(done)_
+  - `src/evals/retrieval/modality_evaluator.py` — reporting layer: `ModalityMetricsAtK`,
+    `ModalityRetrievalEvaluator` (per-modality, per-K recall + Rich table, mirrors T-041's
+    `RetrievalEvaluator` in `src/evals/retrieval/__init__.py`) — kept separate from
+    `modality_recall.py` so the metric-only file stays free of I/O/reporting concerns, same
+    split as `recall_at_k.py` vs. `__init__.py` _(done)_
+  - `scripts/benchmark_modality_recall.py` — CLI: loads the T-280 multimodal golden, runs the
+    live `RetrievalPipeline` per question, buckets Recall@K by modality, prints a Rich table
+    _(done)_
+  - `Makefile` — `benchmark-modality-recall` target _(done)_
+  - `configs/parsing.yaml` — T-281 note _(done)_
+  - `tests/unit/test_modality_recall.py`, `tests/unit/test_modality_evaluator.py`,
+    `tests/unit/test_benchmark_modality_recall.py` _(done)_
 - **Acceptance Criteria:**
-  - Feature-flagged or backward-compatible defaults preserved
-  - Unit tests pass for new modules
-  - Documented in `configs/parsing.yaml` or relevant config when applicable
+  - [x] Feature-flagged or backward-compatible defaults preserved (new opt-in script; no existing
+    code path changes)
+  - [x] Unit tests pass for new modules
+  - [x] Documented in `configs/parsing.yaml` or relevant config when applicable
+- **Notes:** `table_recall_at_k`/`figure_recall_at_k` are thin wrappers over T-041's
+  `recall_at_k()` scoped to samples whose `modality` (from T-280's `MultimodalQAPair`) matches —
+  no new recall formula, just a modality-scoped aggregation, consistent with T-280's decision to
+  keep the multimodal golden a separate artifact from `qa_dataset.json`. Neither
+  `modality_recall.py` nor `modality_evaluator.py` is added to
+  `src/evals/retrieval/__init__.py`'s `__all__` — following the T-041 convention where only
+  `recall_at_k`/`oracle_recall_at_k` are re-exported there (not `precision_at_k`/`ndcg_at_k`/
+  `mrr`), callers import the modality metrics/evaluator directly from their own submodules.
 
 ---
 
@@ -3294,4 +3319,4 @@ T-150 + T-281 ──► T-282
 25. **Phase 25 — Priority 15 (Multimodal Embeddings):** T-250 ✅ → T-251 ✅ → T-252 ✅ → T-253 ✅ _(complete)_
 26. **Phase 26 — Priority 16 (Multimodal Retrieval):** T-260 ✅ → T-261 ✅ → T-262 ✅ → T-263 ✅ _(complete)_
 27. **Phase 27 — Priority 17 (Multimodal Generation & Attribution):** T-270 ✅ → T-271 ✅ → T-272 ✅ → T-273 ✅ → T-274 ✅ _(complete)_
-28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 → T-281 → T-282
+28. **Phase 28 — Priority 18 (Multimodal Evals):** T-280 ✅ → T-281 ✅ → T-282
