@@ -451,7 +451,7 @@ class TestNvidiaNimEmbeddingProvider:
         from src.infrastructure.embeddings.nvidia_nim_provider import NvidiaNimEmbeddingProvider
 
         return NvidiaNimEmbeddingProvider(
-            api_key="nvapi-test", model="nvidia/llama-3.2-nv-embedqa-1b-v2"
+            api_key="nvapi-test", model="nvidia/llama-nemotron-embed-1b-v2"
         )
 
     def test_implements_repository(self) -> None:
@@ -470,7 +470,7 @@ class TestNvidiaNimEmbeddingProvider:
         assert len(result) == len(_TEXTS)
         mock_client.embeddings.create.assert_called_once_with(
             input=_TEXTS,
-            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            model="nvidia/llama-nemotron-embed-1b-v2",
             extra_body={"input_type": "passage"},
         )
 
@@ -486,7 +486,7 @@ class TestNvidiaNimEmbeddingProvider:
         provider.embed_query(["what is EKS?"])
         mock_client.embeddings.create.assert_called_once_with(
             input=["what is EKS?"],
-            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            model="nvidia/llama-nemotron-embed-1b-v2",
             extra_body={"input_type": "query"},
         )
 
@@ -503,7 +503,7 @@ class TestNvidiaNimEmbeddingProvider:
         provider.embed_passage(["a passage"])
         mock_client.embeddings.create.assert_called_once_with(
             input=["a passage"],
-            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            model="nvidia/llama-nemotron-embed-1b-v2",
             extra_body={"input_type": "passage"},
         )
 
@@ -621,11 +621,11 @@ class TestFromSettings:
         mock_settings = MagicMock()
         mock_settings.embeddings.nvidia_nim = MagicMock(
             api_key=SecretStr("nvapi-test"),
-            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            model="nvidia/llama-nemotron-embed-1b-v2",
             base_url="https://integrate.api.nvidia.com/v1",
         )
         with patch("src.core.settings.settings", mock_settings):
             provider = NvidiaNimEmbeddingProvider.from_settings()
         assert provider.api_key == "nvapi-test"
-        assert provider.model == "nvidia/llama-3.2-nv-embedqa-1b-v2"
+        assert provider.model == "nvidia/llama-nemotron-embed-1b-v2"
         assert provider.base_url == "https://integrate.api.nvidia.com/v1"
