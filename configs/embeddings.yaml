@@ -37,8 +37,9 @@ embeddings:
     dimensions: 2048          # see NvidiaNIMEmbeddingConfig in src/core/settings.py for caveats
 
   # ── Redis embedding cache ────────────────────────────────────────────────────
-  # Recommended for API providers to avoid redundant paid calls — especially for
-  # nvidia_nim, where caching also offsets per-query network latency on the hot path.
+  # Recommended for API providers to avoid redundant paid calls on embed()/embed_passage()
+  # (indexing-time). Does NOT help embed_query() latency — that path is never cached
+  # by design (see CachedEmbeddingProvider; ADR-0003's #79 correction).
   # Set EMBEDDINGS__CACHE__ENABLED=true in .env to activate.
   cache:
     enabled: false
