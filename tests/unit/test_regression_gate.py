@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.evals.golden_dataset import MIN_QA_PAIRS
 from src.evals.regression_gate import (
     GateStatus,
+    RegressionGateResult,
     baseline_float,
     baseline_int,
+    check_live_retrieval_regression,
     check_regression_gate,
     load_real_retrieval_rows,
     load_regression_baseline,
@@ -276,26 +278,27 @@ class TestCheckRegressionGate:
 
 class TestRegressionGateMain:
     def test_main_prints_pass_message(self, capsys: pytest.CaptureFixture[str]):
-        with patch(
-            "src.evals.regression_gate.check_regression_gate",
-            return_value=type(
-                "R",
-                (),
-                {"status": GateStatus.PASSED, "message": "ok"},
-            )(),
+        with (
+            patch(
+                "src.evals.regression_gate.check_regression_gate",
+                return_value=RegressionGateResult(GateStatus.PASSED, "ok"),
+            ),
+            patch(
+                "src.evals.regression_gate.check_live_retrieval_regression",
+                new_callable=AsyncMock,
+                return_value=RegressionGateResult(GateStatus.SKIPPED, "live-skip"),
+            ),
         ):
             main()
-        assert "ok" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "ok" in out
+        assert "live-skip" in out
 
     def test_main_exits_one_on_failure(self, capsys: pytest.CaptureFixture[str]):
         with (
             patch(
                 "src.evals.regression_gate.check_regression_gate",
-                return_value=type(
-                    "R",
-                    (),
-                    {"status": GateStatus.FAILED, "message": "bad"},
-                )(),
+                return_value=RegressionGateResult(GateStatus.FAILED, "bad"),
             ),
             pytest.raises(SystemExit) as exc,
         ):
@@ -304,13 +307,174 @@ class TestRegressionGateMain:
         assert "bad" in capsys.readouterr().out
 
     def test_main_prints_skip_message(self, capsys: pytest.CaptureFixture[str]):
-        with patch(
-            "src.evals.regression_gate.check_regression_gate",
-            return_value=type(
-                "R",
-                (),
-                {"status": GateStatus.SKIPPED, "message": "skip"},
-            )(),
+        with (
+            patch(
+                "src.evals.regression_gate.check_regression_gate",
+                return_value=RegressionGateResult(GateStatus.SKIPPED, "skip"),
+            ),
+            patch(
+                "src.evals.regression_gate.check_live_retrieval_regression",
+                new_callable=AsyncMock,
+                return_value=RegressionGateResult(GateStatus.SKIPPED, "live-skip"),
+            ),
         ):
             main()
-        assert "skip" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "skip" in out
+        assert "live-skip" in out
+
+    def test_main_exits_one_on_live_failure(self, capsys: pytest.CaptureFixture[str]):
+        with (
+            patch(
+                "src.evals.regression_gate.check_regression_gate",
+                return_value=RegressionGateResult(GateStatus.PASSED, "ok"),
+            ),
+            patch(
+                "src.evals.regression_gate.check_live_retrieval_regression",
+                new_callable=AsyncMock,
+                return_value=RegressionGateResult(GateStatus.FAILED, "live-bad"),
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main()
+        assert exc.value.code == 1
+        assert "live-bad" in capsys.readouterr().out
+
+
+class TestCheckLiveRetrievalRegression:
+    async def test_skips_when_no_real_rows(self, tmp_path: Path):
+        result = await check_live_retrieval_regression(
+            retrieval_path=tmp_path / "missing.json",
+        )
+        assert result.status == GateStatus.SKIPPED
+        assert "skipping" in result.message.lower()
+
+    async def test_skips_when_qdrant_unreachable(self, tmp_path: Path):
+        retrieval = tmp_path / "retrieval.json"
+        _write_json(retrieval, _standard_retrieval_rows())
+        with patch("src.evals.regression_gate._qdrant_reachable", return_value=False):
+            result = await check_live_retrieval_regression(retrieval_path=retrieval)
+        assert result.status == GateStatus.SKIPPED
+        assert "qdrant" in result.message.lower()
+
+    async def test_skips_when_bm25_index_empty(self, tmp_path: Path):
+        retrieval = tmp_path / "retrieval.json"
+        _write_json(retrieval, _standard_retrieval_rows())
+        fake_bm25 = type("FakeBM25", (), {"size": 0})()
+        with (
+            patch("src.evals.regression_gate._qdrant_reachable", return_value=True),
+            patch(
+                "src.infrastructure.vectordb.bm25.BM25Index.load_or_create",
+                return_value=fake_bm25,
+            ),
+        ):
+            result = await check_live_retrieval_regression(retrieval_path=retrieval)
+        assert result.status == GateStatus.SKIPPED
+        assert "bm25" in result.message.lower()
+
+    async def test_skips_when_pipeline_construction_fails(self, tmp_path: Path):
+        retrieval = tmp_path / "retrieval.json"
+        _write_json(retrieval, _standard_retrieval_rows())
+        fake_bm25 = type("FakeBM25", (), {"size": 1})()
+        with (
+            patch("src.evals.regression_gate._qdrant_reachable", return_value=True),
+            patch(
+                "src.infrastructure.vectordb.bm25.BM25Index.load_or_create",
+                return_value=fake_bm25,
+            ),
+            patch(
+                "src.rag.pipelines.retrieval_pipeline.RetrievalPipeline.from_settings",
+                side_effect=RuntimeError("no model weights"),
+            ),
+        ):
+            result = await check_live_retrieval_regression(retrieval_path=retrieval)
+        assert result.status == GateStatus.SKIPPED
+        assert "pipeline unavailable" in result.message.lower()
+
+    async def test_fails_when_live_recall_below_threshold(self, tmp_path: Path):
+        retrieval = tmp_path / "retrieval.json"
+        baseline = tmp_path / "baseline.json"
+        _write_json(retrieval, _standard_retrieval_rows())
+        _write_json(baseline, {"min_recall_at_5": 0.99})
+        fake_bm25 = type("FakeBM25", (), {"size": 1})()
+
+        fake_pipeline = type(
+            "FakePipeline",
+            (),
+            {"retrieve": AsyncMock(return_value=type("R", (), {"chunks": []})())},
+        )()
+
+        with (
+            patch("src.evals.regression_gate._qdrant_reachable", return_value=True),
+            patch(
+                "src.infrastructure.vectordb.bm25.BM25Index.load_or_create",
+                return_value=fake_bm25,
+            ),
+            patch(
+                "src.rag.pipelines.retrieval_pipeline.RetrievalPipeline.from_settings",
+                return_value=fake_pipeline,
+            ),
+        ):
+            result = await check_live_retrieval_regression(
+                retrieval_path=retrieval, baseline_path=baseline
+            )
+        assert result.status == GateStatus.FAILED
+        assert "live Recall@5" in result.message
+
+    async def test_passes_when_live_retrieval_finds_relevant_chunks(self, tmp_path: Path):
+        retrieval = tmp_path / "retrieval.json"
+        baseline = tmp_path / "baseline.json"
+        rows = _standard_retrieval_rows()
+        _write_json(retrieval, rows)
+        _write_json(baseline, {"min_recall_at_5": 0.5})
+        fake_bm25 = type("FakeBM25", (), {"size": 1})()
+
+        class FakePipeline:
+            async def retrieve(self, query):
+                row = next(r for r in rows if r["query"] == query.text)
+                chunks = [type("C", (), {"id": cid})() for cid in row["relevant_chunk_ids"]]
+                return type("R", (), {"chunks": chunks})()
+
+        fake_pipeline = FakePipeline()
+
+        with (
+            patch("src.evals.regression_gate._qdrant_reachable", return_value=True),
+            patch(
+                "src.infrastructure.vectordb.bm25.BM25Index.load_or_create",
+                return_value=fake_bm25,
+            ),
+            patch(
+                "src.rag.pipelines.retrieval_pipeline.RetrievalPipeline.from_settings",
+                return_value=fake_pipeline,
+            ),
+        ):
+            result = await check_live_retrieval_regression(
+                retrieval_path=retrieval, baseline_path=baseline
+            )
+        assert result.status == GateStatus.PASSED
+        assert "live Recall@5" in result.message
+
+    async def test_fails_when_retrieval_raises_mid_run(self, tmp_path: Path):
+        retrieval = tmp_path / "retrieval.json"
+        _write_json(retrieval, _standard_retrieval_rows())
+        fake_bm25 = type("FakeBM25", (), {"size": 1})()
+        fake_pipeline = type(
+            "FakePipeline",
+            (),
+            {"retrieve": AsyncMock(side_effect=RuntimeError("qdrant timed out"))},
+        )()
+
+        with (
+            patch("src.evals.regression_gate._qdrant_reachable", return_value=True),
+            patch(
+                "src.infrastructure.vectordb.bm25.BM25Index.load_or_create",
+                return_value=fake_bm25,
+            ),
+            patch(
+                "src.rag.pipelines.retrieval_pipeline.RetrievalPipeline.from_settings",
+                return_value=fake_pipeline,
+            ),
+        ):
+            result = await check_live_retrieval_regression(retrieval_path=retrieval)
+        assert result.status == GateStatus.FAILED
+        assert "retrieval raised" in result.message.lower()
