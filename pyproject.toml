@@ -127,6 +127,9 @@ override-dependencies = [
     # so the compatible window is [4.56, 5.0) — see bge_m3.py's low_cpu_mem_usage patch
     # for the other half of this compatibility fix.
     "transformers>=4.56,<5",
+    # CVE-2025-3000 (torch.jit.script memory corruption) — fixed in 2.13.0; we don't call
+    # torch.jit.script directly, but a real fix exists so there's no reason to allowlist it.
+    "torch>=2.13.0",
 ]
 
 [project.optional-dependencies]
