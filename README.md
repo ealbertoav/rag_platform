@@ -1893,18 +1893,22 @@ flowchart LR
 2. **Generate goldens** — `make evals` progressively expands chunk coverage (`generate_until_min_pairs`) until ≥ 20 evaluable QA pairs are produced; placeholder rows are filtered; retrieval rows are auto-synced from QA content.
 3. **Manual QA edits** — after editing `qa_dataset.json` by hand, run `make sync-retrieval-goldens` to rebuild `retrieval_dataset.json` without LLM regeneration.
 4. **Run live evals** — `POST /evals/run` returns `200` with metric summary when real pairs are present (`204` when empty/placeholder-only).
-5. **CI regression** — the `retrieval-regression` job runs `scripts/check_regression_gate.py`, which skips gracefully on placeholder-only data and otherwise enforces:
+5. **CI regression** — the `retrieval-regression` job runs `scripts/check_regression_gate.py`, which skips gracefully on placeholder-only data (or missing infra) and otherwise enforces:
    - minimum real sample counts in both QA and retrieval datasets
    - `retrieval_rows_match_qa` sync between datasets
-   - per-row oracle Recall@5 ≥ `min_recall_at_5` (ground-truth `relevant_chunk_ids` via `oracle_recall_at_k`)
+   - per-row oracle Recall@5 ≥ `min_recall_at_5` (ground-truth `relevant_chunk_ids` via `oracle_recall_at_k`) — a dataset-shape check, not a live retrieval test (see `check_regression_gate()`)
+   - `check_live_retrieval_regression()` (#93) additionally runs the *live* configured retrieval pipeline against every golden query and checks real Recall@5 — this needs a reachable Qdrant with the golden corpus actually indexed (see below), and skips gracefully otherwise
+
+**Reproducing the committed golden corpus (#94):** `datasets/goldens/qa_dataset.json` and `retrieval_dataset.json` were built from `datasets/goldens/rag_platform_corpus.md` — committed there rather than under `data/raw/`, since `data/raw/` is gitignored and would silently drop it. Run `make ingest-eval-corpus` to index it (ingestion is additive, so this is safe alongside any other documents already ingested); without it, `check_live_retrieval_regression()` has no way to find the golden dataset's `relevant_chunk_ids` and reports `Recall@5 = 0.0` instead of skipping or passing.
 
 **Key modules:**
 
 | Module | Role |
 |--------|------|
 | `src/evals/golden_dataset.py` | Placeholder detection, evaluable QA filtering, QA→retrieval conversion, chunk expansion, sync helpers |
-| `src/evals/regression_gate.py` | `check_regression_gate()` — sample counts, sync check, oracle Recall@5 floors |
-| `scripts/check_regression_gate.py` | CI entrypoint (exit 1 on failure) |
+| `src/evals/regression_gate.py` | `check_regression_gate()` (dataset-shape/oracle checks) and `check_live_retrieval_regression()` (#93, live pipeline Recall@5) |
+| `scripts/check_regression_gate.py` | CI entrypoint — runs both checks, exit 1 on failure |
+| `datasets/goldens/rag_platform_corpus.md` | Source document the committed goldens were built from (#94) — re-ingest via `make ingest-eval-corpus` |
 | `scripts/sync_retrieval_golden.py` | CLI for `make sync-retrieval-goldens` |
 
 **Human-in-the-loop extensions:** seed chunk relevance via [Retrieval Feedback Loop (T-145)](#retrieval-feedback-loop-t-145) (`POST /feedback`) and follow [docs/operations/feedback-multi-replica.md](docs/operations/feedback-multi-replica.md) for multi-replica feedback before relying on feedback-driven ranking in production evals.
