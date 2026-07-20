@@ -211,6 +211,29 @@ class TestCrossEncoder:
         result = ce.rerank("q", [table_chunk, feedback_chunk], boost_multiplier=0.2)
         assert result[0].id == "feedback"
 
+    def test_scoring_failure_degrades_to_raw_retrieval_order(self):
+        """A reranker failure must not fail the whole request (ADR-0003)."""
+        mock_reranker = MagicMock()
+        mock_reranker.score.side_effect = RetrievalError("NIM ranking failed")
+        chunks = _chunks(3)
+        ce = CrossEncoder(reranker=mock_reranker, top_k=2)
+        result = ce.rerank("q", chunks)
+        assert result == chunks[:2]
+
+    def test_nvidia_nim_provider_selected_from_settings(self):
+        from pydantic import SecretStr
+
+        from src.core.settings import settings as live_settings
+        from src.infrastructure.rerankers.nvidia_nim_reranker import NvidiaNimRerankerProvider
+
+        with (
+            patch.object(live_settings.reranker, "provider", "nvidia_nim"),
+            patch.object(live_settings.reranker.nvidia_nim, "api_key", SecretStr("nvapi-test")),
+        ):
+            ce = CrossEncoder.from_settings()
+        assert isinstance(ce, CrossEncoder)
+        assert isinstance(ce._reranker, NvidiaNimRerankerProvider)
+
     def test_qwen_provider_selected_from_settings(self):
         # Re-imported here (not module-level) so this reads whatever object
         # "src.core.settings.settings" currently points to — other test modules

@@ -73,11 +73,18 @@ retrieval:
     lambda: 0.7                  # 1.0 = pure relevance, 0.0 = max diversity
 
 reranker:
-  provider: bge_reranker         # bge_reranker | qwen_reranker (T-262; Qwen/Qwen3-Reranker-0.6B via sentence-transformers)
+  provider: bge_reranker         # bge_reranker | qwen_reranker | nvidia_nim (ADR-0003)
   model_path: models/rerankers/bge-reranker-v2-m3
   top_k: 10
   batch_size: 16
   modality_boost: 0.0            # T-262: additive score boost for table/caption chunks; 0.0 = disabled
+
+  # ── API provider model name (credentials go in .env — never commit keys here) ─
+  # Set RERANKER__NVIDIA_NIM__API_KEY in .env to activate. A failed ranking call
+  # degrades gracefully to raw retrieval order instead of failing the request.
+  nvidia_nim:
+    model: nvidia/llama-3.2-nv-rerankqa-1b-v2  # low-latency rerankqa NIM (ADR-0003)
+    base_url: https://integrate.api.nvidia.com/v1
 
 query_expansion:
   enabled: true

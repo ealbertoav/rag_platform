@@ -4,6 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.core.constants import MODALITY_CAPTION, MODALITY_TABLE
+from src.core.exceptions import RetrievalError
 from src.domain.entities.chunk import Chunk
 from src.domain.repositories.reranker_repository import RerankerRepository
 from src.rag.quality.feedback_loop import apply_feedback_boost
@@ -73,7 +74,15 @@ class CrossEncoder:
         k = top_k if top_k is not None else self._top_k
         if not chunks:
             return []
-        scored = self._reranker.score(query, chunks)
+        try:
+            scored = self._reranker.score(query, chunks)
+        except RetrievalError:
+            logger.warning(
+                "Reranker scoring failed — falling back to raw retrieval order for %d chunks",
+                len(chunks),
+                exc_info=True,
+            )
+            return chunks[:k]
         if self._modality_boost > 0:
             scored = apply_modality_boost(scored, boost=self._modality_boost)
         if boost_multiplier > 0:
@@ -92,12 +101,15 @@ class CrossEncoder:
     def from_settings(cls) -> CrossEncoder:
         from src.core.settings import settings
         from src.infrastructure.rerankers.bge_reranker import BGERerankerProvider
+        from src.infrastructure.rerankers.nvidia_nim_reranker import NvidiaNimRerankerProvider
         from src.infrastructure.rerankers.qwen_reranker import QwenRerankerProvider
 
         cfg = settings.reranker
-        reranker: RerankerRepository = (
-            QwenRerankerProvider.from_settings()
-            if cfg.provider == "qwen_reranker"
-            else BGERerankerProvider.from_settings()
-        )
+        reranker: RerankerRepository
+        if cfg.provider == "qwen_reranker":
+            reranker = QwenRerankerProvider.from_settings()
+        elif cfg.provider == "nvidia_nim":
+            reranker = NvidiaNimRerankerProvider.from_settings()
+        else:
+            reranker = BGERerankerProvider.from_settings()
         return cls(reranker=reranker, top_k=cfg.top_k, modality_boost=cfg.modality_boost)
