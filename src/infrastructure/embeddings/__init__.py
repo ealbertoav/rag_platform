@@ -28,6 +28,7 @@ _API_KEY_ENV: dict[str, str] = {
     "voyage": "EMBEDDINGS__VOYAGE__API_KEY",
     "cohere": "EMBEDDINGS__COHERE__API_KEY",
     "gemini": "EMBEDDINGS__GEMINI__API_KEY",
+    "nvidia_nim": "EMBEDDINGS__NVIDIA_NIM__API_KEY",
 }
 
 
@@ -60,6 +61,7 @@ def get_embedding_provider() -> EmbeddingRepository:
                          uses voyage-multimodal-3 (embeddings.voyage.multimodal_model)
         cohere         — embed-english-v3.0 / embed-multilingual-v3.0, dense only
         gemini         — text-embedding-004 (768-dim), dense only
+        nvidia_nim     — llama-3.2-nv-embedqa-1b-v2, dense only (hot-path latency, ADR-0003)
 
     When switching providers, update "embeddings.dense_dim" to match the new
     model and run "python scripts/rebuild_embeddings.py --recreate-collection".
@@ -106,6 +108,8 @@ def provider_dense_dim(name: str, settings: Settings) -> int:
                 return emb.cohere.dimensions
             case "gemini":
                 return emb.gemini.dimensions
+            case "nvidia_nim":
+                return emb.nvidia_nim.dimensions
             case _:
                 raise AssertionError(f"Unhandled API embedding provider: {name!r}")
     return SELF_HOSTED_EMBEDDING_DEFAULT_DIMS[name]
@@ -150,6 +154,8 @@ def embedding_model_identifier(provider_name: str, settings: Settings) -> str:
         api_model = emb.cohere.model
     elif provider_name == "gemini":
         api_model = emb.gemini.model
+    elif provider_name == "nvidia_nim":
+        api_model = emb.nvidia_nim.model
     model = api_model if api_model is not None else _self_hosted_model_path(provider_name, settings)
     base = f"{provider_name}:{model}"
     if provider_name in API_EMBEDDING_PROVIDERS:
@@ -228,6 +234,18 @@ def _create_provider(name: str, settings: Settings) -> EmbeddingRepository:
             return GeminiEmbeddingProvider(
                 api_key=gemini_cfg.api_key.get_secret_value(),
                 model=gemini_cfg.model,
+            )
+        case "nvidia_nim":
+            nim_cfg = settings.embeddings.nvidia_nim
+            _require_api_key(name, nim_cfg.api_key)
+            from src.infrastructure.embeddings.nvidia_nim_provider import (
+                NvidiaNimEmbeddingProvider,
+            )
+
+            return NvidiaNimEmbeddingProvider(
+                api_key=nim_cfg.api_key.get_secret_value(),
+                model=nim_cfg.model,
+                base_url=nim_cfg.base_url,
             )
         case _:
             raise ValueError(f"Unknown embedding provider: {name!r}")
