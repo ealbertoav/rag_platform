@@ -214,6 +214,7 @@ class ChatPipeline:
         from src.core.settings import settings
         from src.infrastructure.search.web_search import get_web_search_provider
 
+        llm: LLMRepository
         if settings.llm.provider == "nvidia_nim":
             from src.infrastructure.llm.nvidia_nim_provider import NvidiaNimProvider
 
