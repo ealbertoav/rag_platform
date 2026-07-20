@@ -51,6 +51,7 @@ def _check_api_key(settings: object) -> None:
         "voyage": s.embeddings.voyage.api_key.get_secret_value(),
         "cohere": s.embeddings.cohere.api_key.get_secret_value(),
         "gemini": s.embeddings.gemini.api_key.get_secret_value(),
+        "nvidia_nim": s.embeddings.nvidia_nim.api_key.get_secret_value(),
     }
     # Guard against new providers added to API_EMBEDDING_PROVIDERS but not to key_map.
     if provider not in key_map:
