@@ -2756,6 +2756,17 @@ reranker:
   modality_boost: 0.5             # 0.0 (default) = disabled
 ```
 
+### NVIDIA NIM reranker provider (ADR-0003)
+
+`reranker.provider: nvidia_nim` selects `NvidiaNimRerankerProvider` (`src/infrastructure/rerankers/nvidia_nim_reranker.py`), backed by NVIDIA NIM's low-latency `nvidia/llama-3.2-nv-rerankqa-1b-v2` model — part of the same hot-path-latency migration as the [NVIDIA NIM embedding provider](#embedding-providers). Unlike the LLM and embedding NIM providers, NIM's reranking endpoint (`/v1/ranking`) is **not** OpenAI-compatible — it has its own request/response shape (`query.text` + `passages[].text` in, `rankings: [{index, logit}]` out), so this provider uses a plain `httpx` client instead of the OpenAI SDK.
+
+If the NIM ranking call fails for any reason (network error, timeout, non-2xx response), `CrossEncoder.rerank()` catches the resulting `RetrievalError` and falls back to returning chunks in raw retrieval order rather than failing the whole request — reranking is a quality improvement, not a hard requirement, and this fallback applies uniformly regardless of which reranker provider is active.
+
+```bash
+RERANKER__PROVIDER=nvidia_nim
+RERANKER__NVIDIA_NIM__API_KEY=your-key
+```
+
 ### Per-leg RRF weight configuration (T-263)
 
 `rrf_fuse()` (`src/rag/ranking/score_fusion.py`) accepts an optional `weights` list, one entry per positional ranked list, so `score = Σ weight_i / (k + rank_i)` instead of the plain `Σ 1/(k + rank_i)`. `HybridRetriever` exposes this as `rrf_weights: dict[str, float] | None`, keyed by leg name (`dense`, `bm25`, `graph`, `hype`, `hyde`, `hierarchical`, `image`) rather than by position, so config doesn't need to track the internal call order; a missing key defaults to `1.0`.

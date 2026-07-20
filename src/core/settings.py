@@ -131,8 +131,14 @@ class EmbeddingSettings(BaseModel):
     cache: EmbeddingCacheSettings = Field(default_factory=EmbeddingCacheSettings)
 
 
+class NvidiaNIMRerankerConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "nvidia/llama-3.2-nv-rerankqa-1b-v2"
+    base_url: str = "https://integrate.api.nvidia.com/v1"
+
+
 class RerankerSettings(BaseModel):
-    provider: Literal["bge_reranker", "qwen_reranker"] = "bge_reranker"
+    provider: Literal["bge_reranker", "qwen_reranker", "nvidia_nim"] = "bge_reranker"
     model_path: str = "models/rerankers/bge-reranker-v2-m3"
     top_k: int = 10
     batch_size: int = 16
@@ -140,6 +146,9 @@ class RerankerSettings(BaseModel):
     # scoring, since cross-encoders trained on prose pairs tend to under-score
     # structured content. 0.0 (default) disables the boost — no behavior change.
     modality_boost: float = 0.0
+
+    # Per-provider API config (populated from env vars or YAML)
+    nvidia_nim: NvidiaNIMRerankerConfig = Field(default_factory=NvidiaNIMRerankerConfig)
 
 
 class QdrantSettings(BaseModel):
