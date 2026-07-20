@@ -363,6 +363,12 @@ def _api_settings(provider: str = "openai", *, api_key: str = "sk-test") -> Magi
     )
     emb.cohere = MagicMock(api_key=SecretStr(api_key), model="embed-english-v3.0", dimensions=1024)
     emb.gemini = MagicMock(api_key=SecretStr(api_key), model="text-embedding-004", dimensions=768)
+    emb.nvidia_nim = MagicMock(
+        api_key=SecretStr(api_key),
+        model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+        base_url="https://integrate.api.nvidia.com/v1",
+        dimensions=2048,
+    )
     settings.embeddings = emb
     settings.redis = MagicMock(url="redis://localhost:6379", password=SecretStr(""))
     return settings
@@ -376,6 +382,7 @@ class TestProviderDenseDimExtended:
         assert provider_dense_dim("voyage", settings) == 1024
         assert provider_dense_dim("cohere", settings) == 1024
         assert provider_dense_dim("gemini", settings) == 768
+        assert provider_dense_dim("nvidia_nim", settings) == 2048
 
     def test_self_hosted_provider_dims(self):
         from src.infrastructure.embeddings import provider_dense_dim
@@ -425,6 +432,7 @@ class TestProviderImageDim:
         assert provider_image_dim("openai", _api_settings("openai")) is None
         assert provider_image_dim("cohere", _api_settings("cohere")) is None
         assert provider_image_dim("gemini", _api_settings("gemini")) is None
+        assert provider_image_dim("nvidia_nim", _api_settings("nvidia_nim")) is None
 
     def test_unhandled_multimodal_provider_raises(self, monkeypatch):
         from src.infrastructure.embeddings import provider_image_dim
@@ -446,6 +454,10 @@ class TestEmbeddingModelIdentifierExtended:
         assert embedding_model_identifier("voyage", settings) == "voyage:voyage-large-2@1024"
         assert embedding_model_identifier("cohere", settings) == "cohere:embed-english-v3.0@1024"
         assert embedding_model_identifier("gemini", settings) == "gemini:text-embedding-004@768"
+        assert (
+            embedding_model_identifier("nvidia_nim", settings)
+            == "nvidia_nim:nvidia/llama-3.2-nv-embedqa-1b-v2@2048"
+        )
 
 
 class TestCreateProviderApi:
@@ -476,7 +488,17 @@ class TestCreateProviderApi:
         assert isinstance(provider, GeminiEmbeddingProvider)
         assert provider.api_key == "sk-test"
 
-    @pytest.mark.parametrize("provider", ["openai", "voyage", "cohere", "gemini"])
+    def test_nvidia_nim_uses_passed_settings(self) -> None:
+        from src.infrastructure.embeddings import create_embedding_provider
+        from src.infrastructure.embeddings.nvidia_nim_provider import NvidiaNimEmbeddingProvider
+
+        settings = _api_settings("nvidia_nim")
+        provider = create_embedding_provider("nvidia_nim", settings)
+        assert isinstance(provider, NvidiaNimEmbeddingProvider)
+        assert provider.api_key == "sk-test"
+        assert provider.base_url == "https://integrate.api.nvidia.com/v1"
+
+    @pytest.mark.parametrize("provider", ["openai", "voyage", "cohere", "gemini", "nvidia_nim"])
     def test_missing_api_key_raises(self, provider: str) -> None:
         from src.core.exceptions import ConfigurationError
         from src.infrastructure.embeddings import create_embedding_provider

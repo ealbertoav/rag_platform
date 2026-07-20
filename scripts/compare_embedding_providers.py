@@ -342,7 +342,7 @@ def main() -> None:
         nargs="+",
         required=True,
         metavar="PROVIDER",
-        help="One or more provider names (bge_m3 nomic openai voyage cohere gemini)",
+        help="One or more provider names (bge_m3 nomic openai voyage cohere gemini nvidia_nim)",
     )
     parser.add_argument("--top-k", type=int, default=5, help="Retrieval top-K (default: 5)")
     parser.add_argument(

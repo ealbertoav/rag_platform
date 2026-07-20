@@ -1,6 +1,6 @@
 # RAG Platform
 
-A production-grade Retrieval-Augmented Generation platform built with Clean Architecture and Domain-Driven Design. Runs fully self-hosted on Apple Silicon (M-series) by default; API-based embedding providers (OpenAI, Voyage AI, Cohere, Gemini) can be enabled with a single config change.
+A production-grade Retrieval-Augmented Generation platform built with Clean Architecture and Domain-Driven Design. Runs fully self-hosted on Apple Silicon (M-series) by default; API-based embedding providers (OpenAI, Voyage AI, Cohere, Gemini, NVIDIA NIM) can be enabled with a single config change.
 
 > **Multi-faceted retrieval filtering (T-134):** `POST /chat` and `POST /chat/full` accept optional `document_ids`, `metadata_filters`, and `min_score` to constrain retrieval at query time. Filters propagate through every hybrid leg — dense (Qdrant), BM25, graph, HyPE, HyDE, and hierarchical — before RRF fusion. `min_score` applies only to cosine-similarity sources (dense and Qdrant-backed retrievers), not BM25 or graph ranks. See [Multi-Faceted Retrieval Filtering (T-134)](#multi-faceted-retrieval-filtering-t-134).
 
@@ -324,7 +324,7 @@ All configuration lives in `configs/*.yaml` with environment variable overrides.
 LLM__MODEL_PATH=models/llm/your-model.gguf
 LLM__N_GPU_LAYERS=-1                       # -1 = all layers on Metal
 LLM__DISABLE_DISK_CACHE=false              # true disables llama.cpp prompt cache (T-162)
-EMBEDDINGS__PROVIDER=bge_m3                # bge_m3 | nomic | qwen_embedding | clip | openai | voyage | cohere | gemini
+EMBEDDINGS__PROVIDER=bge_m3                # bge_m3 | nomic | qwen_embedding | clip | openai | voyage | cohere | gemini | nvidia_nim
 EMBEDDINGS__DEVICE=mps                     # mps | cuda | cpu
 QDRANT__URL=http://localhost:6333
 QDRANT__COLLECTION=rag_documents
@@ -334,8 +334,10 @@ EMBEDDINGS__OPENAI__API_KEY=
 EMBEDDINGS__VOYAGE__API_KEY=
 EMBEDDINGS__COHERE__API_KEY=
 EMBEDDINGS__GEMINI__API_KEY=
+EMBEDDINGS__NVIDIA_NIM__API_KEY=
 
-# Embedding cache (disabled by default — set true to enable Redis caching)
+# Embedding cache (disabled by default — set true to enable Redis caching;
+# recommended for nvidia_nim to offset per-query network latency)
 EMBEDDINGS__CACHE__ENABLED=false
 REDIS__URL=redis://localhost:6379
 
@@ -2641,7 +2643,7 @@ curl -X POST "http://localhost:8000/chat/agent/full?explain=true&highlights=true
 
 ## Embedding Providers
 
-Eight providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER` (env var or `configs/embeddings.yaml`). After switching, update `EMBEDDINGS__DENSE_DIM` to match the new model and run `python scripts/rebuild_embeddings.py --recreate-collection`.
+Nine providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER` (env var or `configs/embeddings.yaml`). After switching, update `EMBEDDINGS__DENSE_DIM` to match the new model and run `python scripts/rebuild_embeddings.py --recreate-collection`.
 
 ### Self-hosted (no API key, run locally)
 
@@ -2660,8 +2662,11 @@ Eight providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER
 | Voyage AI | `voyage` | 1536 | `voyage-large-2` | `EMBEDDINGS__VOYAGE__API_KEY` |
 | Cohere | `cohere` | 1024 | `embed-english-v3.0` | `EMBEDDINGS__COHERE__API_KEY` |
 | Gemini | `gemini` | 768 | `text-embedding-004` | `EMBEDDINGS__GEMINI__API_KEY` |
+| NVIDIA NIM | `nvidia_nim` | 2048* | `nvidia/llama-3.2-nv-embedqa-1b-v2` | `EMBEDDINGS__NVIDIA_NIM__API_KEY` |
 
-All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`; changing dimensions after indexing requires `--recreate-collection`.
+\* See `NvidiaNIMEmbeddingConfig` in `src/core/settings.py` — dimension not yet confirmed against a real NIM response.
+
+All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`; changing dimensions after indexing requires `--recreate-collection`. NVIDIA NIM (ADR-0003) targets hot-path query latency specifically — its embed and rerank NIMs are purpose-built for the RAG query path, not just another API option.
 
 ### Multimodal embedding (T-251)
 
@@ -2670,7 +2675,7 @@ All API providers are dense-only — BM25 continues to provide sparse retrieval.
 - **`clip`** — self-hosted, no API key or extra dependency. `embed()` and `embed_image()` route through the same CLIP model instance, so text and image vectors are directly comparable (cross-modal similarity search).
 - **`voyage`** — `embed()`/`embed_query()` keep using `voyage-large-2` (or whatever `EMBEDDINGS__VOYAGE__MODEL` is set to); `embed_image()` uses the separate `voyage-multimodal-3` model (`EMBEDDINGS__VOYAGE__MULTIMODAL_MODEL`) via the Voyage `multimodal_embed` API, since Voyage's text and multimodal models are not interchangeable.
 
-All other providers (BGE-M3, Nomic, Qwen, OpenAI, Cohere, Gemini) still raise on `embed_image()`. The Qdrant `image_dense` schema is [T-252](#qdrant-multimodal-schema-t-252); ingest pipeline wiring is [T-253](#multimodal-ingestion-wiring-t-253).
+All other providers (BGE-M3, Nomic, Qwen, OpenAI, Cohere, Gemini, NVIDIA NIM) still raise on `embed_image()`. The Qdrant `image_dense` schema is [T-252](#qdrant-multimodal-schema-t-252); ingest pipeline wiring is [T-253](#multimodal-ingestion-wiring-t-253).
 
 When [MMR diversity (T-135)](#diversity-retrieval--mmr-t-135) is enabled and reranked chunks lack stored vectors, the pipeline calls `embed_passage()` to embed chunk text for pairwise similarity. Cohere (`search_document`), Voyage (`document`), and Gemini (`RETRIEVAL_DOCUMENT`) use their document embedding modes; self-hosted providers and OpenAI delegate to `embed()`.
 

@@ -1,4 +1,4 @@
-"""Unit tests for the four API-based embedding providers.
+"""Unit tests for the API-based embedding providers.
 
 All HTTP calls are mocked — no real API keys or network access are required.
 """
@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 if TYPE_CHECKING:
     from src.infrastructure.embeddings.cohere_provider import CohereEmbeddingProvider
     from src.infrastructure.embeddings.gemini_provider import GeminiEmbeddingProvider
+    from src.infrastructure.embeddings.nvidia_nim_provider import NvidiaNimEmbeddingProvider
     from src.infrastructure.embeddings.openai_provider import OpenAIEmbeddingProvider
     from src.infrastructure.embeddings.voyage_provider import VoyageEmbeddingProvider
 
@@ -441,6 +442,112 @@ class TestGeminiEmbeddingProvider:
         assert call_count == 3
 
 
+# ── NvidiaNimEmbeddingProvider ─────────────────────────────────────────────────
+
+
+class TestNvidiaNimEmbeddingProvider:
+    @staticmethod
+    def _provider() -> NvidiaNimEmbeddingProvider:
+        from src.infrastructure.embeddings.nvidia_nim_provider import NvidiaNimEmbeddingProvider
+
+        return NvidiaNimEmbeddingProvider(
+            api_key="nvapi-test", model="nvidia/llama-3.2-nv-embedqa-1b-v2"
+        )
+
+    def test_implements_repository(self) -> None:
+        assert isinstance(self._provider(), EmbeddingRepository)
+
+    def test_embed_uses_passage_input_type(self) -> None:
+        provider = self._provider()
+        vecs = _fake_vecs(len(_TEXTS), dim=2048)
+        mock_response = MagicMock()
+        mock_response.data = [MagicMock(embedding=v, index=i) for i, v in enumerate(vecs)]
+        mock_client = MagicMock()
+        mock_client.embeddings.create.return_value = mock_response
+        provider._client = mock_client
+
+        result = provider.embed(_TEXTS)
+        assert len(result) == len(_TEXTS)
+        mock_client.embeddings.create.assert_called_once_with(
+            input=_TEXTS,
+            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            extra_body={"input_type": "passage"},
+        )
+
+    def test_embed_query_uses_query_input_type(self) -> None:
+        provider = self._provider()
+        vecs = _fake_vecs(1, dim=2048)
+        mock_response = MagicMock()
+        mock_response.data = [MagicMock(embedding=vecs[0], index=0)]
+        mock_client = MagicMock()
+        mock_client.embeddings.create.return_value = mock_response
+        provider._client = mock_client
+
+        provider.embed_query(["what is EKS?"])
+        mock_client.embeddings.create.assert_called_once_with(
+            input=["what is EKS?"],
+            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            extra_body={"input_type": "query"},
+        )
+
+    def test_embed_passage_delegates_to_embed(self) -> None:
+        """embed_passage() has no override — the base class routes it through embed()."""
+        provider = self._provider()
+        vecs = _fake_vecs(1, dim=2048)
+        mock_response = MagicMock()
+        mock_response.data = [MagicMock(embedding=vecs[0], index=0)]
+        mock_client = MagicMock()
+        mock_client.embeddings.create.return_value = mock_response
+        provider._client = mock_client
+
+        provider.embed_passage(["a passage"])
+        mock_client.embeddings.create.assert_called_once_with(
+            input=["a passage"],
+            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            extra_body={"input_type": "passage"},
+        )
+
+    def test_embed_sparse_returns_empty_dicts(self) -> None:
+        result = self._provider().embed_sparse(_TEXTS)
+        assert result == [{}, {}, {}]
+
+    def test_embed_empty_list_returns_empty(self) -> None:
+        assert self._provider().embed([]) == []
+
+    def test_import_error_raises_embedding_error(self) -> None:
+        provider = self._provider()
+        with patch.dict("sys.modules", {"openai": None}):
+            provider._client = None
+            with pytest.raises(EmbeddingError, match="openai package is not installed"):
+                provider._get_client()
+
+    def test_retry_on_rate_limit(self) -> None:
+        provider = self._provider()
+        vecs = _fake_vecs(1, dim=2048)
+        mock_response = MagicMock()
+        mock_response.data = [MagicMock(embedding=vecs[0], index=0)]
+        mock_client = MagicMock()
+        mock_client.embeddings.create.side_effect = [
+            Exception("429 rate_limit"),
+            mock_response,
+        ]
+        provider._client = mock_client
+
+        result = provider.embed(["test"])
+        assert len(result) == 1
+        assert mock_client.embeddings.create.call_count == 2
+
+    def test_non_rate_limit_error_not_retried(self) -> None:
+        provider = self._provider()
+        mock_client = MagicMock()
+        mock_client.embeddings.create.side_effect = Exception("Authentication failed")
+        provider._client = mock_client
+
+        with pytest.raises(EmbeddingError):
+            provider.embed(["test"])
+        assert mock_client.embeddings.create.call_count == 1
+
+
 # ── from_settings ──────────────────────────────────────────────────────────────
 
 
@@ -505,3 +612,20 @@ class TestFromSettings:
         with patch("src.core.settings.settings", mock_settings):
             provider = GeminiEmbeddingProvider.from_settings()
         assert provider.api_key == "gem-test"
+
+    def test_nvidia_nim_from_settings(self) -> None:
+        from pydantic import SecretStr
+
+        from src.infrastructure.embeddings.nvidia_nim_provider import NvidiaNimEmbeddingProvider
+
+        mock_settings = MagicMock()
+        mock_settings.embeddings.nvidia_nim = MagicMock(
+            api_key=SecretStr("nvapi-test"),
+            model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        with patch("src.core.settings.settings", mock_settings):
+            provider = NvidiaNimEmbeddingProvider.from_settings()
+        assert provider.api_key == "nvapi-test"
+        assert provider.model == "nvidia/llama-3.2-nv-embedqa-1b-v2"
+        assert provider.base_url == "https://integrate.api.nvidia.com/v1"

@@ -1,5 +1,5 @@
 embeddings:
-  provider: bge_m3            # bge_m3 | nomic | qwen_embedding | clip | openai | voyage | cohere | gemini
+  provider: bge_m3            # bge_m3 | nomic | qwen_embedding | clip | openai | voyage | cohere | gemini | nvidia_nim
   model_path: models/embeddings/bge-m3
   batch_size: 32
   device: mps                 # mps | cuda | cpu
@@ -31,8 +31,14 @@ embeddings:
     model: text-embedding-004
     dimensions: 768
 
+  nvidia_nim:
+    model: nvidia/llama-3.2-nv-embedqa-1b-v2  # low-latency embedqa NIM (ADR-0003)
+    base_url: https://integrate.api.nvidia.com/v1
+    dimensions: 2048          # see NvidiaNIMEmbeddingConfig in src/core/settings.py for caveats
+
   # ── Redis embedding cache ────────────────────────────────────────────────────
-  # Recommended for API providers to avoid redundant paid calls.
+  # Recommended for API providers to avoid redundant paid calls — especially for
+  # nvidia_nim, where caching also offsets per-query network latency on the hot path.
   # Set EMBEDDINGS__CACHE__ENABLED=true in .env to activate.
   cache:
     enabled: false

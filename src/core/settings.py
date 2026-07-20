@@ -88,6 +88,15 @@ class GeminiEmbeddingConfig(BaseModel):
     dimensions: int = 768
 
 
+class NvidiaNIMEmbeddingConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    model: str = "nvidia/llama-3.2-nv-embedqa-1b-v2"
+    base_url: str = "https://integrate.api.nvidia.com/v1"
+    # Not confirmed against NIM's model card as of writing — verify against a
+    # real embedding response (#79) before relying on this for Qdrant collection sizing.
+    dimensions: int = 2048
+
+
 class EmbeddingCacheSettings(BaseModel):
     enabled: bool = False  # opt-in: avoids Redis round-trips for self-hosted providers
     ttl_seconds: int = 604800  # 7 days
@@ -103,6 +112,7 @@ class EmbeddingSettings(BaseModel):
         "voyage",
         "cohere",
         "gemini",  # API-based
+        "nvidia_nim",
     ] = "bge_m3"
     model_path: str = "models/embeddings/bge-m3"
     batch_size: int = 32
@@ -116,6 +126,7 @@ class EmbeddingSettings(BaseModel):
     voyage: VoyageEmbeddingConfig = Field(default_factory=VoyageEmbeddingConfig)
     cohere: CohereEmbeddingConfig = Field(default_factory=CohereEmbeddingConfig)
     gemini: GeminiEmbeddingConfig = Field(default_factory=GeminiEmbeddingConfig)
+    nvidia_nim: NvidiaNIMEmbeddingConfig = Field(default_factory=NvidiaNIMEmbeddingConfig)
 
     cache: EmbeddingCacheSettings = Field(default_factory=EmbeddingCacheSettings)
 

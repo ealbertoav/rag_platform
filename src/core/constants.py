@@ -116,7 +116,9 @@ CVE_ALLOWLIST_PATH = ROOT / "configs" / "cve-allowlist.yaml"
 RRF_K = 60  # constant in Reciprocal Rank Fusion: score = Σ 1/(k + rank_i)
 
 # ── Embedding providers ─────────────────────────────────────────────────────────
-API_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"openai", "voyage", "cohere", "gemini"})
+API_EMBEDDING_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "voyage", "cohere", "gemini", "nvidia_nim"}
+)
 # Providers whose embed_image() (T-250/T-251) returns real vectors, used to decide
 # whether the Qdrant collection gets an image_dense named vector (T-252).
 MULTIMODAL_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"clip", "voyage"})
