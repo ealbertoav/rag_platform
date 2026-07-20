@@ -6,6 +6,7 @@ import argparse
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from scripts import rebuild_embeddings
 
@@ -43,6 +44,41 @@ class TestRebuildEmbeddingsPreflight:
                 rebuild_embeddings._preflight_model_mismatch()
 
         mismatch_check.assert_called_once()
+
+    def _api_settings(self, provider: str, api_key: str) -> MagicMock:
+        settings = MagicMock()
+        emb = MagicMock()
+        emb.provider = provider
+        emb.openai = MagicMock(api_key=SecretStr(api_key))
+        emb.voyage = MagicMock(api_key=SecretStr(api_key))
+        emb.cohere = MagicMock(api_key=SecretStr(api_key))
+        emb.gemini = MagicMock(api_key=SecretStr(api_key))
+        emb.nvidia_nim = MagicMock(api_key=SecretStr(api_key))
+        settings.embeddings = emb
+        return settings
+
+    def test_check_api_key_self_hosted_skips_key_lookup(self):
+        settings = self._api_settings("bge_m3", api_key="")
+        rebuild_embeddings._check_api_key(settings)  # must not raise/exit
+
+    def test_check_api_key_nvidia_nim_with_key_present(self):
+        settings = self._api_settings("nvidia_nim", api_key="nvapi-test")
+        rebuild_embeddings._check_api_key(settings)  # must not raise/exit
+
+    def test_check_api_key_nvidia_nim_missing_key_exits(self):
+        settings = self._api_settings("nvidia_nim", api_key="")
+        with pytest.raises(SystemExit) as exc_info:
+            rebuild_embeddings._check_api_key(settings)
+        assert exc_info.value.code == 1
+
+    def test_check_api_key_unknown_api_provider_exits(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            rebuild_embeddings, "API_EMBEDDING_PROVIDERS", frozenset({"future_api"})
+        )
+        settings = self._api_settings("future_api", api_key="k")
+        with pytest.raises(SystemExit) as exc_info:
+            rebuild_embeddings._check_api_key(settings)
+        assert exc_info.value.code == 1
 
     def test_model_mismatch_exits_with_error(self):
         from src.core.exceptions import VectorStoreError
