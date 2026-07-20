@@ -44,12 +44,16 @@ class NvidiaNimEmbeddingProvider(EmbeddingRepository):
     passed via the OpenAI client's extra_body (NIM's input_type isn't part of
     the standard OpenAI embeddings signature).
     Retries on HTTP 429 with exponential backoff via tenacity.
+
+    Default model is nvidia/llama-nemotron-embed-1b-v2 (2048-dim, confirmed
+    live during #79's validation) — its predecessor, nvidia/llama-3.2-nv-embedqa-1b-v2,
+    reached end-of-life on 2026-05-18 (HTTP 410).
     """
 
     def __init__(
         self,
         api_key: str,
-        model: str = "nvidia/llama-3.2-nv-embedqa-1b-v2",
+        model: str = "nvidia/llama-nemotron-embed-1b-v2",
         base_url: str = "https://integrate.api.nvidia.com/v1",
     ) -> None:
         self.api_key: str = api_key

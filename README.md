@@ -2662,9 +2662,9 @@ Nine providers are available across two tiers. Switch via `EMBEDDINGS__PROVIDER`
 | Voyage AI | `voyage` | 1536 | `voyage-large-2` | `EMBEDDINGS__VOYAGE__API_KEY` |
 | Cohere | `cohere` | 1024 | `embed-english-v3.0` | `EMBEDDINGS__COHERE__API_KEY` |
 | Gemini | `gemini` | 768 | `text-embedding-004` | `EMBEDDINGS__GEMINI__API_KEY` |
-| NVIDIA NIM | `nvidia_nim` | 2048* | `nvidia/llama-3.2-nv-embedqa-1b-v2` | `EMBEDDINGS__NVIDIA_NIM__API_KEY` |
+| NVIDIA NIM | `nvidia_nim` | 2048 | `nvidia/llama-nemotron-embed-1b-v2` | `EMBEDDINGS__NVIDIA_NIM__API_KEY` |
 
-\* See `NvidiaNIMEmbeddingConfig` in `src/core/settings.py` — dimension not yet confirmed against a real NIM response.
+Its predecessor, `nvidia/llama-3.2-nv-embedqa-1b-v2`, reached end-of-life on 2026-05-18 — confirmed live during #79's validation, which is why the default model/dimension above differ from the original ADR-0003 write-up.
 
 All API providers are dense-only — BM25 continues to provide sparse retrieval. OpenAI's `text-embedding-3` family supports dimension truncation via `EMBEDDINGS__OPENAI__DIMENSIONS`; changing dimensions after indexing requires `--recreate-collection`. NVIDIA NIM (ADR-0003) targets hot-path query latency specifically — its embed and rerank NIMs are purpose-built for the RAG query path, not just another API option.
 
@@ -2758,7 +2758,7 @@ reranker:
 
 ### NVIDIA NIM reranker provider (ADR-0003)
 
-`reranker.provider: nvidia_nim` selects `NvidiaNimRerankerProvider` (`src/infrastructure/rerankers/nvidia_nim_reranker.py`), backed by NVIDIA NIM's low-latency `nvidia/llama-3.2-nv-rerankqa-1b-v2` model — part of the same hot-path-latency migration as the [NVIDIA NIM embedding provider](#embedding-providers). Unlike the LLM and embedding NIM providers, NIM's reranking endpoint (`/v1/ranking`) is **not** OpenAI-compatible — it has its own request/response shape (`query.text` + `passages[].text` in, `rankings: [{index, logit}]` out), so this provider uses a plain `httpx` client instead of the OpenAI SDK.
+`reranker.provider: nvidia_nim` selects `NvidiaNimRerankerProvider` (`src/infrastructure/rerankers/nvidia_nim_reranker.py`), backed by NVIDIA NIM's low-latency `nvidia/llama-nemotron-rerank-1b-v2` model — part of the same hot-path-latency migration as the [NVIDIA NIM embedding provider](#embedding-providers). Unlike the LLM and embedding NIM providers, NIM's reranking NIMs live on a different host/path (`https://ai.api.nvidia.com/v1/retrieval/{model}/reranking`, not the `integrate.api.nvidia.com` host chat/embeddings use) and are **not** OpenAI-compatible — they have their own request/response shape (`query.text` + `passages[].text` in, `rankings: [{index, logit}]` out), so this provider uses a plain `httpx` client instead of the OpenAI SDK. (The original ADR-0003 write-up assumed a generic `/v1/ranking` path and a now-defunct model, `nvidia/llama-3.2-nv-rerankqa-1b-v2`; both were corrected after live validation in #79.)
 
 If the NIM ranking call fails for any reason (network error, timeout, non-2xx response), `CrossEncoder.rerank()` catches the resulting `RetrievalError` and falls back to returning chunks in raw retrieval order rather than failing the whole request — reranking is a quality improvement, not a hard requirement, and this fallback applies uniformly regardless of which reranker provider is active.
 

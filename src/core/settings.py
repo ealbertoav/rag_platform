@@ -90,11 +90,11 @@ class GeminiEmbeddingConfig(BaseModel):
 
 class NvidiaNIMEmbeddingConfig(BaseModel):
     api_key: SecretStr = SecretStr("")
-    model: str = "nvidia/llama-3.2-nv-embedqa-1b-v2"
+    # nvidia/llama-3.2-nv-embedqa-1b-v2 reached end-of-life on 2026-05-18 (HTTP 410);
+    # this is its successor in the NIM catalog, confirmed live against /v1/embeddings.
+    model: str = "nvidia/llama-nemotron-embed-1b-v2"
     base_url: str = "https://integrate.api.nvidia.com/v1"
-    # Not confirmed against NIM's model card as of writing — verify against a
-    # real embedding response (#79) before relying on this for Qdrant collection sizing.
-    dimensions: int = 2048
+    dimensions: int = 2048  # confirmed against a real embedding response (#79 smoke test)
 
 
 class EmbeddingCacheSettings(BaseModel):
@@ -133,8 +133,12 @@ class EmbeddingSettings(BaseModel):
 
 class NvidiaNIMRerankerConfig(BaseModel):
     api_key: SecretStr = SecretStr("")
-    model: str = "nvidia/llama-3.2-nv-rerankqa-1b-v2"
-    base_url: str = "https://integrate.api.nvidia.com/v1"
+    # nvidia/llama-3.2-nv-rerankqa-1b-v2 never resolved (HTTP 404); this is the
+    # correct current model, confirmed live against the reranking invoke URL.
+    model: str = "nvidia/llama-nemotron-rerank-1b-v2"
+    # NIM reranking NIMs live on a different host/path than chat + embeddings —
+    # the invoke URL is "{base_url}/retrieval/{model}/reranking", not "{base_url}/ranking".
+    base_url: str = "https://ai.api.nvidia.com/v1"
 
 
 class RerankerSettings(BaseModel):

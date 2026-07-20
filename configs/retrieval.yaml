@@ -83,8 +83,8 @@ reranker:
   # Set RERANKER__NVIDIA_NIM__API_KEY in .env to activate. A failed ranking call
   # degrades gracefully to raw retrieval order instead of failing the request.
   nvidia_nim:
-    model: nvidia/llama-3.2-nv-rerankqa-1b-v2  # low-latency rerankqa NIM (ADR-0003)
-    base_url: https://integrate.api.nvidia.com/v1
+    model: nvidia/llama-nemotron-rerank-1b-v2  # low-latency rerankqa NIM (ADR-0003); predecessor never resolved
+    base_url: https://ai.api.nvidia.com/v1     # different host than chat/embeddings — see NvidiaNIMRerankerConfig
 
 query_expansion:
   enabled: true

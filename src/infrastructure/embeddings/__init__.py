@@ -61,7 +61,7 @@ def get_embedding_provider() -> EmbeddingRepository:
                          uses voyage-multimodal-3 (embeddings.voyage.multimodal_model)
         cohere         — embed-english-v3.0 / embed-multilingual-v3.0, dense only
         gemini         — text-embedding-004 (768-dim), dense only
-        nvidia_nim     — llama-3.2-nv-embedqa-1b-v2, dense only (hot-path latency, ADR-0003)
+        nvidia_nim     — llama-nemotron-embed-1b-v2, dense only (hot-path latency, ADR-0003)
 
     When switching providers, update "embeddings.dense_dim" to match the new
     model and run "python scripts/rebuild_embeddings.py --recreate-collection".

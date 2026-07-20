@@ -365,7 +365,7 @@ def _api_settings(provider: str = "openai", *, api_key: str = "sk-test") -> Magi
     emb.gemini = MagicMock(api_key=SecretStr(api_key), model="text-embedding-004", dimensions=768)
     emb.nvidia_nim = MagicMock(
         api_key=SecretStr(api_key),
-        model="nvidia/llama-3.2-nv-embedqa-1b-v2",
+        model="nvidia/llama-nemotron-embed-1b-v2",
         base_url="https://integrate.api.nvidia.com/v1",
         dimensions=2048,
     )
@@ -456,7 +456,7 @@ class TestEmbeddingModelIdentifierExtended:
         assert embedding_model_identifier("gemini", settings) == "gemini:text-embedding-004@768"
         assert (
             embedding_model_identifier("nvidia_nim", settings)
-            == "nvidia_nim:nvidia/llama-3.2-nv-embedqa-1b-v2@2048"
+            == "nvidia_nim:nvidia/llama-nemotron-embed-1b-v2@2048"
         )
 
 

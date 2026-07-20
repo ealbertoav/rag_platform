@@ -17,21 +17,23 @@ _DEFAULT_TIMEOUT_SECONDS = 30.0
 
 
 class NvidiaNimRerankerProvider(RerankerRepository):
-    """RerankerRepository backed by NVIDIA NIM's "/v1/ranking" endpoint.
+    """RerankerRepository backed by NVIDIA NIM's per-model reranking endpoint.
 
-    Not OpenAI-compatible — NIM's ranking endpoint has its own request shape
-    (query.text + passages[].text) and response shape ({"rankings": [{"index",
-    "logit"}, ...]}, matching NVIDIA's documented NeMo Retriever Reranking NIM
-    API — not yet exercised against a live response, verify in #79), so this
-    uses a plain httpx client rather than the OpenAI SDK the LLM/embedding NIM
-    providers use.
+    Not OpenAI-compatible — NIM's reranking NIMs live on a different host/path
+    than chat + embeddings, with their own request shape (query.text +
+    passages[].text) and response shape ({"rankings": [{"index", "logit"}]}),
+    so this uses a plain httpx client rather than the OpenAI SDK the LLM/
+    embedding NIM providers use. The invoke URL is per-model
+    ("{base_url}/retrieval/{model}/reranking"), confirmed live against
+    nvidia/llama-nemotron-rerank-1b-v2 during #79's validation — verified
+    correctly scores a relevant passage above an irrelevant one.
     """
 
     def __init__(
         self,
         api_key: str,
-        model: str = "nvidia/llama-3.2-nv-rerankqa-1b-v2",
-        base_url: str = "https://integrate.api.nvidia.com/v1",
+        model: str = "nvidia/llama-nemotron-rerank-1b-v2",
+        base_url: str = "https://ai.api.nvidia.com/v1",
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         client: httpx.Client | None = None,
     ) -> None:
@@ -92,7 +94,7 @@ class NvidiaNimRerankerProvider(RerankerRepository):
 
     def _rank(self, query: str, texts: list[str]) -> list[dict[str, Any]]:
         response = self._http().post(
-            f"{self.base_url}/ranking",
+            f"{self.base_url}/retrieval/{self.model}/reranking",
             headers=self._headers(),
             json={
                 "model": self.model,
