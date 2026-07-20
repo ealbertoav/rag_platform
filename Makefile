@@ -1,4 +1,4 @@
-.PHONY: install sync serve ingest evals sync-retrieval-goldens multimodal-golden benchmark lint format test test-unit test-slow test-e2e clean qdrant-up \
+.PHONY: install sync serve ingest ingest-eval-corpus evals sync-retrieval-goldens multimodal-golden benchmark lint format test test-unit test-slow test-e2e clean qdrant-up \
         docker-build docker-up docker-up-prod docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
         benchmark-chunk-sizes benchmark-infra benchmark-modality-recall check-multimodal-regression audit-deps
 
@@ -13,6 +13,12 @@ serve:
 
 ingest:
 	uv run python scripts/ingest.py --source $(SOURCE)
+
+## Re-ingest the committed source of qa_dataset.json / retrieval_dataset.json (#94),
+## so check_regression_gate.py's live retrieval check has real data to verify against
+## instead of skipping. Committed under datasets/goldens/, not data/raw/ (gitignored).
+ingest-eval-corpus:
+	uv run python scripts/ingest.py --source datasets/goldens/rag_platform_corpus.md
 
 evals:
 	@echo "Generate golden QA + retrieval datasets (requires: make ingest SOURCE=... first)"
