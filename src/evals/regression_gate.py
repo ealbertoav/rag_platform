@@ -2,11 +2,23 @@
 
 Validates committed golden datasets meet minimum sample counts and per-row
 Recall@5 floors before merge. Skips gracefully when only placeholder data exists.
+
+Two independent checks:
+  - `check_regression_gate`: validates the golden dataset's own structure (row
+    counts, sync with qa_dataset.json, and whether any row has more relevant
+    chunks than K — which would cap oracle Recall@K below 1.0 regardless of
+    retriever quality). Never invokes the retrieval pipeline.
+  - `check_live_retrieval_regression`: actually runs the configured retrieval
+    pipeline against each golden query and checks real Recall@5. Skips
+    gracefully when Qdrant, the BM25 index, or self-hosted models aren't
+    available in this environment (matching tests/integration/*'s auto-skip).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
@@ -20,11 +32,14 @@ from src.evals.golden_dataset import (
     load_qa_dicts,
     retrieval_rows_match_qa,
 )
-from src.evals.retrieval.recall_at_k import oracle_recall_at_k
+from src.evals.retrieval.recall_at_k import oracle_recall_at_k, recall_at_k
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_QA_PATH = DATASETS_DIR / "goldens" / "qa_dataset.json"
 _DEFAULT_RETRIEVAL_PATH = DATASETS_DIR / "goldens" / "retrieval_dataset.json"
 _DEFAULT_BASELINE_PATH = DATASETS_DIR / "goldens" / "retrieval_baseline.json"
+_QDRANT_REACHABILITY_TIMEOUT_S = 2
 
 
 class GateStatus(StrEnum):
@@ -123,29 +138,162 @@ def check_regression_gate(
     for row in real:
         raw_ids = row.get("relevant_chunk_ids", [])
         relevant = [r for r in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(r, str)]
+        # Oracle: retrieved == relevant, so this only checks whether the row has
+        # more unique relevant chunks than K — never actual retriever behavior.
         score = oracle_recall_at_k(relevant, k=5)
         if score < min_recall:
             row_id = str(row.get("id", "<unknown>"))
             return RegressionGateResult(
                 status=GateStatus.FAILED,
                 message=(
-                    f"Regression gate FAILED: Recall@5 {score:.3f} < {min_recall} for {row_id}."
+                    f"Regression gate FAILED: oracle Recall@5 {score:.3f} < {min_recall} "
+                    + f"for {row_id} (row has more relevant chunks than K)."
                 ),
             )
 
     return RegressionGateResult(
         status=GateStatus.PASSED,
         message=(
-            f"Regression gate PASSED: {len(real)} retrieval samples, "
-            + f"{qa_count} QA pairs, Recall@5 >= {min_recall}."
+            f"Regression gate PASSED (dataset shape): {len(real)} retrieval samples, "
+            + f"{qa_count} QA pairs, oracle Recall@5 >= {min_recall}."
         ),
     )
+
+
+async def check_live_retrieval_regression(
+    *,
+    retrieval_path: Path | None = None,
+    baseline_path: Path | None = None,
+    k: int = 5,
+) -> RegressionGateResult:
+    """Run the *live* configured retrieval pipeline against golden queries.
+
+    Unlike `check_regression_gate`'s oracle check, this actually retrieves
+    chunks for each golden query and compares them against the ground-truth
+    `relevant_chunk_ids` — so a broken retriever, a bad config change, or a
+    corrupted index will fail this gate. Skips gracefully (not a failure) when
+    Qdrant, the BM25 index, or self-hosted models aren't available in this
+    environment.
+    """
+    retrieval = retrieval_path or _DEFAULT_RETRIEVAL_PATH
+    real = load_real_retrieval_rows(retrieval)
+    if not real:
+        return RegressionGateResult(
+            status=GateStatus.SKIPPED,
+            message="No real retrieval rows — skipping live regression check.",
+        )
+
+    baseline = load_regression_baseline(baseline_path)
+    min_recall = baseline_float(baseline, "min_recall_at_5", 0.5)
+
+    if not _qdrant_reachable():
+        return RegressionGateResult(
+            status=GateStatus.SKIPPED,
+            message="Qdrant not reachable — skipping live regression check.",
+        )
+
+    from src.infrastructure.vectordb.bm25 import BM25Index
+
+    bm25_index = BM25Index.load_or_create()
+    if bm25_index.size == 0:
+        return RegressionGateResult(
+            status=GateStatus.SKIPPED,
+            message=(
+                "BM25 index is empty — skipping live regression check "
+                + "(run `make ingest` to populate it)."
+            ),
+        )
+
+    try:
+        from src.rag.pipelines.retrieval_pipeline import RetrievalPipeline
+
+        pipeline = RetrievalPipeline.from_settings(bm25_index=bm25_index)
+    except Exception as exc:
+        logger.warning(
+            "Live retrieval pipeline unavailable, skipping live regression check: %s", exc
+        )
+        return RegressionGateResult(
+            status=GateStatus.SKIPPED,
+            message=(
+                f"Live retrieval pipeline unavailable — skipping live regression check ({exc})."
+            ),
+        )
+
+    from src.domain.entities.query import Query
+
+    # Infra is confirmed present past this point (Qdrant reachable, BM25
+    # populated, pipeline built) — a failure here is a genuine regression
+    # signal, not an environment gap, so it fails the gate rather than skips.
+    scores: list[float] = []
+    for row in real:
+        query_text = row.get("query")
+        raw_ids = row.get("relevant_chunk_ids", [])
+        relevant = [r for r in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(r, str)]
+        if not isinstance(query_text, str) or not query_text or not relevant:
+            continue
+        try:
+            result = await pipeline.retrieve(Query(text=query_text))
+        except Exception as exc:
+            row_id = str(row.get("id", "<unknown>"))
+            return RegressionGateResult(
+                status=GateStatus.FAILED,
+                message=f"Live regression gate FAILED: retrieval raised for {row_id}: {exc}",
+            )
+        retrieved_ids = [chunk.id for chunk in result.chunks]
+        scores.append(recall_at_k(retrieved_ids, relevant, k))
+
+    if not scores:
+        return RegressionGateResult(
+            status=GateStatus.SKIPPED,
+            message="No evaluable rows — skipping live regression check.",
+        )
+
+    mean_recall = sum(scores) / len(scores)
+    if mean_recall < min_recall:
+        return RegressionGateResult(
+            status=GateStatus.FAILED,
+            message=(
+                f"Live regression gate FAILED: live Recall@{k} {mean_recall:.3f} < {min_recall} "
+                + f"across {len(scores)} live-retrieved samples."
+            ),
+        )
+
+    return RegressionGateResult(
+        status=GateStatus.PASSED,
+        message=(
+            f"Live regression gate PASSED: live Recall@{k} {mean_recall:.3f} >= {min_recall} "
+            + f"across {len(scores)} live-retrieved samples."
+        ),
+    )
+
+
+def _qdrant_reachable() -> bool:
+    from qdrant_client import QdrantClient
+    from qdrant_client.http.exceptions import ResponseHandlingException
+
+    from src.core.settings import settings
+
+    try:
+        QdrantClient(
+            url=settings.qdrant.url,
+            api_key=settings.qdrant.api_key,
+            timeout=_QDRANT_REACHABILITY_TIMEOUT_S,
+            check_compatibility=False,
+        ).get_collections()
+        return True
+    except (OSError, TimeoutError, ResponseHandlingException):
+        return False
 
 
 def main() -> None:
     result = check_regression_gate()
     print(result.message)
     if result.status == GateStatus.FAILED:
+        sys.exit(1)
+
+    live_result = asyncio.run(check_live_retrieval_regression())
+    print(live_result.message)
+    if live_result.status == GateStatus.FAILED:
         sys.exit(1)
 
 
