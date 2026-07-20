@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast, override
 
 from src.core.exceptions import EmbeddingError
@@ -14,6 +17,35 @@ if TYPE_CHECKING:
     from FlagEmbedding import BGEM3FlagModel
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _materialize_weights_on_load() -> Iterator[None]:
+    """Force real (non-meta) weight materialization for the duration of the block.
+
+    transformers>=4.56 defaults `from_pretrained(low_cpu_mem_usage=True)` when
+    accelerate is installed. For bge-m3's legacy pytorch_model.bin checkpoint
+    (no safetensors release upstream) that leaves some parameters on the meta
+    device, so the model's later `.to(device)` call fails with "Cannot copy
+    out of meta tensor". Forcing the classic materialization path fixes it.
+    Patched only around the BGEM3FlagModel construction call below (not
+    left in place afterwards), so it can't change behavior for any other
+    `from_pretrained` call elsewhere in the process — including BGE-Reranker's
+    unaffected safetensors load.
+    """
+    import transformers
+
+    original = transformers.PreTrainedModel.from_pretrained.__func__
+
+    def _patched(cls: Any, *args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("low_cpu_mem_usage", False)
+        return original(cls, *args, **kwargs)
+
+    transformers.PreTrainedModel.from_pretrained = classmethod(_patched)  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        transformers.PreTrainedModel.from_pretrained = classmethod(original)  # type: ignore[method-assign]
 
 
 class BGEM3EmbeddingProvider(EmbeddingRepository):
@@ -38,6 +70,7 @@ class BGEM3EmbeddingProvider(EmbeddingRepository):
         self.normalize: bool = normalize
         self.max_length: int = max_length
         self._model: BGEM3FlagModel | None = None
+        self._model_lock = threading.Lock()
 
     # ── EmbeddingRepository interface ──────────────────────────────────────────
 
@@ -80,22 +113,36 @@ class BGEM3EmbeddingProvider(EmbeddingRepository):
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _get_model(self) -> BGEM3FlagModel:
+        """Lazily construct the model, guarded by a lock.
+
+        Concurrent retrieval (multi-query expansion embeds several variants
+        via `asyncio.to_thread`) can call this before the model is loaded —
+        without the lock, two threads could race to construct it, and one
+        thread's `_materialize_weights_on_load()` could restore the patched
+        `from_pretrained` while the other's construction is still mid-flight.
+        """
         if self._model is not None:
             return self._model
-        try:
-            from FlagEmbedding import BGEM3FlagModel  # lazy import
+        with self._model_lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from FlagEmbedding import BGEM3FlagModel  # lazy import
 
-            use_fp16 = self.device in ("cuda", "mps")
-            model = BGEM3FlagModel(
-                self.model_path,
-                use_fp16=use_fp16,
-                device=self.device,
-            )
-            logger.info("BGE-M3 loaded from %s on %s", self.model_path, self.device)
-            self._model = model
-            return model
-        except (ImportError, OSError, ValueError) as exc:
-            raise EmbeddingError(f"Cannot load BGE-M3 from {self.model_path!r}", cause=exc) from exc
+                use_fp16 = self.device in ("cuda", "mps")
+                with _materialize_weights_on_load():
+                    model = BGEM3FlagModel(
+                        self.model_path,
+                        use_fp16=use_fp16,
+                        device=self.device,
+                    )
+                logger.info("BGE-M3 loaded from %s on %s", self.model_path, self.device)
+                self._model = model
+                return model
+            except (ImportError, OSError, ValueError) as exc:
+                raise EmbeddingError(
+                    f"Cannot load BGE-M3 from {self.model_path!r}", cause=exc
+                ) from exc
 
     def _call_model(
         self,

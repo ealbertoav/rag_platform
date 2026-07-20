@@ -1,5 +1,5 @@
 .PHONY: install sync serve ingest evals sync-retrieval-goldens multimodal-golden benchmark lint format test test-unit test-slow test-e2e clean qdrant-up \
-        docker-build docker-up docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
+        docker-build docker-up docker-up-prod docker-down docker-logs docker-ingest docker-clean benchmark-techniques \
         benchmark-chunk-sizes benchmark-infra benchmark-modality-recall check-multimodal-regression audit-deps
 
 install:
@@ -89,6 +89,11 @@ docker-build:
 
 docker-up:
 	docker compose up -d
+
+## Base compose only — skips docker-compose.override.yml (dev hot-reload + Ollama swap),
+## so the API serves with .env as-is (e.g. LLM__PROVIDER=nvidia_nim) like a real deployment.
+docker-up-prod:
+	docker compose -f docker-compose.yml up -d --build
 
 docker-down:
 	docker compose down
