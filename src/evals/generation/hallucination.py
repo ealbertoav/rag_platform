@@ -70,5 +70,4 @@ class HallucinationMetric:
             context=list(sample.retrieved_chunks),
         )
         metric = _HM(threshold=self.threshold)
-        metric.measure(test_case)
-        return float(metric.score)
+        return metric.measure(test_case)
