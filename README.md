@@ -3944,6 +3944,11 @@ On `POST /chat/full`, optional post-generation spans appear after `generation.ll
 | `rag_embedding_cache_hits_total` | Counter | — |
 | `rag_embedding_cache_misses_total` | Counter | — |
 | `rag_rate_limit_rejected_total` | Counter | `path` (T-160) |
+| `rag_reranker_outcome_total` | Counter | `outcome` (`reranked`\|`fallback`) — #92 |
+| `rag_reranker_score` | Histogram | — cross-encoder scores, successful reranks only (#92) |
+| `rag_reliable_rag_relevance_score` | Histogram | — per-chunk grades when `quality.reliable_rag.enabled` (#92) |
+| `rag_feedback_events_total` | Counter | `sentiment` (`positive`\|`negative`), when `quality.feedback_loop.enabled` (#92) |
+| `rag_feedback_score_accumulated` | Histogram | — per-chunk accumulated score after each update, when `quality.feedback_loop.enabled` (#92) |
 
 **Grafana scrape config:**
 ```yaml

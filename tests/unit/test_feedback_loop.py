@@ -20,6 +20,7 @@ from src.rag.quality.feedback_loop import (
     record_feedback,
     resolve_feedback_score,
     score_from_relevant,
+    sentiment_from_score,
 )
 
 
@@ -42,6 +43,19 @@ class TestScoreFromRelevant:
 
     def test_negative_vote(self):
         assert score_from_relevant(False) == -1.0
+
+
+class TestSentimentFromScore:
+    """#92: shared classification reused by both logging and metrics recording."""
+
+    def test_positive_score(self):
+        assert sentiment_from_score(1.0) == "positive"
+
+    def test_negative_score(self):
+        assert sentiment_from_score(-1.0) == "negative"
+
+    def test_zero_classified_as_positive(self):
+        assert sentiment_from_score(0.0) == "positive"
 
 
 class TestFeedbackScoreFromMetadata:
@@ -93,6 +107,42 @@ class TestRecordFeedback:
         store.accumulate_feedback_score.return_value = 2.0
         record_feedback(store, "query-1", "chunk-a", 1.0)
         store.accumulate_feedback_score.assert_called_once_with("chunk-a", 1.0)
+
+    def test_does_not_record_metric_when_feedback_loop_disabled(self):
+        """#92: default settings have quality.feedback_loop.enabled=False."""
+        from src.observability.metrics import FEEDBACK_EVENTS_TOTAL
+
+        store = MagicMock()
+        store.accumulate_feedback_score.return_value = 2.0
+
+        before = FEEDBACK_EVENTS_TOTAL.labels(sentiment="positive")._value.get()
+        record_feedback(store, "query-1", "chunk-a", 1.0)
+        after = FEEDBACK_EVENTS_TOTAL.labels(sentiment="positive")._value.get()
+        assert after == before
+
+    def test_records_metric_when_feedback_loop_enabled(self):
+        """#92: feedback-loop aggregate score trends must be observable."""
+        from unittest.mock import patch
+
+        from src.observability.metrics import (
+            FEEDBACK_EVENTS_TOTAL,
+            FEEDBACK_SCORE_ACCUMULATED,
+        )
+
+        store = MagicMock()
+        store.accumulate_feedback_score.return_value = 3.0
+
+        settings = MagicMock()
+        settings.quality.feedback_loop.enabled = True
+
+        before_events = FEEDBACK_EVENTS_TOTAL.labels(sentiment="positive")._value.get()
+        before_sum = FEEDBACK_SCORE_ACCUMULATED._sum.get()
+        with patch("src.core.settings.settings", settings):
+            record_feedback(store, "query-1", "chunk-a", 1.0)
+        after_events = FEEDBACK_EVENTS_TOTAL.labels(sentiment="positive")._value.get()
+        after_sum = FEEDBACK_SCORE_ACCUMULATED._sum.get()
+        assert after_events == pytest.approx(before_events + 1)
+        assert after_sum == pytest.approx(before_sum + 3.0)
 
 
 class TestApplyFeedbackBoost:

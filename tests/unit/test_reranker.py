@@ -220,6 +220,33 @@ class TestCrossEncoder:
         result = ce.rerank("q", chunks)
         assert result == chunks[:2]
 
+    def test_scoring_failure_records_fallback_metric(self):
+        """#92: reranker fallback rate must be observable in production."""
+        from src.observability.metrics import RERANKER_OUTCOME_TOTAL
+
+        mock_reranker = MagicMock()
+        mock_reranker.score.side_effect = RetrievalError("NIM ranking failed")
+        ce = CrossEncoder(reranker=mock_reranker, top_k=2)
+
+        before = RERANKER_OUTCOME_TOTAL.labels(outcome="fallback")._value.get()
+        ce.rerank("q", _chunks(3))
+        after = RERANKER_OUTCOME_TOTAL.labels(outcome="fallback")._value.get()
+        assert after == pytest.approx(before + 1)
+
+    def test_successful_rerank_records_success_and_score_metrics(self):
+        """#92: reranker success rate and score distribution must be observable."""
+        from src.observability.metrics import RERANKER_OUTCOME_TOTAL, RERANKER_SCORE
+
+        before_outcome = RERANKER_OUTCOME_TOTAL.labels(outcome="reranked")._value.get()
+        before_score_sum = RERANKER_SCORE._sum.get()
+
+        self._ce([0.9, 0.5]).rerank("q", _chunks(2))
+
+        after_outcome = RERANKER_OUTCOME_TOTAL.labels(outcome="reranked")._value.get()
+        after_score_sum = RERANKER_SCORE._sum.get()
+        assert after_outcome == pytest.approx(before_outcome + 1)
+        assert after_score_sum == pytest.approx(before_score_sum + 1.4)
+
     def test_nvidia_nim_provider_selected_from_settings(self):
         from pydantic import SecretStr
 

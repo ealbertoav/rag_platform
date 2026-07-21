@@ -71,6 +71,8 @@ class CrossEncoder:
         the (possibly modality-boosted) scores before the final sort so retrieval
         feedback survives reranking.
         """
+        from src.observability.metrics import record_reranker_fallback, record_reranker_success
+
         k = top_k if top_k is not None else self._top_k
         if not chunks:
             return []
@@ -82,7 +84,9 @@ class CrossEncoder:
                 len(chunks),
                 exc_info=True,
             )
+            record_reranker_fallback()
             return chunks[:k]
+        record_reranker_success([score for _, score in scored])
         if self._modality_boost > 0:
             scored = apply_modality_boost(scored, boost=self._modality_boost)
         if boost_multiplier > 0:

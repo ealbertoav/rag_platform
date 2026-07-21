@@ -44,6 +44,39 @@ RATE_LIMIT_REJECTED = Counter(
     labelnames=["path"],
 )
 
+# ── Retrieval/answer-quality signal (#92) ───────────────────────────────────────
+
+RERANKER_OUTCOME_TOTAL = Counter(
+    "rag_reranker_outcome_total",
+    "Reranker outcomes — 'reranked' (scored successfully) vs 'fallback' "
+    "(scoring failed, raw retrieval order returned)",
+    labelnames=["outcome"],
+)
+
+RERANKER_SCORE = Histogram(
+    "rag_reranker_score",
+    "Cross-encoder relevance scores for successfully reranked chunks",
+    buckets=[-1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0, 10.0],
+)
+
+RELIABLE_RAG_RELEVANCE_SCORE = Histogram(
+    "rag_reliable_rag_relevance_score",
+    "Reliable RAG per-chunk relevance grades (0-1) when quality.reliable_rag.enabled",
+    buckets=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+
+FEEDBACK_EVENTS_TOTAL = Counter(
+    "rag_feedback_events_total",
+    "Retrieval feedback submissions by sentiment, when quality.feedback_loop.enabled",
+    labelnames=["sentiment"],
+)
+
+FEEDBACK_SCORE_ACCUMULATED = Histogram(
+    "rag_feedback_score_accumulated",
+    "Per-chunk accumulated feedback score after each update, when quality.feedback_loop.enabled",
+    buckets=[-10.0, -5.0, -2.0, -1.0, 0.0, 1.0, 2.0, 5.0, 10.0],
+)
+
 # ── Recording helpers ──────────────────────────────────────────────────────────
 
 
@@ -68,3 +101,32 @@ def record_generation(token_count: int, latency_seconds: float) -> None:
 def record_rate_limit_rejection(path: str) -> None:
     """Increment the rate-limit rejection counter for a *path*."""
     RATE_LIMIT_REJECTED.labels(path=path).inc()
+
+
+def record_reranker_success(scores: list[float]) -> None:
+    """Record a successful reranker pass and its raw cross-encoder scores."""
+    RERANKER_OUTCOME_TOTAL.labels(outcome="reranked").inc()
+    for score in scores:
+        RERANKER_SCORE.observe(score)
+
+
+def record_reranker_fallback() -> None:
+    """Record that the reranker failed and raw retrieval order was used instead."""
+    RERANKER_OUTCOME_TOTAL.labels(outcome="fallback").inc()
+
+
+def record_reliable_rag_scores(scores: list[float]) -> None:
+    """Record Reliable RAG per-chunk relevance grades (pass + fail)."""
+    for score in scores:
+        RELIABLE_RAG_RELEVANCE_SCORE.observe(score)
+
+
+def record_feedback_event(sentiment: str, accumulated: float) -> None:
+    """Record a retrieval feedback submission and the chunk's new accumulated score.
+
+    *sentiment* ("positive"/"negative") is classified by the caller — see
+    src.rag.quality.feedback_loop.sentiment_from_score() — so this module doesn't
+    duplicate that domain rule.
+    """
+    FEEDBACK_EVENTS_TOTAL.labels(sentiment=sentiment).inc()
+    FEEDBACK_SCORE_ACCUMULATED.observe(accumulated)
