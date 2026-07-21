@@ -60,10 +60,7 @@ def _output_paths(tmp_path: Path) -> tuple[Path, Path]:
 def _patch_run_evals(bm25: MagicMock, builder: MagicMock) -> Generator[None]:
     with (
         patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create", return_value=bm25),
-        patch(
-            "src.infrastructure.llm.llama_cpp_provider.LlamaCppProvider.from_settings",
-            return_value=MagicMock(),
-        ),
+        patch("src.infrastructure.llm.get_llm_provider", return_value=MagicMock()),
         patch(
             "src.infrastructure.embeddings.bge_m3.BGEM3EmbeddingProvider.from_settings",
             return_value=MagicMock(),

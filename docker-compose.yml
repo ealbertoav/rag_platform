@@ -4,6 +4,12 @@
 # Start:  docker compose up -d
 # Stop:   docker compose down
 # Ingest: docker compose run --rm worker python scripts/ingest.py --source /app/data/raw
+# Eval corpus (#96, isolated from the above — see `make ingest-eval-corpus`).
+# datasets/ isn't bind-mounted into the worker by default; add it for this one-off run:
+#   docker compose run --rm -v ./datasets:/app/datasets \
+#     -e QDRANT__COLLECTION=rag_documents_eval -e RETRIEVAL__BM25__BACKEND=disk \
+#     -e RETRIEVAL__BM25__DISK_PATH=/app/data/processed/bm25_eval \
+#     worker python scripts/ingest.py --source /app/datasets/goldens/rag_platform_corpus.md
 
 services:
 

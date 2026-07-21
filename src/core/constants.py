@@ -4,6 +4,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # ── Qdrant ─────────────────────────────────────────────────────────────────────
 DEFAULT_COLLECTION_NAME = "rag_documents"
+# Dedicated collection for the eval golden corpus (#96) — isolated from
+# DEFAULT_COLLECTION_NAME so ad-hoc ingestion of unrelated content can never
+# dilute or contaminate the golden corpus's retrieval signal (see #94/#95).
+EVAL_COLLECTION_NAME = "rag_documents_eval"
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 # Optional named vector for multimodal providers (clip / voyage); see T-252.
@@ -105,6 +109,9 @@ ASSETS_DIR = DATA_DIR / "assets"
 BM25_INDEX_PATH = PROCESSED_DIR / "bm25_index.json"
 BM25_LEGACY_PICKLE_PATH = PROCESSED_DIR / "bm25_index.pkl"
 BM25_DISK_PATH = PROCESSED_DIR / "bm25_disk"
+# Dedicated BM25 disk index for the eval golden corpus (#96) — pairs with
+# EVAL_COLLECTION_NAME so the eval corpus is fully isolated on both indexes.
+BM25_EVAL_DISK_PATH = PROCESSED_DIR / "bm25_eval"
 METADATA_DB_PATH = PROCESSED_DIR / "metadata.db"
 
 MODELS_DIR = ROOT / "models"

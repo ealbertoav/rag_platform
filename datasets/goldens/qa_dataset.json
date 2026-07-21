@@ -1,177 +1,169 @@
 [
   {
-    "question": "What vector database does the RAG platform use?",
-    "answer": "The platform uses Qdrant as its vector database with HNSW indexing.",
+    "question": "What is the default collection name used by the Qdrant vector database?",
+    "answer": "rag_documents",
     "relevant_chunks": [
-      "07ffb3f5-866b-48ac-9579-6d6469f3cc56"
+      "deadaded-f511-4259-ad63-ee19dfeb2efb"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "How does hybrid search combine dense and sparse retrieval?",
-    "answer": "Hybrid search fuses dense Qdrant embeddings with BM25 lexical scores via reciprocal rank fusion (RRF) by default.",
+    "question": "What is the default method used to fuse the ranked lists from dense and sparse lexical legs?",
+    "answer": "Reciprocal Rank Fusion (RRF)",
     "relevant_chunks": [
-      "07ffb3f5-866b-48ac-9579-6d6469f3cc56"
+      "deadaded-f511-4259-ad63-ee19dfeb2efb"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What embedding model is the default for retrieval?",
-    "answer": "BGE-M3 is the default embedding provider for dense and sparse vectors.",
+    "question": "How does the dense vector size adjust when switching between different embedding providers?",
+    "answer": "It is sized automatically",
     "relevant_chunks": [
-      "c6a79380-df65-4cde-be93-0f0975884042"
+      "deadaded-f511-4259-ad63-ee19dfeb2efb"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "Which LLM runtime powers local generation?",
-    "answer": "Local generation uses llama.cpp via LlamaCppProvider.",
+    "question": "What is the default embedding provider for both dense and sparse vectors?",
+    "answer": "BGE-M3",
     "relevant_chunks": [
-      "c6a79380-df65-4cde-be93-0f0975884042"
+      "83d6c9b4-b8d6-452e-b9f4-d15ada350466"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What is the purpose of the cross-encoder reranker?",
-    "answer": "The cross-encoder reranks fused candidates to improve precision before context is sent to generation.",
+    "question": "Why are query embeddings never cached?",
+    "answer": "Because caching helps only repeated indexing-time calls, not one-off user queries, and because task-type mismatches between query and passage embeddings would make a naive cache actively harmful for API providers like Cohere or Voyage.",
     "relevant_chunks": [
-      "e07eb233-d2e8-476a-87f1-312b6e94e48e"
+      "83d6c9b4-b8d6-452e-b9f4-d15ada350466"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "How do you ingest documents into the platform?",
-    "answer": "Run `make ingest SOURCE=path` or `scripts/ingest.py --source` to chunk, embed, and index documents.",
+    "question": "How can alternative embedding providers be swapped in?",
+    "answer": "With a single config change without touching retrieval or generation code.",
     "relevant_chunks": [
-      "e07eb233-d2e8-476a-87f1-312b6e94e48e"
+      "83d6c9b4-b8d6-452e-b9f4-d15ada350466"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What chunking strategies are supported?",
-    "answer": "Supported strategies include recursive, semantic, proposition, parent-child, section, and page-boundary chunking.",
+    "question": "What is the default reranker model used in the cross-encoder reranker?",
+    "answer": "a self-hosted BGE reranker model",
     "relevant_chunks": [
-      "6501b709-30c7-4e1b-a827-339e2389d9ad"
+      "259cdea4-d1ab-41b0-86a9-f6f7e43f5ea7"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What does HyDE retrieval do at query time?",
-    "answer": "HyDE generates a hypothetical document embedding from the query to improve dense retrieval.",
+    "question": "How does the pipeline handle reranker call failures?",
+    "answer": "it degrades gracefully by falling back to the original fused ranking order",
     "relevant_chunks": [
-      "6501b709-30c7-4e1b-a827-339e2389d9ad"
+      "259cdea4-d1ab-41b0-86a9-f6f7e43f5ea7"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What is multi-query expansion?",
-    "answer": "Multi-query expansion generates query variants and fuses their retrieval results with RRF.",
+    "question": "What happens when re-running document ingestion against the same source document?",
+    "answer": "only that document's chunks are replaced, leaving every other previously ingested document untouched",
     "relevant_chunks": [
-      "a919735b-b042-46a7-8ddc-4041af40bcaf"
+      "259cdea4-d1ab-41b0-86a9-f6f7e43f5ea7"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "How does contextual compression reduce token usage?",
-    "answer": "Contextual compression extracts only query-relevant spans from retrieved passages before generation.",
+    "question": "What is the default chunking strategy used by the platform?",
+    "answer": "recursive",
     "relevant_chunks": [
-      "a919735b-b042-46a7-8ddc-4041af40bcaf"
+      "eb58cd6d-3eb8-497d-a153-b9c2549f65e1"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What is Reliable RAG relevancy grading?",
-    "answer": "Reliable RAG grades each passage against the query and drops chunks below a minimum relevance score.",
+    "question": "How does the default recursive chunker approximate token count?",
+    "answer": "roughly one token per four characters",
     "relevant_chunks": [
-      "cf36843a-f362-4db0-a0d2-41e20502da98"
+      "eb58cd6d-3eb8-497d-a153-b9c2549f65e1"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What is the Self-RAG decision loop?",
-    "answer": "Self-RAG gates retrieval, support, and utility scores across agent iterations before accepting an answer.",
+    "question": "Why is HyDE disabled by default?",
+    "answer": "it adds one extra LLM call per query",
     "relevant_chunks": [
-      "cf36843a-f362-4db0-a0d2-41e20502da98"
+      "eb58cd6d-3eb8-497d-a153-b9c2549f65e1"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "How does the retrieval feedback loop work?",
-    "answer": "POST /feedback accumulates chunk relevance scores that boost future hybrid retrieval ranking.",
+    "question": "Is query expansion enabled by default in multi-query expansion?",
+    "answer": "Yes",
     "relevant_chunks": [
-      "dde25a07-34c3-4c80-8401-51fe6a34d679"
+      "ae351be0-c960-4e54-a278-f7cbdb398805"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "Which feedback backends support multi-replica deployments?",
-    "answer": "Feedback backends include Qdrant compare-and-set, Redis HINCRBYFLOAT, and Postgres atomic updates.",
+    "question": "What happens if the compression call fails for a given chunk in contextual compression?",
+    "answer": "It falls back to using that chunk's original, uncompressed text",
     "relevant_chunks": [
-      "dde25a07-34c3-4c80-8401-51fe6a34d679"
+      "ae351be0-c960-4e54-a278-f7cbdb398805"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What metrics does POST /evals/run report?",
-    "answer": "The endpoint reports Recall@5, Faithfulness, Relevance, Context Precision, and Hallucination.",
+    "question": "What is the name of the analytical adaptive-retrieval strategy that pairs well with step-back prompting?",
+    "answer": "analytical adaptive-retrieval strategy",
     "relevant_chunks": [
-      "aa03d55f-5733-43f3-866a-6f35fdf88e90"
+      "ae351be0-c960-4e54-a278-f7cbdb398805"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "How is the golden QA dataset generated?",
-    "answer": "`make evals` runs SyntheticDatasetBuilder over ingested BM25 chunks to produce golden QA pairs.",
+    "question": "What is the purpose of the Reliable RAG feature?",
+    "answer": "It acts as a quality gate to filter out irrelevant passages.",
     "relevant_chunks": [
-      "aa03d55f-5733-43f3-866a-6f35fdf88e90"
+      "2273b79a-cb1f-4765-b768-ccd885be0c15"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What is MMR diversity retrieval?",
-    "answer": "MMR re-ranks passages to balance relevance and pairwise similarity, reducing near-duplicate chunks.",
+    "question": "How does the Self-RAG decision loop differ from the standard agent decision logic?",
+    "answer": "It replaces the standard decision logic with a sequence of explicit LLM-driven gates.",
     "relevant_chunks": [
-      "f6956943-0cd5-4c83-9f5f-8a06ad6d613e"
+      "2273b79a-cb1f-4765-b768-ccd885be0c15"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "How does parent context enrichment work?",
-    "answer": "Parent context resolves parent chunk text so child chunks carry broader document context at generation time.",
+    "question": "What is the default state of the Reliable RAG feature?",
+    "answer": "It is disabled by default.",
     "relevant_chunks": [
-      "f6956943-0cd5-4c83-9f5f-8a06ad6d613e"
+      "2273b79a-cb1f-4765-b768-ccd885be0c15"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What does explainable retrieval add to chat/full?",
-    "answer": "With explain=true, the API returns per-source explanations of why each chunk was retrieved.",
+    "question": "What happens to a chunk's rank after RRF fusion and cross-encoder reranking when it has a high feedback score?",
+    "answer": "It is additively boosted.",
     "relevant_chunks": [
-      "164098ea-8432-4ab7-96c8-1c457d916f73"
+      "0590b0b7-c731-41d6-9181-0a90f4d874e0"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "How are source highlights validated?",
-    "answer": "Highlights must be verbatim substrings of chunk_context_text after whitespace normalization.",
+    "question": "What is the default backend for multi-replica feedback score updates?",
+    "answer": "Qdrant.",
     "relevant_chunks": [
-      "164098ea-8432-4ab7-96c8-1c457d916f73"
+      "0590b0b7-c731-41d6-9181-0a90f4d874e0"
     ],
     "source": "rag_platform_corpus.md"
   },
   {
-    "question": "What CI job guards retrieval metric regression?",
-    "answer": "The retrieval-regression job runs benchmark tests and enforces Recall@5 thresholds when real data is committed.",
+    "question": "What is required for the feedback loop feature to be enabled?",
+    "answer": "No model retraining.",
     "relevant_chunks": [
-      "4dfcc4c2-ba04-4901-9d25-e7f687455f71"
-    ],
-    "source": "rag_platform_corpus.md"
-  },
-  {
-    "question": "How do you compare RAG techniques side by side?",
-    "answer": "Run `make benchmark-techniques` to benchmark baseline, HyDE, CCH, Self-RAG, and feedback-loop A/B.",
-    "relevant_chunks": [
-      "4dfcc4c2-ba04-4901-9d25-e7f687455f71"
+      "0590b0b7-c731-41d6-9181-0a90f4d874e0"
     ],
     "source": "rag_platform_corpus.md"
   }

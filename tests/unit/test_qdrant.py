@@ -374,6 +374,21 @@ class TestInterfaceConformance:
             instance = QdrantVectorStore.from_settings()
         assert isinstance(instance, QdrantVectorStore)
 
+    def test_from_settings_collection_override(self):
+        """Explicit *collection* wins over settings.qdrant.collection (#96) —
+        lets the eval regression gate target its dedicated collection without
+        mutating global settings."""
+        with patch("src.infrastructure.vectordb.qdrant.QdrantClient"):
+            instance = QdrantVectorStore.from_settings(collection="rag_documents_eval")
+        assert instance.collection == "rag_documents_eval"
+
+    def test_from_settings_no_override_uses_settings_collection(self):
+        with patch("src.infrastructure.vectordb.qdrant.QdrantClient"):
+            instance = QdrantVectorStore.from_settings()
+        from src.core.settings import settings
+
+        assert instance.collection == settings.qdrant.collection
+
     def test_from_settings_uses_provider_dense_dim(self):
         from pydantic import SecretStr
 

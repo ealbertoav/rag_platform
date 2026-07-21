@@ -1,156 +1,149 @@
 [
   {
     "id": "retrieval_001",
-    "query": "What vector database does the RAG platform use?",
+    "query": "What is the default collection name used by the Qdrant vector database?",
     "relevant_chunk_ids": [
-      "07ffb3f5-866b-48ac-9579-6d6469f3cc56"
+      "deadaded-f511-4259-ad63-ee19dfeb2efb"
     ]
   },
   {
     "id": "retrieval_002",
-    "query": "How does hybrid search combine dense and sparse retrieval?",
+    "query": "What is the default method used to fuse the ranked lists from dense and sparse lexical legs?",
     "relevant_chunk_ids": [
-      "07ffb3f5-866b-48ac-9579-6d6469f3cc56"
+      "deadaded-f511-4259-ad63-ee19dfeb2efb"
     ]
   },
   {
     "id": "retrieval_003",
-    "query": "What embedding model is the default for retrieval?",
+    "query": "How does the dense vector size adjust when switching between different embedding providers?",
     "relevant_chunk_ids": [
-      "c6a79380-df65-4cde-be93-0f0975884042"
+      "deadaded-f511-4259-ad63-ee19dfeb2efb"
     ]
   },
   {
     "id": "retrieval_004",
-    "query": "Which LLM runtime powers local generation?",
+    "query": "What is the default embedding provider for both dense and sparse vectors?",
     "relevant_chunk_ids": [
-      "c6a79380-df65-4cde-be93-0f0975884042"
+      "83d6c9b4-b8d6-452e-b9f4-d15ada350466"
     ]
   },
   {
     "id": "retrieval_005",
-    "query": "What is the purpose of the cross-encoder reranker?",
+    "query": "Why are query embeddings never cached?",
     "relevant_chunk_ids": [
-      "e07eb233-d2e8-476a-87f1-312b6e94e48e"
+      "83d6c9b4-b8d6-452e-b9f4-d15ada350466"
     ]
   },
   {
     "id": "retrieval_006",
-    "query": "How do you ingest documents into the platform?",
+    "query": "How can alternative embedding providers be swapped in?",
     "relevant_chunk_ids": [
-      "e07eb233-d2e8-476a-87f1-312b6e94e48e"
+      "83d6c9b4-b8d6-452e-b9f4-d15ada350466"
     ]
   },
   {
     "id": "retrieval_007",
-    "query": "What chunking strategies are supported?",
+    "query": "What is the default reranker model used in the cross-encoder reranker?",
     "relevant_chunk_ids": [
-      "6501b709-30c7-4e1b-a827-339e2389d9ad"
+      "259cdea4-d1ab-41b0-86a9-f6f7e43f5ea7"
     ]
   },
   {
     "id": "retrieval_008",
-    "query": "What does HyDE retrieval do at query time?",
+    "query": "How does the pipeline handle reranker call failures?",
     "relevant_chunk_ids": [
-      "6501b709-30c7-4e1b-a827-339e2389d9ad"
+      "259cdea4-d1ab-41b0-86a9-f6f7e43f5ea7"
     ]
   },
   {
     "id": "retrieval_009",
-    "query": "What is multi-query expansion?",
+    "query": "What happens when re-running document ingestion against the same source document?",
     "relevant_chunk_ids": [
-      "a919735b-b042-46a7-8ddc-4041af40bcaf"
+      "259cdea4-d1ab-41b0-86a9-f6f7e43f5ea7"
     ]
   },
   {
     "id": "retrieval_010",
-    "query": "How does contextual compression reduce token usage?",
+    "query": "What is the default chunking strategy used by the platform?",
     "relevant_chunk_ids": [
-      "a919735b-b042-46a7-8ddc-4041af40bcaf"
+      "eb58cd6d-3eb8-497d-a153-b9c2549f65e1"
     ]
   },
   {
     "id": "retrieval_011",
-    "query": "What is Reliable RAG relevancy grading?",
+    "query": "How does the default recursive chunker approximate token count?",
     "relevant_chunk_ids": [
-      "cf36843a-f362-4db0-a0d2-41e20502da98"
+      "eb58cd6d-3eb8-497d-a153-b9c2549f65e1"
     ]
   },
   {
     "id": "retrieval_012",
-    "query": "What is the Self-RAG decision loop?",
+    "query": "Why is HyDE disabled by default?",
     "relevant_chunk_ids": [
-      "cf36843a-f362-4db0-a0d2-41e20502da98"
+      "eb58cd6d-3eb8-497d-a153-b9c2549f65e1"
     ]
   },
   {
     "id": "retrieval_013",
-    "query": "How does the retrieval feedback loop work?",
+    "query": "Is query expansion enabled by default in multi-query expansion?",
     "relevant_chunk_ids": [
-      "dde25a07-34c3-4c80-8401-51fe6a34d679"
+      "ae351be0-c960-4e54-a278-f7cbdb398805"
     ]
   },
   {
     "id": "retrieval_014",
-    "query": "Which feedback backends support multi-replica deployments?",
+    "query": "What happens if the compression call fails for a given chunk in contextual compression?",
     "relevant_chunk_ids": [
-      "dde25a07-34c3-4c80-8401-51fe6a34d679"
+      "ae351be0-c960-4e54-a278-f7cbdb398805"
     ]
   },
   {
     "id": "retrieval_015",
-    "query": "What metrics does POST /evals/run report?",
+    "query": "What is the name of the analytical adaptive-retrieval strategy that pairs well with step-back prompting?",
     "relevant_chunk_ids": [
-      "aa03d55f-5733-43f3-866a-6f35fdf88e90"
+      "ae351be0-c960-4e54-a278-f7cbdb398805"
     ]
   },
   {
     "id": "retrieval_016",
-    "query": "How is the golden QA dataset generated?",
+    "query": "What is the purpose of the Reliable RAG feature?",
     "relevant_chunk_ids": [
-      "aa03d55f-5733-43f3-866a-6f35fdf88e90"
+      "2273b79a-cb1f-4765-b768-ccd885be0c15"
     ]
   },
   {
     "id": "retrieval_017",
-    "query": "What is MMR diversity retrieval?",
+    "query": "How does the Self-RAG decision loop differ from the standard agent decision logic?",
     "relevant_chunk_ids": [
-      "f6956943-0cd5-4c83-9f5f-8a06ad6d613e"
+      "2273b79a-cb1f-4765-b768-ccd885be0c15"
     ]
   },
   {
     "id": "retrieval_018",
-    "query": "How does parent context enrichment work?",
+    "query": "What is the default state of the Reliable RAG feature?",
     "relevant_chunk_ids": [
-      "f6956943-0cd5-4c83-9f5f-8a06ad6d613e"
+      "2273b79a-cb1f-4765-b768-ccd885be0c15"
     ]
   },
   {
     "id": "retrieval_019",
-    "query": "What does explainable retrieval add to chat/full?",
+    "query": "What happens to a chunk's rank after RRF fusion and cross-encoder reranking when it has a high feedback score?",
     "relevant_chunk_ids": [
-      "164098ea-8432-4ab7-96c8-1c457d916f73"
+      "0590b0b7-c731-41d6-9181-0a90f4d874e0"
     ]
   },
   {
     "id": "retrieval_020",
-    "query": "How are source highlights validated?",
+    "query": "What is the default backend for multi-replica feedback score updates?",
     "relevant_chunk_ids": [
-      "164098ea-8432-4ab7-96c8-1c457d916f73"
+      "0590b0b7-c731-41d6-9181-0a90f4d874e0"
     ]
   },
   {
     "id": "retrieval_021",
-    "query": "What CI job guards retrieval metric regression?",
+    "query": "What is required for the feedback loop feature to be enabled?",
     "relevant_chunk_ids": [
-      "4dfcc4c2-ba04-4901-9d25-e7f687455f71"
-    ]
-  },
-  {
-    "id": "retrieval_022",
-    "query": "How do you compare RAG techniques side by side?",
-    "relevant_chunk_ids": [
-      "4dfcc4c2-ba04-4901-9d25-e7f687455f71"
+      "0590b0b7-c731-41d6-9181-0a90f4d874e0"
     ]
   }
 ]
