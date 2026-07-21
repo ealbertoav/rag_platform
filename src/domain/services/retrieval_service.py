@@ -121,12 +121,12 @@ class RetrievalService:
         relevance_scores: list[float] = []
 
         # 0. Adaptive query classification (optional)
-        query = self._classify(query)
+        query = await asyncio.to_thread(self._classify, query)
         strategy = self._resolve_strategy(query)
 
         # 1. Query expansion (optional)
         with _tracer.start_as_current_span("retrieval.expansion"):
-            query = self._expand(query, strategy)
+            query = await asyncio.to_thread(self._expand, query, strategy)
 
         # 2. Multi-query hybrid retrieval (original + expanded variants)
         with _tracer.start_as_current_span("retrieval.multi_query_fusion") as span:
@@ -142,7 +142,7 @@ class RetrievalService:
 
         # 3. Cross-encoder reranking (optional)
         with _tracer.start_as_current_span("retrieval.reranking") as span:
-            chunks = self._rerank(query.text, chunks)
+            chunks = await asyncio.to_thread(self._rerank, query.text, chunks)
             span.set_attribute("chunk_count", len(chunks))
 
         # 3b. MMR diversity selection (optional, after rerank, before compression)
@@ -170,8 +170,8 @@ class RetrievalService:
         # 5b. Reliable RAG relevance grading (optional, after enrichment, before compression)
         if self._reliable_rag_enabled:
             with _tracer.start_as_current_span("retrieval.relevance_grading") as span:
-                chunks, pass_count, fail_count, relevance_scores = self._apply_relevance_grading(
-                    query.text, chunks
+                chunks, pass_count, fail_count, relevance_scores = await asyncio.to_thread(
+                    self._apply_relevance_grading, query.text, chunks
                 )
                 span.set_attribute("chunk_count", len(chunks))
                 span.set_attribute("relevance.pass_count", pass_count)
@@ -180,7 +180,7 @@ class RetrievalService:
 
         # 6. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
-            chunks = self._compress(query.text, chunks, strategy)
+            chunks = await asyncio.to_thread(self._compress, query.text, chunks, strategy)
             span.set_attribute("chunk_count", len(chunks))
 
         # 7. Final top-K cap

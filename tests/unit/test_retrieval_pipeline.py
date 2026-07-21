@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -197,6 +199,44 @@ class TestRetrievalServiceCompression:
         svc = _service(n_chunks=2, with_compressor=False)
         result = await svc.retrieve(_query())
         assert result.context != ""
+
+
+class TestRetrievalServiceEventLoopNotBlocked:
+    """#88 — blocking steps must not stall the event loop."""
+
+    @pytest.mark.asyncio
+    async def test_blocking_rerank_does_not_stall_event_loop(self):
+        reranker = MagicMock()
+
+        def _slow_rerank(query_text: str, chunks: list[Chunk], **kwargs: object) -> list[Chunk]:
+            time.sleep(0.2)  # simulates a synchronous cross-encoder forward pass
+            return chunks[:2]
+
+        reranker.rerank.side_effect = _slow_rerank
+        chunks = [_chunk(i) for i in range(3)]
+        svc = RetrievalService(
+            dense_retriever=_dense_mock(),
+            hybrid_retriever=_hybrid_mock(chunks),
+            reranker=reranker,
+            top_k_retrieval=10,
+            top_k_rerank=5,
+        )
+
+        ticks = 0
+
+        async def _tick_counter() -> None:
+            nonlocal ticks
+            for _ in range(40):
+                await asyncio.sleep(0.005)
+                ticks += 1
+
+        counter_task = asyncio.create_task(_tick_counter())
+        await svc.retrieve(_query())
+        counter_task.cancel()
+
+        # If rerank blocked the event loop directly, the counter would get no
+        # chance to run during the 0.2s sleep and "ticks" would stay near 0.
+        assert ticks > 10
 
 
 class TestRetrievalServiceRSE:
