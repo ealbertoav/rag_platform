@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Protocol
@@ -59,28 +60,33 @@ class GenerationMetric(Protocol):
     def score(self, sample: EvalSample) -> EvalResult: ...
 
 
-# ── Ragas shared infrastructure ────────────────────────────────────────────────
+# ── NVIDIA NIM judge infrastructure (#103/#104) ─────────────────────────────────
 
 
-def _make_ragas_dataset(sample: EvalSample) -> object:
-    """Build a single-row Ragas-compatible HuggingFace Dataset from *sample*."""
-    from datasets import Dataset
+def extract_json_object(text: str) -> dict[str, object]:
+    """Extract the first ``{...}`` JSON object from free-form judge LLM output.
 
-    return Dataset.from_dict(
-        {
-            "question": [sample.question],
-            "answer": [sample.generated_answer],
-            "contexts": [list(sample.retrieved_chunks)],
-            "ground_truth": [sample.expected_answer],
-        }
-    )
+    Judge prompts ask for a bare JSON object, but models sometimes wrap it in
+    prose or a markdown code fence anyway — take the outermost braces rather
+    than assuming the whole response is clean JSON.
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(f"No JSON object found in judge response: {text!r}")
+    payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError(f"Judge response JSON is not an object: {text!r}")
+    return payload
 
 
-class RagasMetric(ABC):
-    """Base for metrics that delegate scoring to a single Ragas metric.
+class LLMJudgeMetric(ABC):
+    """Base for metrics that ask the NVIDIA NIM judge LLM to score a sample directly.
 
-    Subclasses must set "_metric_name" and implement "_get_ragas_metric()".
-    Override "_pre_checks()" to add early-exit guards before the Ragas call.
+    Subclasses must set "_metric_name", and implement "_build_prompt()" (what
+    to ask the judge) and "_parse_response()" (how to turn its answer into a
+    [0, 1] score). Override "_pre_checks()" to add early-exit guards before
+    the judge call.
     """
 
     _metric_name: str
@@ -92,7 +98,7 @@ class RagasMetric(ABC):
         for early_exit in self._pre_checks(sample):
             return early_exit
         try:
-            raw = self._ragas_score(sample)
+            raw = self._judge_score(sample)
             return EvalResult.make(self._metric_name, raw, self.threshold)
         except Exception as exc:
             logger.warning("%s scoring failed: %s", type(self).__name__, exc)
@@ -105,12 +111,16 @@ class RagasMetric(ABC):
         """Return a zero-score EvalResult for use in pre-check guards."""
         return EvalResult.make(self._metric_name, 0.0, self.threshold, details=details)
 
-    def _ragas_score(self, sample: EvalSample) -> float:
-        from ragas import evaluate
+    def _judge_score(self, sample: EvalSample) -> float:
+        from src.evals.generation.nim_judge import build_nim_judge_llm
 
-        dataset = _make_ragas_dataset(sample)
-        result = evaluate(dataset, metrics=[self._get_ragas_metric()])
-        return float(result[self._metric_name])
+        judge = build_nim_judge_llm()
+        prompt = self._build_prompt(sample)
+        response = judge.generate(prompt=prompt, context="")
+        return self._parse_response(sample, response)
 
     @abstractmethod
-    def _get_ragas_metric(self) -> object: ...
+    def _build_prompt(self, sample: EvalSample) -> str: ...
+
+    @abstractmethod
+    def _parse_response(self, sample: EvalSample, response: str) -> float: ...

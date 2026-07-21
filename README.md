@@ -244,7 +244,7 @@ flowchart LR
 | Linting | [Ruff](https://docs.astral.sh/ruff/) + [mypy](https://mypy-lang.org/) + [basedpyright](https://docs.basedpyright.com/) |
 | Tracing | [OpenTelemetry](https://opentelemetry.io/) |
 | Metrics | [Prometheus](https://prometheus.io/) |
-| Evaluation | [Ragas](https://docs.ragas.io/) + [DeepEval](https://docs.confident-ai.com/) |
+| Evaluation | Faithfulness/Relevance/ContextPrecision judged directly via NVIDIA NIM (#103/#104, no ragas — see below); Hallucination via [DeepEval](https://docs.confident-ai.com/) |
 
 ---
 
@@ -3802,9 +3802,9 @@ flowchart LR
     end
 
     subgraph GEN2["🧪 Generation Evals (T-042)"]
-        QA3[("QA Dataset")] --> F["Faithfulness<br/>Ragas"]
-        QA3 --> RV["Relevance<br/>Ragas"]
-        QA3 --> CP["Context Precision<br/>Ragas"]
+        QA3[("QA Dataset")] --> F["Faithfulness<br/>NVIDIA NIM judge"]
+        QA3 --> RV["Relevance<br/>NVIDIA NIM judge"]
+        QA3 --> CP["Context Precision<br/>NVIDIA NIM judge"]
         QA3 --> H["Hallucination<br/>DeepEval"]
         F & RV & CP & H --> GR["Pass / Fail<br/>per threshold"]
     end

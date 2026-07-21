@@ -4,10 +4,12 @@ Run with:
     uv run pytest tests/benchmarks/test_generation_evals.py -v -s
 
 Requires:
-    uv run pip install ragas datasets deepeval (or: uv sync --extra evals)
+    Faithfulness/Relevance/ContextPrecision: LLM__NVIDIA_NIM__API_KEY set (#103/#104
+    — these judge directly via NVIDIA NIM, no ragas dependency).
+    Hallucination: uv run pip install deepeval (or: uv sync --extra evals)
     Golden QA dataset populated via T-040
 
-Skipped automatically when dependencies or data are missing.
+Skipped automatically when dependencies/credentials or data are missing.
 """
 
 from __future__ import annotations
@@ -21,15 +23,10 @@ from src.core.constants import DATASETS_DIR
 _QA_PATH = DATASETS_DIR / "goldens" / "qa_dataset.json"
 
 
-def _ragas_available() -> bool:
-    try:
-        import ragas  # noqa: F401
+def _nim_judge_available() -> bool:
+    from src.core.settings import settings
 
-        import datasets  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return bool(settings.llm.nvidia_nim.api_key.get_secret_value())
 
 
 def _deepeval_available() -> bool:
@@ -52,7 +49,7 @@ def _load_qa() -> list[dict[str, object]]:
 
 
 _QA_DATA = _load_qa()
-_HAS_RAGAS = _ragas_available()
+_HAS_NIM_JUDGE = _nim_judge_available()
 _HAS_DEEPEVAL = _deepeval_available()
 
 pytestmark = pytest.mark.skipif(
@@ -84,7 +81,7 @@ def samples():
     ]
 
 
-@pytest.mark.skipif(not _HAS_RAGAS, reason="ragas not installed (pip install ragas datasets)")
+@pytest.mark.skipif(not _HAS_NIM_JUDGE, reason="LLM__NVIDIA_NIM__API_KEY not set")
 class TestFaithfulnessBenchmark:
     def test_faithfulness_scores_all_samples(self, samples):
         from src.evals.generation.faithfulness import FaithfulnessMetric

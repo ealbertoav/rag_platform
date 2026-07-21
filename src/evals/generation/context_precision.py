@@ -3,14 +3,35 @@ from __future__ import annotations
 from typing import override
 
 from src.domain.entities.evaluation import EvalSample
-from src.evals.generation import EvalResult, RagasMetric, parametric_eval_result
+from src.evals.generation import (
+    EvalResult,
+    LLMJudgeMetric,
+    extract_json_object,
+    parametric_eval_result,
+)
+
+_PROMPT_TEMPLATE = """You are evaluating which retrieved passages are actually relevant \
+to answering a question.
+
+Question: {question}
+
+Passages (in retrieval order):
+{passages}
+
+For each passage, determine whether it is relevant to answering the question \
+(true) or not relevant / noise (false).
+
+Respond with ONLY a JSON object in this exact shape, no other text — one \
+boolean per passage, in the same order:
+{{"relevant": [true|false, ...]}}"""
 
 
-class ContextPrecisionMetric(RagasMetric):
+class ContextPrecisionMetric(LLMJudgeMetric):
     """Measures what fraction of retrieved chunks are relevant to the question.
 
-    Uses Ragas ``context_precision`` (LLM-as-judge).
-    Score is in [0, 1]; higher = more precise context (less noise).
+    Asks the NVIDIA NIM judge (#103/#104) to judge each retrieved passage's
+    relevance directly. Score is the fraction judged relevant, in [0, 1];
+    higher = more precise context (less noise).
     """
 
     _metric_name: str = "context_precision"
@@ -30,7 +51,19 @@ class ContextPrecisionMetric(RagasMetric):
         return []
 
     @override
-    def _get_ragas_metric(self) -> object:
-        from ragas.metrics import context_precision
+    def _build_prompt(self, sample: EvalSample) -> str:
+        passages = "\n".join(f"[{i}] {chunk}" for i, chunk in enumerate(sample.retrieved_chunks))
+        return _PROMPT_TEMPLATE.format(question=sample.question, passages=passages)
 
-        return context_precision
+    @override
+    def _parse_response(self, sample: EvalSample, response: str) -> float:
+        payload = extract_json_object(response)
+        relevant = payload.get("relevant")
+        if not isinstance(relevant, list) or not relevant:
+            raise ValueError(f"Judge response missing 'relevant' list: {response!r}")
+        if len(relevant) != len(sample.retrieved_chunks):
+            raise ValueError(
+                f"Judge returned {len(relevant)} verdicts for "
+                f"{len(sample.retrieved_chunks)} passages: {response!r}"
+            )
+        return sum(1 for v in relevant if v is True) / len(relevant)

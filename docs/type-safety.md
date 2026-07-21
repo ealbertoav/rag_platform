@@ -22,14 +22,14 @@ These modules lack complete stubs or have union types mypy cannot resolve under 
 
 | Module pattern | Reason | Removal plan |
 |----------------|--------|--------------|
-| `datasets.*`, `ragas.*`, `deepeval.*` | Optional eval dependencies; lazy imports inside metric runners | Upstream stubs or narrow per-function overrides when Ragas/DeepEval ship typed APIs |
+| `deepeval.*` | Optional eval dependency; lazy imports inside metric runners | Upstream stubs or narrow per-function overrides when DeepEval ships a typed API |
 | `FlagEmbedding.*` | BGE-M3 encode return type is `Any` in stubs | Cast at call site (done in `bge_m3.py`); drop override when FlagEmbedding types encode() |
 | `llama_cpp.*` | Chat completion stream unions not expressible in stubs | Cast at call site (done in `llama_cpp_provider.py`); drop override when llama-cpp-python stubs improve |
 | `rank_bm25.*` | Legacy BM25 library without stubs | Wrap in typed adapter or contribute stubs |
 | `redis`, `redis.*` | Partial typing; connection errors are a wide union | Typed `Redis` import under `TYPE_CHECKING` (done in `cached_embedding_provider.py`) |
 | `openai.*`, `voyageai.*`, `cohere.*`, `google.*` | SDK kwargs and response shapes vary by version | Cast at API boundaries (done in provider modules) |
 | `src.infrastructure.llm.llama_cpp_provider` | Historical blanket override; kept until llama-cpp stubs stabilize | Re-evaluate after llama-cpp-python ≥ stub refresh |
-| `src.evals.generation.faithfulness`, `relevance`, `hallucination` | Ragas metric objects are dynamically imported | Remove when Ragas exports typed metric classes |
+| `src.evals.generation.hallucination` | DeepEval metric objects are dynamically imported | Remove when DeepEval exports typed metric classes |
 
 ## Replacement patterns (former ignores → fix)
 
