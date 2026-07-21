@@ -180,7 +180,7 @@ class RetrievalService:
 
         # 6. Contextual compression (optional)
         with _tracer.start_as_current_span("retrieval.compression") as span:
-            chunks = await asyncio.to_thread(self._compress, query.text, chunks, strategy)
+            chunks = await self._compress(query.text, chunks, strategy)
             span.set_attribute("chunk_count", len(chunks))
 
         # 7. Final top-K cap
@@ -365,7 +365,7 @@ class RetrievalService:
             return None
         return [vector for vector in resolved if vector is not None]
 
-    def _compress(
+    async def _compress(
         self,
         query_text: str,
         chunks: list[Chunk],
@@ -375,4 +375,4 @@ class RetrievalService:
             return chunks
         if self._compressor is None or not chunks:
             return chunks
-        return self._compressor.compress(query_text, chunks)
+        return await self._compressor.compress(query_text, chunks)

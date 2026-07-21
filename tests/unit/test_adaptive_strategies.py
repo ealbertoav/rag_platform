@@ -100,7 +100,7 @@ class TestRetrievalServiceAdaptiveStrategies:
         expander = MagicMock()
         expander.expand.side_effect = lambda q, n_variants=None: q
         compressor = MagicMock()
-        compressor.compress.return_value = [chunk]
+        compressor.compress = AsyncMock(return_value=[chunk])
 
         registry = AdaptiveStrategyRegistry()
         svc = RetrievalService(

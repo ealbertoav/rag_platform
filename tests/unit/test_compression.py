@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.core.constants import CHUNK_PARENT_ID_KEY, CHUNK_RAW_TEXT_KEY, PARENT_CONTEXT_TEXT_KEY
 from src.domain.entities.chunk import Chunk
@@ -90,70 +90,86 @@ class TestTruncateToTokens:
 
 
 class TestCompressDisabled:
-    def test_returns_chunks_unchanged(self):
+    async def test_returns_chunks_unchanged(self):
         chunks = _chunks(3)
         comp = _compressor(enabled=False)
-        result = comp.compress("q", chunks)
+        result = await comp.compress("q", chunks)
         assert result is chunks
 
-    def test_no_llm_call(self):
+    async def test_no_llm_call(self):
         comp = _compressor(enabled=False)
-        comp.compress("q", _chunks(2))
+        await comp.compress("q", _chunks(2))
         comp._llm.generate.assert_not_called()  # type: ignore[attr-defined]
 
-    def test_empty_chunks_returns_empty(self):
-        assert _compressor().compress("q", []) == []
+    async def test_empty_chunks_returns_empty(self):
+        assert await _compressor().compress("q", []) == []
 
 
 class TestCompressEnabled:
-    def test_returns_list_of_chunks(self):
-        result = _compressor().compress("q", _chunks(2))
+    async def test_returns_list_of_chunks(self):
+        result = await _compressor().compress("q", _chunks(2))
         assert isinstance(result, list)
         assert all(isinstance(c, Chunk) for c in result)
 
-    def test_text_replaced_with_extraction(self):
-        result = _compressor("Relevant extract.").compress("q", [_chunk(0)])
+    async def test_text_replaced_with_extraction(self):
+        result = await _compressor("Relevant extract.").compress("q", [_chunk(0)])
         assert result[0].text == "Relevant extract."
 
-    def test_chunk_id_preserved(self):
+    async def test_chunk_id_preserved(self):
         chunks = [_chunk(7, "some text")]
-        result = _compressor("extracted").compress("q", chunks)
+        result = await _compressor("extracted").compress("q", chunks)
         assert result[0].id == "c7"
 
-    def test_original_chunk_immutable(self):
+    async def test_original_chunk_immutable(self):
         original = _chunk(0, "original text")
-        _compressor("new text").compress("q", [original])
+        await _compressor("new text").compress("q", [original])
         assert original.text == "original text"
 
-    def test_output_respects_max_tokens(self):
+    async def test_output_respects_max_tokens(self):
         long_extract = "word " * 200  # ~50 tokens
         comp = _compressor(response=long_extract, max_tokens=30)
-        result = comp.compress("q", _chunks(5, text="word " * 40))
+        result = await comp.compress("q", _chunks(5, text="word " * 40))
         assert total_tokens(result) <= 30
 
-    def test_chunks_beyond_budget_dropped(self):
+    async def test_chunks_beyond_budget_dropped(self):
         # Each chunk extraction is ~50 tokens; budget = 60 → only 1 fits
         comp = _compressor(response="word " * 200, max_tokens=60)
-        result = comp.compress("q", _chunks(5))
+        result = await comp.compress("q", _chunks(5))
         assert len(result) < 5
 
-    def test_llm_failure_falls_back_to_original(self):
+    async def test_llm_failure_falls_back_to_original(self):
         comp = _compressor()
         comp._llm.generate.side_effect = RuntimeError("LLM down")  # type: ignore[attr-defined]
         original_text = "original chunk text"
-        result = comp.compress("q", [_chunk(0, original_text)])
+        result = await comp.compress("q", [_chunk(0, original_text)])
         assert result[0].text == original_text
 
-    def test_empty_llm_response_falls_back_to_original(self):
-        result = _compressor(response="").compress("q", [_chunk(0, "original")])
+    async def test_empty_llm_response_falls_back_to_original(self):
+        result = await _compressor(response="").compress("q", [_chunk(0, "original")])
         assert result[0].text == "original"
 
-    def test_calls_llm_once_per_chunk(self):
+    async def test_calls_llm_once_per_chunk(self):
         comp = _compressor()
-        comp.compress("q", _chunks(3))
+        await comp.compress("q", _chunks(3))
         assert comp._llm.generate.call_count == 3  # type: ignore[attr-defined]
 
-    def test_syncs_raw_text_after_compression(self):
+    async def test_extractions_run_concurrently(self):
+        """#87 — per-chunk extraction latency must not stack sequentially."""
+        import time
+
+        def _slow_extract(query: str, chunk: Chunk) -> str:
+            time.sleep(0.05)
+            return "extracted"
+
+        comp = _compressor()
+        with patch.object(comp, "_extract", side_effect=_slow_extract):
+            t0 = time.monotonic()
+            await comp.compress("q", _chunks(5))
+            elapsed = time.monotonic() - t0
+        # Sequential would take ~0.25s; concurrent should stay well under that.
+        assert elapsed < 0.2
+
+    async def test_syncs_raw_text_after_compression(self):
         """CCH stores the pre-compression body in raw_text; compression must update it."""
         chunk = Chunk(
             id="c0",
@@ -161,12 +177,12 @@ class TestCompressEnabled:
             text="[Document: report.pdf | Section: Revenue | Page: 1]\nLong original body.",
             metadata={CHUNK_RAW_TEXT_KEY: "Long original body."},
         )
-        result = _compressor("Short extract.").compress("q", [chunk])
+        result = await _compressor("Short extract.").compress("q", [chunk])
         assert result[0].text == "Short extract."
         assert result[0].metadata[CHUNK_RAW_TEXT_KEY] == "Short extract."
         assert chunk_context_text(result[0]) == "Short extract."
 
-    def test_syncs_parent_context_text_after_compression(self):
+    async def test_syncs_parent_context_text_after_compression(self):
         """Parent-expanded chunks must keep metadata in sync so LLM context is compressed."""
         chunk = Chunk(
             id="child-0",
@@ -177,12 +193,12 @@ class TestCompressEnabled:
                 PARENT_CONTEXT_TEXT_KEY: "Full parent passage with lots of detail.",
             },
         )
-        result = _compressor("Compressed parent excerpt.").compress("q", [chunk])
+        result = await _compressor("Compressed parent excerpt.").compress("q", [chunk])
         assert result[0].text == "Compressed parent excerpt."
         assert result[0].metadata[PARENT_CONTEXT_TEXT_KEY] == "Compressed parent excerpt."
         assert chunk_context_text(result[0]) == "Compressed parent excerpt."
 
-    def test_sibling_parent_context_compresses_once(self):
+    async def test_sibling_parent_context_compresses_once(self):
         parent_text = "Full parent passage with lots of detail."
         siblings = [
             Chunk(
@@ -205,7 +221,7 @@ class TestCompressEnabled:
             ),
         ]
         comp = _compressor("Compressed parent excerpt.")
-        result = comp.compress("q", siblings)
+        result = await comp.compress("q", siblings)
         assert len(result) == 2
         assert [c.id for c in result] == ["child-0", "child-1"]
         parent_ctx_a = result[0].metadata[PARENT_CONTEXT_TEXT_KEY]
@@ -213,7 +229,7 @@ class TestCompressEnabled:
         assert parent_ctx_a == parent_ctx_b
         assert comp._llm.generate.call_count == 1  # type: ignore[attr-defined]
 
-    def test_sibling_parent_context_kept_when_budget_exhausted(self):
+    async def test_sibling_parent_context_kept_when_budget_exhausted(self):
         parent_text = "Full parent passage with lots of detail."
         siblings = [
             Chunk(
@@ -237,12 +253,12 @@ class TestCompressEnabled:
         ]
         long_extract = "word " * 200
         comp = _compressor(response=long_extract, max_tokens=60)
-        result = comp.compress("q", siblings)
+        result = await comp.compress("q", siblings)
         assert len(result) == 2
         assert [c.id for c in result] == ["child-0", "child-1"]
         assert comp._llm.generate.call_count == 1  # type: ignore[attr-defined]
 
-    def test_parent_hit_and_enriched_child_compress_once(self):
+    async def test_parent_hit_and_enriched_child_compress_once(self):
         parent_text = "Full parent passage with lots of detail."
         chunks = [
             Chunk(
@@ -261,7 +277,7 @@ class TestCompressEnabled:
             ),
         ]
         comp = _compressor("Compressed parent excerpt.")
-        result = comp.compress("q", chunks)
+        result = await comp.compress("q", chunks)
         assert len(result) == 2
         assert [c.id for c in result] == ["parent-0", "child-0"]
         assert result[0].text == result[1].text == "Compressed parent excerpt."
@@ -289,7 +305,7 @@ class TestTypeRegressionFixtures:
         total, truncated, count = check_token_reducer_types(_chunks(2))
         assert total > 0 and truncated and count > 0
 
-    def test_compressor_returns_typed_chunks(self) -> None:
-        result = check_compressor_returns_chunks(_compressor(), "query", _chunks(1))
+    async def test_compressor_returns_typed_chunks(self) -> None:
+        result = await check_compressor_returns_chunks(_compressor(), "query", _chunks(1))
         assert len(result) == 1
         assert isinstance(result[0].text, str)

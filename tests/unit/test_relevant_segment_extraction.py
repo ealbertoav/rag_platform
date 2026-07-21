@@ -299,7 +299,7 @@ class TestRetrievalServiceRSE:
     async def test_rse_runs_before_compression(self):
         chunks = [_chunk("c0", text="part one", chunk_index=0)]
         compressor = MagicMock()
-        compressor.compress.side_effect = lambda _q, cs: cs
+        compressor.compress = AsyncMock(side_effect=lambda _q, cs: cs)
 
         svc = RetrievalService(
             dense_retriever=MagicMock(),

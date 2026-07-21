@@ -282,7 +282,7 @@ class TestRetrievalServiceParentContext:
         parent = _chunk("parent-0", text="parent body.")
         lookup = _StubLookup({"parent-0": parent})
         compressor = MagicMock()
-        compressor.compress.side_effect = lambda _q, cs: cs
+        compressor.compress = AsyncMock(side_effect=lambda _q, cs: cs)
 
         result = await _retrieve(
             _parent_context_service(
@@ -306,18 +306,20 @@ class TestRetrievalServiceParentContext:
         parent = _chunk("parent-0", text="full parent context passage with extra detail.")
         lookup = _StubLookup({"parent-0": parent})
         compressor = MagicMock()
-        compressor.compress.side_effect = lambda _q, cs: [
-            c.model_copy(
-                update={
-                    "text": "compressed parent excerpt.",
-                    "metadata": {
-                        **c.metadata,
-                        PARENT_CONTEXT_TEXT_KEY: "compressed parent excerpt.",
-                    },
-                }
-            )
-            for c in cs
-        ]
+        compressor.compress = AsyncMock(
+            side_effect=lambda _q, cs: [
+                c.model_copy(
+                    update={
+                        "text": "compressed parent excerpt.",
+                        "metadata": {
+                            **c.metadata,
+                            PARENT_CONTEXT_TEXT_KEY: "compressed parent excerpt.",
+                        },
+                    }
+                )
+                for c in cs
+            ]
+        )
 
         result = await _retrieve(
             _parent_context_service(

@@ -62,7 +62,7 @@ def _service(
     compressor = MagicMock() if with_compressor else None
     if compressor:
         compressed = [c.model_copy(update={"text": "compressed"}) for c in chunks[:2]]
-        compressor.compress.return_value = compressed
+        compressor.compress = AsyncMock(return_value=compressed)
 
     return RetrievalService(
         dense_retriever=_dense_mock(),
