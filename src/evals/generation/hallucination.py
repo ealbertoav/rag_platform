@@ -38,9 +38,13 @@ class HallucinationMetric:
                 details="Empty generated answer",
             )
         if not sample.retrieved_chunks:
+            # No context to check the answer against — e.g. CRAG's web-only fallback
+            # (T-142) or a correct "I don't have information about this" refusal.
+            # Not evaluable, not a hallucination: treat like a parametric answer
+            # rather than assuming the worst case.
             return EvalResult.make(
                 _METRIC,
-                1.0,
+                0.0,
                 self.threshold,
                 higher_is_better=False,
                 details="No context to verify against",

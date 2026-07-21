@@ -27,10 +27,14 @@ def _sample(
     generated: str = "EKS is a managed Kubernetes service from AWS.",
     chunks: list[str] | None = None,
 ) -> EvalSample:
+    # `chunks is None` (not `not chunks`) so callers can pass chunks=[] to test
+    # the empty-context guard paths without it falling back to the default.
     return EvalSample(
         question=question,
         expected_answer=expected,
-        retrieved_chunks=chunks or ["EKS is Amazon Elastic Kubernetes Service."],
+        retrieved_chunks=["EKS is Amazon Elastic Kubernetes Service."]
+        if chunks is None
+        else chunks,
         generated_answer=generated,
     )
 
@@ -182,10 +186,13 @@ class TestHallucinationMetric:
         assert result.score == pytest.approx(0.0)
         assert result.passed is True
 
-    def test_no_context_fails(self):
+    def test_no_context_is_neutral_not_worst_case(self):
+        """#91 — empty retrieved_chunks (e.g. CRAG web-only fallback) is not evaluable,
+        not a hallucination; must not score as if maximally hallucinated."""
         result = HallucinationMetric().score(_sample(chunks=[]))
-        assert result.score == pytest.approx(1.0)
-        assert result.passed is False
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is True
+        assert result.details == "No context to verify against"
 
     def test_parametric_answer_skips_context_penalty(self):
         sample = EvalSample(

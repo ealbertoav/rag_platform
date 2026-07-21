@@ -932,7 +932,8 @@ class TestGenerationMetricPreChecks:
             retrieved_chunks=[],
         )
         result = HallucinationMetric().score(sample)
-        assert result.score == 1.0
+        assert result.score == 0.0
+        assert result.passed is True
         assert result.details == "No context to verify against"
 
 
