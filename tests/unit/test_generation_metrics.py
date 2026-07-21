@@ -1,4 +1,4 @@
-"""T-042 — Generation metric unit tests (Ragas/DeepEval mocked)."""
+"""T-042 — Generation metric unit tests (NVIDIA NIM judge / DeepEval mocked)."""
 
 from __future__ import annotations
 
@@ -7,15 +7,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.domain.entities.evaluation import EvalSample
-from src.evals.generation import EvalResult, GenerationMetric
+from src.evals.generation import EvalResult, GenerationMetric, extract_json_object
 from src.evals.generation.context_precision import ContextPrecisionMetric
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.evals.generation.hallucination import HallucinationMetric
 from src.evals.generation.relevance import RelevanceMetric
 
-# Patch paths — extracted to avoid long lines in each test.
-_FAITH = "src.evals.generation.faithfulness.FaithfulnessMetric._ragas_score"
-_RELEV = "src.evals.generation.relevance.RelevanceMetric._ragas_score"
+# Patch paths — extracted to avoid long lines in each test. `_judge_score` is the
+# seam shared by every LLMJudgeMetric subclass; mocking it isolates EvalResult/
+# threshold wrapping from prompt-building and response-parsing (tested separately
+# below, per metric).
+_FAITH = "src.evals.generation.faithfulness.FaithfulnessMetric._judge_score"
+_RELEV = "src.evals.generation.relevance.RelevanceMetric._judge_score"
+_CTX_PREC = "src.evals.generation.context_precision.ContextPrecisionMetric._judge_score"
 _HALLU = "src.evals.generation.hallucination.HallucinationMetric._deepeval_score"
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -66,6 +70,40 @@ class TestEvalResult:
         assert r.details == "all good"
 
 
+class TestParametricEvalResult:
+    def test_higher_is_better(self):
+        from src.evals.generation import parametric_eval_result
+
+        result = parametric_eval_result("faithfulness", threshold=0.8)
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is True
+        assert "Parametric answer" in result.details
+
+    def test_lower_is_better(self):
+        from src.evals.generation import parametric_eval_result
+
+        low = parametric_eval_result("hallucination", threshold=0.1, higher_is_better=False)
+        assert low.score == pytest.approx(0.0)
+        assert low.passed is True
+
+
+class TestExtractJsonObject:
+    def test_extracts_clean_json(self):
+        assert extract_json_object('{"score": 0.5}') == {"score": 0.5}
+
+    def test_extracts_json_wrapped_in_prose(self):
+        text = 'Sure, here is my answer:\n{"score": 0.9}\nLet me know if you need more.'
+        assert extract_json_object(text) == {"score": 0.9}
+
+    def test_raises_when_no_braces_found(self):
+        with pytest.raises(ValueError, match="No JSON object found"):
+            extract_json_object("no json here")
+
+    def test_raises_when_top_level_is_not_an_object(self):
+        with pytest.raises(ValueError):
+            extract_json_object("[1, 2, 3]")
+
+
 # ── GenerationMetric protocol ──────────────────────────────────────────────────
 
 
@@ -80,6 +118,10 @@ class TestProtocol:
 
     def test_hallucination_satisfies_protocol(self):
         m: GenerationMetric = HallucinationMetric()
+        assert callable(m.score)
+
+    def test_context_precision_satisfies_protocol(self):
+        m: GenerationMetric = ContextPrecisionMetric()
         assert callable(m.score)
 
 
@@ -112,12 +154,11 @@ class TestFaithfulnessMetric:
         assert result.score == pytest.approx(0.0)
 
     def test_parametric_answer_skips_context_guard(self):
-        sample = _sample(chunks=[], generated="Hello!")
         sample = EvalSample(
-            question=sample.question,
-            expected_answer=sample.expected_answer,
+            question="hello",
+            expected_answer="hi",
             retrieved_chunks=[],
-            generated_answer=sample.generated_answer,
+            generated_answer="Hello!",
             parametric_answer=True,
         )
         result = FaithfulnessMetric().score(sample)
@@ -125,7 +166,7 @@ class TestFaithfulnessMetric:
         assert result.passed is True
         assert "Parametric answer" in result.details
 
-    def test_ragas_failure_returns_zero(self):
+    def test_judge_failure_returns_zero(self):
         with patch(_FAITH, side_effect=RuntimeError("API error")):
             result = FaithfulnessMetric().score(_sample())
         assert result.score == pytest.approx(0.0)
@@ -136,6 +177,28 @@ class TestFaithfulnessMetric:
         with patch(_FAITH, return_value=0.9):
             result = FaithfulnessMetric().score(_sample())
         assert result.metric == "faithfulness"
+
+    def test_prompt_includes_question_context_and_answer(self):
+        sample = _sample()
+        prompt = FaithfulnessMetric()._build_prompt(sample)
+        assert sample.question in prompt
+        assert sample.generated_answer in prompt
+        assert sample.retrieved_chunks[0] in prompt
+
+    def test_parse_response_computes_supported_fraction(self):
+        response = (
+            '{"claims": [{"claim": "a", "supported": true}, {"claim": "b", "supported": false}]}'
+        )
+        score = FaithfulnessMetric()._parse_response(_sample(), response)
+        assert score == pytest.approx(0.5)
+
+    def test_parse_response_no_claims_is_vacuously_faithful(self):
+        score = FaithfulnessMetric()._parse_response(_sample(), '{"claims": []}')
+        assert score == pytest.approx(1.0)
+
+    def test_parse_response_raises_on_missing_claims_key(self):
+        with pytest.raises(ValueError, match="claims"):
+            FaithfulnessMetric()._parse_response(_sample(), '{"other": []}')
 
 
 # ── RelevanceMetric ────────────────────────────────────────────────────────────
@@ -156,8 +219,8 @@ class TestRelevanceMetric:
         result = RelevanceMetric().score(_sample(generated=""))
         assert result.score == pytest.approx(0.0)
 
-    def test_ragas_failure_returns_zero(self):
-        with patch(_RELEV, side_effect=ImportError("ragas not installed")):
+    def test_judge_failure_returns_zero(self):
+        with patch(_RELEV, side_effect=RuntimeError("judge unavailable")):
             result = RelevanceMetric().score(_sample())
         assert result.score == pytest.approx(0.0)
 
@@ -165,6 +228,24 @@ class TestRelevanceMetric:
         with patch(_RELEV, return_value=0.8):
             result = RelevanceMetric().score(_sample())
         assert result.metric == "answer_relevancy"
+
+    def test_prompt_includes_question_and_answer(self):
+        sample = _sample()
+        prompt = RelevanceMetric()._build_prompt(sample)
+        assert sample.question in prompt
+        assert sample.generated_answer in prompt
+
+    def test_parse_response_extracts_score(self):
+        score = RelevanceMetric()._parse_response(_sample(), '{"score": 0.65}')
+        assert score == pytest.approx(0.65)
+
+    def test_parse_response_clamps_out_of_range_score(self):
+        assert RelevanceMetric()._parse_response(_sample(), '{"score": 1.5}') == pytest.approx(1.0)
+        assert RelevanceMetric()._parse_response(_sample(), '{"score": -0.5}') == pytest.approx(0.0)
+
+    def test_parse_response_raises_on_non_numeric_score(self):
+        with pytest.raises(ValueError, match="score"):
+            RelevanceMetric()._parse_response(_sample(), '{"score": "high"}')
 
 
 # ── HallucinationMetric ────────────────────────────────────────────────────────
@@ -218,9 +299,29 @@ class TestHallucinationMetric:
         assert result.metric == "hallucination"
 
 
-# ── ContextPrecisionMetric ────────────────────────────────────────────────────
+class TestHallucinationDeepeval:
+    def test_deepeval_score_path(self):
+        mock_metric = MagicMock()
+        mock_metric.score = 0.05
+        fake_hm = MagicMock(return_value=mock_metric)
+        fake_test_case = MagicMock()
+        fake_deepeval = MagicMock(
+            metrics=MagicMock(HallucinationMetric=fake_hm),
+            test_case=MagicMock(LLMTestCase=fake_test_case),
+        )
+        with patch.dict(
+            "sys.modules",
+            {
+                "deepeval": fake_deepeval,
+                "deepeval.metrics": fake_deepeval.metrics,
+                "deepeval.test_case": fake_deepeval.test_case,
+            },
+        ):
+            raw = HallucinationMetric(threshold=0.1)._deepeval_score(_sample())
+        assert raw == pytest.approx(0.05)
 
-_CTX_PREC = "src.evals.generation.context_precision.ContextPrecisionMetric._ragas_score"
+
+# ── ContextPrecisionMetric ────────────────────────────────────────────────────
 
 
 class TestContextPrecisionMetric:
@@ -264,8 +365,8 @@ class TestContextPrecisionMetric:
         result = ContextPrecisionMetric().score(_sample(question=""))
         assert result.score == pytest.approx(0.0)
 
-    def test_ragas_failure_returns_zero(self):
-        with patch(_CTX_PREC, side_effect=ImportError("ragas not installed")):
+    def test_judge_failure_returns_zero(self):
+        with patch(_CTX_PREC, side_effect=RuntimeError("judge unavailable")):
             result = ContextPrecisionMetric().score(_sample())
         assert result.score == pytest.approx(0.0)
         assert result.details != ""
@@ -275,77 +376,26 @@ class TestContextPrecisionMetric:
             result = ContextPrecisionMetric().score(_sample())
         assert result.metric == "context_precision"
 
+    def test_prompt_includes_question_and_indexed_passages(self):
+        sample = _sample(chunks=["passage one", "passage two"])
+        prompt = ContextPrecisionMetric()._build_prompt(sample)
+        assert sample.question in prompt
+        assert "[0] passage one" in prompt
+        assert "[1] passage two" in prompt
 
-# ── Ragas infrastructure ───────────────────────────────────────────────────────
-
-
-class TestRagasInfrastructure:
-    def test_parametric_eval_result(self):
-        from src.evals.generation import parametric_eval_result
-
-        result = parametric_eval_result("faithfulness", threshold=0.8)
-        assert result.score == pytest.approx(1.0)
-        assert result.passed is True
-        assert "Parametric answer" in result.details
-
-        low = parametric_eval_result("hallucination", threshold=0.1, higher_is_better=False)
-        assert low.score == pytest.approx(0.0)
-        assert low.passed is True
-
-    def test_make_ragas_dataset(self):
-        from src.evals.generation import _make_ragas_dataset
-
-        mock_from_dict = MagicMock()
-        mock_dataset = MagicMock(from_dict=mock_from_dict)
-        with patch.dict("sys.modules", {"datasets": MagicMock(Dataset=mock_dataset)}):
-            _make_ragas_dataset(_sample())
-
-        mock_from_dict.assert_called_once()
-        call_kwargs = mock_from_dict.call_args[0][0]
-        assert call_kwargs["question"] == [_sample().question]
-
-    def test_get_ragas_metric_imports_faithfulness(self):
-        fake_metrics = MagicMock()
-        fake_metrics.faithfulness = MagicMock(name="faithfulness")
-        fake_ragas = MagicMock(metrics=fake_metrics)
-        with patch.dict("sys.modules", {"ragas": fake_ragas, "ragas.metrics": fake_metrics}):
-            metric = FaithfulnessMetric()._get_ragas_metric()
-        assert metric is fake_metrics.faithfulness
-
-    def test_get_ragas_metric_imports_relevance(self):
-        fake_metrics = MagicMock()
-        fake_metrics.answer_relevancy = MagicMock(name="answer_relevancy")
-        fake_ragas = MagicMock(metrics=fake_metrics)
-        with patch.dict("sys.modules", {"ragas": fake_ragas, "ragas.metrics": fake_metrics}):
-            metric = RelevanceMetric()._get_ragas_metric()
-        assert metric is fake_metrics.answer_relevancy
-
-    def test_get_ragas_metric_imports_context_precision(self):
-        fake_metrics = MagicMock()
-        fake_metrics.context_precision = MagicMock(name="context_precision")
-        fake_ragas = MagicMock(metrics=fake_metrics)
-        with patch.dict("sys.modules", {"ragas": fake_ragas, "ragas.metrics": fake_metrics}):
-            metric = ContextPrecisionMetric()._get_ragas_metric()
-        assert metric is fake_metrics.context_precision
-
-
-class TestHallucinationDeepeval:
-    def test_deepeval_score_path(self):
-        mock_metric = MagicMock()
-        mock_metric.score = 0.05
-        fake_hm = MagicMock(return_value=mock_metric)
-        fake_test_case = MagicMock()
-        fake_deepeval = MagicMock(
-            metrics=MagicMock(HallucinationMetric=fake_hm),
-            test_case=MagicMock(LLMTestCase=fake_test_case),
+    def test_parse_response_computes_relevant_fraction(self):
+        score = ContextPrecisionMetric()._parse_response(
+            _sample(chunks=["a", "b"]), '{"relevant": [true, false]}'
         )
-        with patch.dict(
-            "sys.modules",
-            {
-                "deepeval": fake_deepeval,
-                "deepeval.metrics": fake_deepeval.metrics,
-                "deepeval.test_case": fake_deepeval.test_case,
-            },
-        ):
-            raw = HallucinationMetric(threshold=0.1)._deepeval_score(_sample())
-        assert raw == pytest.approx(0.05)
+        assert score == pytest.approx(0.5)
+
+    def test_parse_response_raises_on_empty_relevant_list(self):
+        with pytest.raises(ValueError, match="relevant"):
+            ContextPrecisionMetric()._parse_response(_sample(), '{"relevant": []}')
+
+    def test_parse_response_raises_on_verdict_count_mismatch(self):
+        """A judge that skips/duplicates a passage must not silently mis-score (#104 review)."""
+        with pytest.raises(ValueError, match="2 verdicts for 3 passages"):
+            ContextPrecisionMetric()._parse_response(
+                _sample(chunks=["a", "b", "c"]), '{"relevant": [true, false]}'
+            )

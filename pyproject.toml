@@ -68,27 +68,6 @@ dependency-metadata = [
         "diskcache-weave>=5.6.3.post1",
         "jinja2>=2.11.3",
     ]},
-    { name = "ragas", requires-dist = [
-        "appdirs",
-        "datasets",
-        "diskcache-weave>=5.6.3.post1",
-        "instructor",
-        "langchain",
-        "langchain-community",
-        "langchain-core",
-        "langchain-openai",
-        "nest-asyncio",
-        "networkx",
-        "numpy",
-        "openai",
-        "pillow",
-        "pydantic",
-        "rich",
-        "scikit-network",
-        "tiktoken",
-        "tqdm",
-        "typer",
-    ]},
     { name = "deepeval", requires-dist = [
         "requests",
         "tqdm",
@@ -147,9 +126,16 @@ api-llm = [
     "openai>=1.0.0",
 ]
 evals = [
-    "ragas>=0.1.20",
     "deepeval>=0.21.0",
-    "datasets>=2.20.0",
+    # Faithfulness/Relevance/ContextPrecision judge directly via NVIDIA NIM's
+    # OpenAI-compatible API (#103/#104) — no ragas/langchain dependency. ragas
+    # itself was tried and dropped: ragas.llms.base unconditionally imports
+    # langchain_community.chat_models.vertexai.ChatVertexAI (removed from any
+    # langchain-community version compatible with this project's numpy>=2.4.6),
+    # and ragas.metrics imports langchain_core.pydantic_v1 (removed from modern
+    # langchain-core) — both confirmed unfixable-by-pinning upstream ragas bugs,
+    # reproduced on ragas 0.1.22 and the latest 0.4.3.
+    "openai>=1.0.0",
 ]
 
 [dependency-groups]
@@ -209,10 +195,6 @@ ignore-missing-imports = [
     "google.*",
     "neo4j",
     "neo4j.*",
-    "datasets",
-    "datasets.*",
-    "ragas",
-    "ragas.*",
     "deepeval",
     "deepeval.*",
 ]
@@ -225,7 +207,7 @@ ignore_missing_imports = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["datasets.*", "ragas.*", "deepeval.*", "FlagEmbedding.*", "llama_cpp.*", "rank_bm25.*", "redis", "redis.*", "openai.*", "voyageai.*", "cohere.*", "google.*"]
+module = ["deepeval.*", "FlagEmbedding.*", "llama_cpp.*", "rank_bm25.*", "redis", "redis.*", "openai.*", "voyageai.*", "cohere.*", "google.*"]
 follow_imports = "skip"
 ignore_errors = true
 
@@ -235,7 +217,7 @@ module = ["src.infrastructure.llm.llama_cpp_provider"]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = ["src.evals.generation.faithfulness", "src.evals.generation.relevance", "src.evals.generation.hallucination"]
+module = ["src.evals.generation.hallucination"]
 ignore_errors = true
 
 [tool.pytest.ini_options]

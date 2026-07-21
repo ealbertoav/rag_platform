@@ -31,7 +31,7 @@ from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.services.generation_service import GenerationService
 from src.domain.services.retrieval_service import RetrievalService
 from src.evals.e2e.rag_benchmark import SampleResult
-from src.evals.generation import RagasMetric
+from src.evals.generation import LLMJudgeMetric
 from src.evals.generation.context_precision import ContextPrecisionMetric
 from src.evals.generation.faithfulness import FaithfulnessMetric
 from src.infrastructure.vectordb.bm25 import BM25Index
@@ -751,17 +751,20 @@ class TestEvalsGaps:
         assert data["question"] == "q"
         assert data["faithfulness"] == 0.9
 
-    def test_ragas_metric_base_pre_checks_empty(self):
-        class _Metric(RagasMetric):
+    def test_llm_judge_metric_base_pre_checks_empty(self):
+        class _Metric(LLMJudgeMetric):
             _metric_name = "faithfulness"
 
-            def _get_ragas_metric(self) -> object:
-                return MagicMock()
+            def _build_prompt(self, sample: EvalSample) -> str:
+                return "prompt"
+
+            def _parse_response(self, sample: EvalSample, response: str) -> float:
+                return 1.0
 
         sample = EvalSample(question="q", expected_answer="a")
         assert _Metric(threshold=0.5)._pre_checks(sample) == []
 
-    def test_ragas_score_calls_evaluate(self):
+    def test_judge_score_calls_judge_llm_and_parses_response(self):
         sample = EvalSample(
             question="q",
             expected_answer="a",
@@ -769,15 +772,15 @@ class TestEvalsGaps:
             retrieved_chunks=["ctx"],
         )
         metric = FaithfulnessMetric(threshold=0.5)
-        fake_ragas = MagicMock()
-        fake_ragas.evaluate.return_value = {"faithfulness": 0.85}
-        with (
-            patch.object(metric, "_get_ragas_metric", return_value=MagicMock()),
-            patch.dict("sys.modules", {"ragas": fake_ragas}),
+        fake_judge = MagicMock()
+        fake_judge.generate.return_value = '{"claims": [{"claim": "x", "supported": true}]}'
+        with patch(
+            "src.evals.generation.nim_judge.build_nim_judge_llm",
+            return_value=fake_judge,
         ):
-            score = metric._ragas_score(sample)
-        assert score == 0.85
-        fake_ragas.evaluate.assert_called_once()
+            score = metric._judge_score(sample)
+        assert score == pytest.approx(1.0)
+        fake_judge.generate.assert_called_once()
 
     def test_parse_json_pairs_invalid_inner_json(self):
         assert parse_json_pairs("prefix [not valid json] suffix") == []
