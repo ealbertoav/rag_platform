@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from string import Template
@@ -39,15 +40,29 @@ class ContextualCompressor:
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
-    def compress(self, query: str, chunks: list[Chunk]) -> list[Chunk]:
+    async def compress(self, query: str, chunks: list[Chunk]) -> list[Chunk]:
         """Return *chunks* with text replaced by query-relevant extractions.
 
         If disabled, returns the input list unchanged.
         Chunks are processed in order; once the token budget is exhausted,
         remaining chunks are omitted.
+
+        Extraction LLM calls run concurrently (one per unique passage, not
+        per chunk — sibling chunks sharing a passage never trigger duplicate
+        calls), then budget accounting is applied in a second, LLM-free pass
+        that preserves the original chunk order and drop semantics.
         """
         if not self._enabled or not chunks:
             return chunks
+
+        unique_by_key: dict[str, Chunk] = {}
+        for chunk in chunks:
+            unique_by_key.setdefault(passage_context_key(chunk), chunk)
+
+        extracted = await asyncio.gather(
+            *(asyncio.to_thread(self._extract, query, chunk) for chunk in unique_by_key.values())
+        )
+        extracted_by_key = dict(zip(unique_by_key.keys(), extracted, strict=True))
 
         result: list[Chunk] = []
         remaining_tokens = self._max_tokens
@@ -63,7 +78,7 @@ class ContextualCompressor:
             if remaining_tokens <= 0:
                 break
 
-            text = self._extract(query, chunk)
+            text = extracted_by_key[passage_key]
             text = truncate_to_tokens(text, remaining_tokens)
             if not text:
                 continue

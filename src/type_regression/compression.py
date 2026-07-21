@@ -15,11 +15,11 @@ def check_token_reducer_types(chunks: list[Chunk]) -> tuple[int, str, int]:
     return total, truncated, count
 
 
-def check_compressor_returns_chunks(
+async def check_compressor_returns_chunks(
     comp: ContextualCompressor,
     query: str,
     chunks: list[Chunk],
 ) -> list[Chunk]:
     """Exercise ContextualCompressor.compress return type."""
-    result: list[Chunk] = comp.compress(query, chunks)
+    result: list[Chunk] = await comp.compress(query, chunks)
     return result

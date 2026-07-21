@@ -50,8 +50,8 @@ class TestCompressionTypeRegression:
         assert truncated
         assert count > 0
 
-    def test_check_compressor_returns_chunks(self):
-        result = check_compressor_returns_chunks(_compressor(), "query", _chunks(1))
+    async def test_check_compressor_returns_chunks(self):
+        result = await check_compressor_returns_chunks(_compressor(), "query", _chunks(1))
         assert len(result) == 1
         assert isinstance(result[0].text, str)
 

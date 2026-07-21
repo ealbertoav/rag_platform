@@ -1241,12 +1241,12 @@ class TestRagModuleGaps:
         chunk = _chunk(0, metadata={"headings": ["Title"]})
         assert _section_label(chunk) == "Title"
 
-    def test_contextual_compression_skips_empty_extract(self):
+    async def test_contextual_compression_skips_empty_extract(self):
         from src.rag.compression.contextual_compression import ContextualCompressor
 
         compressor = ContextualCompressor(llm=MagicMock(), max_tokens=100)
         with patch.object(compressor, "_extract", return_value=""):
-            result = compressor.compress("q", [_chunk(0)])
+            result = await compressor.compress("q", [_chunk(0)])
         assert result == []
 
     def test_hierarchical_indexer_empty_summary(self, caplog):
