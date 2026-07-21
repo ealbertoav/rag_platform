@@ -84,7 +84,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from src.infrastructure.embeddings.bge_m3 import BGEM3EmbeddingProvider
-    from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
+    from src.infrastructure.llm import get_llm_provider
     from src.infrastructure.vectordb.bm25 import BM25Index
 
     bm25 = BM25Index.load_or_create()
@@ -106,7 +106,7 @@ def main() -> None:
         f"(n={args.n_pairs} per chunk, min={args.min_pairs})…"
     )
 
-    llm = LlamaCppProvider.from_settings()
+    llm = get_llm_provider()
     embedder = BGEM3EmbeddingProvider.from_settings()
 
     builder = SyntheticDatasetBuilder(

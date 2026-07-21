@@ -14,15 +14,36 @@ serve:
 ingest:
 	uv run python scripts/ingest.py --source $(SOURCE)
 
+## Env overrides isolating every golden-corpus operation (ingest + QA generation)
+## into a dedicated Qdrant collection/BM25 index/metadata DB (#96). The collection
+## and BM25 path must keep matching EVAL_COLLECTION_NAME/BM25_EVAL_DISK_PATH in
+## src/core/constants.py, which check_live_retrieval_regression() reads directly;
+## the metadata DB path has no Python-side consumer (ingest-time dedup tracking
+## only) and is Makefile-only. Chunk IDs are random per ingestion (src/domain/
+## entities/chunk.py), so qa_dataset.json/retrieval_dataset.json's
+## relevant_chunk_ids are only ever valid against whichever specific ingestion
+## produced them — `evals` needs the same isolation as `ingest-eval-corpus` so
+## regenerating the golden dataset lines up with the eval corpus's actual chunk
+## IDs, not a shared/default collection's.
+EVAL_CORPUS_ENV = QDRANT__COLLECTION=rag_documents_eval RETRIEVAL__BM25__BACKEND=disk \
+	RETRIEVAL__BM25__DISK_PATH=data/processed/bm25_eval \
+	METADATA__DB_PATH=data/processed/metadata_eval.db
+
 ## Re-ingest the committed source of qa_dataset.json / retrieval_dataset.json (#94),
 ## so check_regression_gate.py's live retrieval check has real data to verify against
 ## instead of skipping. Committed under datasets/goldens/, not data/raw/ (gitignored).
+## Isolated (#96) so ad-hoc `make ingest SOURCE=...` of unrelated content can never
+## dilute/contaminate it. Isolation matters even though ingestion itself is additive:
+## IngestionPipeline's dedup check is keyed by source path + content hash, not by
+## collection, so without a dedicated metadata DB, re-ingesting a source already
+## ingested elsewhere would skip as "unchanged" and silently never populate the eval
+## collection at all.
 ingest-eval-corpus:
-	uv run python scripts/ingest.py --source datasets/goldens/rag_platform_corpus.md
+	$(EVAL_CORPUS_ENV) uv run python scripts/ingest.py --source datasets/goldens/rag_platform_corpus.md
 
 evals:
-	@echo "Generate golden QA + retrieval datasets (requires: make ingest SOURCE=... first)"
-	uv run python scripts/run_evals.py --output datasets/goldens/qa_dataset.json
+	@echo "Generate golden QA + retrieval datasets (requires: make ingest-eval-corpus first)"
+	$(EVAL_CORPUS_ENV) uv run python scripts/run_evals.py --output datasets/goldens/qa_dataset.json
 
 sync-retrieval-goldens:
 	@echo "Sync retrieval_dataset.json from qa_dataset.json (no LLM regeneration)"

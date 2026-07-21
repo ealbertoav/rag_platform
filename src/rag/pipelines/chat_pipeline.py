@@ -212,17 +212,10 @@ class ChatPipeline:
     ) -> ChatPipeline:
         """Build the full pipeline from settings (lazy model loading)."""
         from src.core.settings import settings
+        from src.infrastructure.llm import get_llm_provider
         from src.infrastructure.search.web_search import get_web_search_provider
 
-        llm: LLMRepository
-        if settings.llm.provider == "nvidia_nim":
-            from src.infrastructure.llm.nvidia_nim_provider import NvidiaNimProvider
-
-            llm = NvidiaNimProvider.from_settings()
-        else:
-            from src.infrastructure.llm.llama_cpp_provider import LlamaCppProvider
-
-            llm = LlamaCppProvider.from_settings()
+        llm: LLMRepository = get_llm_provider(settings)
         retrieval = RetrievalPipeline.from_settings(
             llm=llm,
             bm25_index=bm25_index,

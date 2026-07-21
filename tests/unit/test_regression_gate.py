@@ -454,6 +454,37 @@ class TestCheckLiveRetrievalRegression:
         assert result.status == GateStatus.PASSED
         assert "live Recall@5" in result.message
 
+    async def test_targets_dedicated_eval_collection_and_bm25_path(self, tmp_path: Path):
+        """The live check must use the eval-dedicated collection/index (#96),
+        never whatever settings.qdrant.collection a developer's environment
+        happens to have configured, so unrelated ad-hoc ingestion can't
+        contaminate the golden corpus's retrieval signal."""
+        from src.core.constants import BM25_EVAL_DISK_PATH, EVAL_COLLECTION_NAME
+
+        retrieval = tmp_path / "retrieval.json"
+        _write_json(retrieval, _standard_retrieval_rows())
+        fake_bm25 = type("FakeBM25", (), {"size": 1})()
+
+        with (
+            patch("src.evals.regression_gate._qdrant_reachable", return_value=True),
+            patch(
+                "src.infrastructure.vectordb.bm25.BM25Index.load_or_create",
+                return_value=fake_bm25,
+            ) as mock_load_or_create,
+            patch(
+                "src.infrastructure.vectordb.qdrant.QdrantVectorStore.from_settings",
+            ) as mock_from_settings,
+            patch(
+                "src.rag.pipelines.retrieval_pipeline.RetrievalPipeline.from_settings",
+                side_effect=RuntimeError("no model weights"),
+            ),
+        ):
+            result = await check_live_retrieval_regression(retrieval_path=retrieval)
+
+        mock_load_or_create.assert_called_once_with(BM25_EVAL_DISK_PATH, backend="disk")
+        mock_from_settings.assert_called_once_with(collection=EVAL_COLLECTION_NAME)
+        assert result.status == GateStatus.SKIPPED
+
     async def test_fails_when_retrieval_raises_mid_run(self, tmp_path: Path):
         retrieval = tmp_path / "retrieval.json"
         _write_json(retrieval, _standard_retrieval_rows())

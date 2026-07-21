@@ -177,7 +177,12 @@ class QdrantVectorStore(VectorStoreRepository):
     # ── Factory ────────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_settings(cls) -> QdrantVectorStore:
+    def from_settings(cls, *, collection: str | None = None) -> QdrantVectorStore:
+        """Build from settings; *collection* overrides `settings.qdrant.collection`.
+
+        The override lets callers target an isolated collection (e.g. the eval
+        golden corpus's dedicated collection, #96) without mutating global settings.
+        """
         from src.core.settings import settings
         from src.infrastructure.embeddings import (
             embedding_model_identifier,
@@ -188,7 +193,7 @@ class QdrantVectorStore(VectorStoreRepository):
         provider = settings.embeddings.provider
         return cls(
             url=settings.qdrant.url,
-            collection=settings.qdrant.collection,
+            collection=collection or settings.qdrant.collection,
             api_key=settings.qdrant.api_key,
             dense_dim=provider_dense_dim(provider, settings),
             embedding_model_name=embedding_model_identifier(provider, settings),

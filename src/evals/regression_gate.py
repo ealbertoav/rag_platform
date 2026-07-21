@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from src.core.constants import DATASETS_DIR
+from src.core.constants import BM25_EVAL_DISK_PATH, DATASETS_DIR, EVAL_COLLECTION_NAME
 from src.evals.golden_dataset import (
     MIN_QA_PAIRS,
     count_real_qa_pairs,
@@ -194,20 +194,26 @@ async def check_live_retrieval_regression(
 
     from src.infrastructure.vectordb.bm25 import BM25Index
 
-    bm25_index = BM25Index.load_or_create()
+    # Target the eval corpus's dedicated collection/index (#96) — not whatever
+    # settings.qdrant.collection / retrieval.bm25.disk_path a developer's default
+    # environment happens to be configured to, so ad-hoc ingestion elsewhere can
+    # never dilute or contaminate this check's retrieval signal.
+    bm25_index = BM25Index.load_or_create(BM25_EVAL_DISK_PATH, backend="disk")
     if bm25_index.size == 0:
         return RegressionGateResult(
             status=GateStatus.SKIPPED,
             message=(
-                "BM25 index is empty — skipping live regression check "
-                + "(run `make ingest` to populate it)."
+                "Eval BM25 index is empty — skipping live regression check "
+                + "(run `make ingest-eval-corpus` to populate it)."
             ),
         )
 
     try:
+        from src.infrastructure.vectordb.qdrant import QdrantVectorStore
         from src.rag.pipelines.retrieval_pipeline import RetrievalPipeline
 
-        pipeline = RetrievalPipeline.from_settings(bm25_index=bm25_index)
+        vector_store = QdrantVectorStore.from_settings(collection=EVAL_COLLECTION_NAME)
+        pipeline = RetrievalPipeline.from_settings(bm25_index=bm25_index, vector_store=vector_store)
     except Exception as exc:
         logger.warning(
             "Live retrieval pipeline unavailable, skipping live regression check: %s", exc
