@@ -9,7 +9,7 @@ from src.domain.entities.query import Query
 from src.domain.repositories.embedding_repository import EmbeddingRepository
 from src.domain.repositories.llm_repository import LLMRepository
 from src.domain.services.retrieval_service import RetrievalResult, RetrievalService
-from src.observability.metrics import record_retrieval
+from src.observability.metrics import record_reliable_rag_scores, record_retrieval
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
@@ -162,6 +162,8 @@ class RetrievalPipeline:
             span.set_attribute("context_chars", len(result.context))
             span.set_attribute("latency_ms", round(result.latency_ms, 1))
         record_retrieval(len(result.chunks), result.latency_ms / 1000)
+        if result.relevance_scores:
+            record_reliable_rag_scores(result.relevance_scores)
         return result
 
     def retrieve_sync(self, query: Query) -> RetrievalResult:

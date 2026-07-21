@@ -20,6 +20,11 @@ def score_from_relevant(relevant: bool) -> float:
     return _POSITIVE_DELTA if relevant else _NEGATIVE_DELTA
 
 
+def sentiment_from_score(score: float) -> str:
+    """Classify a feedback delta as "positive" or "negative" for observability labels."""
+    return "positive" if score >= 0 else "negative"
+
+
 def feedback_score_from_metadata(metadata: Mapping[str, Any]) -> float:
     """Return a numeric feedback score from chunk metadata, or 0.0 when unset."""
     return _feedback_score_from_raw(metadata.get(FEEDBACK_SCORE_KEY))
@@ -79,6 +84,12 @@ def record_feedback(
         score,
         updated,
     )
+    from src.core.settings import settings
+
+    if settings.quality.feedback_loop.enabled:
+        from src.observability.metrics import record_feedback_event
+
+        record_feedback_event(sentiment_from_score(score), updated)
 
 
 def apply_feedback_boost(

@@ -323,6 +323,40 @@ class TestRetrievalPipeline:
         pipeline = RetrievalPipeline(service=svc)
         assert pipeline.service is svc
 
+    @pytest.mark.asyncio
+    async def test_retrieve_records_reliable_rag_scores_when_present(self):
+        """#92: Reliable RAG relevance-score distribution must be observable."""
+        from src.observability.metrics import RELIABLE_RAG_RELEVANCE_SCORE
+
+        chunks = [_chunk(i) for i in range(2)]
+        result = RetrievalResult(
+            query=_query(),
+            chunks=chunks,
+            context="ctx",
+            latency_ms=10.0,
+            relevance_scores=[0.9, 0.4],
+        )
+        svc = MagicMock()
+        svc.retrieve = AsyncMock(return_value=result)
+        pipeline = RetrievalPipeline(service=svc)
+
+        before = RELIABLE_RAG_RELEVANCE_SCORE._sum.get()
+        await pipeline.retrieve(_query())
+        after = RELIABLE_RAG_RELEVANCE_SCORE._sum.get()
+        assert after == pytest.approx(before + 1.3)
+
+    @pytest.mark.asyncio
+    async def test_retrieve_does_not_record_when_reliable_rag_disabled(self):
+        """No relevance_scores (Reliable RAG disabled) → no observations recorded."""
+        from src.observability.metrics import RELIABLE_RAG_RELEVANCE_SCORE
+
+        pipeline = RetrievalPipeline(service=_service())
+
+        before = RELIABLE_RAG_RELEVANCE_SCORE._sum.get()
+        await pipeline.retrieve(_query())
+        after = RELIABLE_RAG_RELEVANCE_SCORE._sum.get()
+        assert after == before
+
 
 class TestRetrievalPipelineFromSettings:
     def test_from_settings_builds_pipeline(self):
