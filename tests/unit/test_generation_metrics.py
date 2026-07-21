@@ -302,7 +302,7 @@ class TestHallucinationMetric:
 class TestHallucinationDeepeval:
     def test_deepeval_score_path(self):
         mock_metric = MagicMock()
-        mock_metric.score = 0.05
+        mock_metric.measure.return_value = 0.05
         fake_hm = MagicMock(return_value=mock_metric)
         fake_test_case = MagicMock()
         fake_deepeval = MagicMock(
