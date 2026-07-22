@@ -2064,6 +2064,7 @@ make docker-down
 | `redis` | 6379 | Embedding cache, feedback backend (T-146), rate-limit counter (T-160) |
 | `prometheus` | 9090 | Scrapes `api:8000/metrics` |
 | `otel-collector` | 4317 / 4318 | OTLP gRPC / HTTP |
+| `jaeger` | 16686 | Trace UI (#109) — `otel-collector` exports traces here in addition to its `debug` (console-log) exporter; OTLP receiver stays internal to the Docker network |
 
 > **Metal / MPS note:** Docker on macOS runs inside a Linux VM and cannot access the Metal GPU. The Compose file sets `EMBEDDINGS__DEVICE=cpu` and routes LLM inference through Ollama instead of llama.cpp. For full Metal performance run the API natively with `make serve` and start only infrastructure via `docker compose up qdrant redis otel-collector prometheus`.
 
@@ -2867,7 +2868,7 @@ rag_implementation/
 │   ├── logging.yaml
 │   ├── cve-allowlist.yaml      # Accepted CVE allowlist for dependency audit (T-161/T-162)
 │   ├── prometheus.yml          # Prometheus scrape config (scrapes api:8000/metrics)
-│   └── otel-collector.yaml     # OTel collector — OTLP gRPC/HTTP receiver, debug exporter
+│   └── otel-collector.yaml     # OTel collector — OTLP gRPC/HTTP receiver, debug + Jaeger exporters (#109)
 ├── data/                       # Runtime data (gitignored)
 │   ├── raw/                    # Source documents to ingest
 │   ├── processed/              # BM25 memory JSON / optional bm25_disk/ (T-165)
@@ -3958,6 +3959,15 @@ scrape_configs:
       - targets: ['localhost:8000']
     metrics_path: /metrics
 ```
+
+### Distributed Tracing (#109)
+
+Every retrieval/generation stage (query expansion, multi-query fusion, reranking, compression, generation, etc.) is instrumented with OTel spans and exported via OTLP to the `otel-collector` service. The collector's `traces` pipeline (`configs/otel-collector.yaml`) exports to two destinations:
+
+- **Jaeger UI** — http://localhost:16686. Browse trace waterfalls, search by service/operation, and inspect per-stage span timing. Jaeger's own storage is in-memory only — trace history resets whenever the `jaeger` container restarts.
+- **`debug` exporter** — still active, unchanged. `docker compose logs -f otel-collector` shows the same span data as raw log lines, for quick CLI debugging without opening a browser.
+
+Metrics are *not* routed through OTel/Jaeger — the app only sends metrics via `prometheus_client` (the Prometheus Metrics table above), so Prometheus remains the single source of truth for metrics; Jaeger is trace-only.
 
 ---
 
