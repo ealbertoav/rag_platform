@@ -1,9 +1,12 @@
 import json
 import logging
 import sys
+from unittest.mock import patch
 
+import pytest
 from opentelemetry.sdk.trace import TracerProvider
 
+import src.core.logging as logging_module
 from src.core.logging import JsonFormatter, TextFormatter, get_logger
 
 
@@ -140,6 +143,18 @@ class TestOtelContext:
 
 
 class TestGetLogger:
+    @pytest.fixture(autouse=True)
+    def _stub_configure_logging(self, monkeypatch: pytest.MonkeyPatch):
+        """get_logger() lazily calls the real configure_logging() on its first-ever
+        invocation, which sets up a real OTel TracerProvider against whatever
+        settings.logging.otel_endpoint happens to be configured — exporting every
+        subsequently-traced span in the rest of the test session to a real
+        collector if one happens to be reachable (e.g. a local dev Docker stack).
+        Stub it out, matching test_main.py's lifespan tests' existing pattern."""
+        monkeypatch.setattr(logging_module, "_configured", False)
+        with patch("src.core.logging.configure_logging"):
+            yield
+
     def test_returns_logger_instance(self):
         logger = get_logger("src.core.test")
         assert isinstance(logger, logging.Logger)

@@ -19,7 +19,7 @@ async def test_lifespan_startup_sets_pipeline_state():
     mock_vector_store = MagicMock()
 
     with (
-        patch("src.core.logging.configure_logging"),
+        patch("src.main.configure_logging"),
         patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create", return_value=mock_bm25),
         patch(
             "src.infrastructure.vectordb.feedback_store.build_vector_store_from_settings",
@@ -65,7 +65,7 @@ async def test_lifespan_shutdown_saves_indexes():
     mock_ingest = MagicMock()
 
     with (
-        patch("src.core.logging.configure_logging"),
+        patch("src.main.configure_logging"),
         patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
         patch(
             "src.infrastructure.vectordb.feedback_store.build_vector_store_from_settings",
@@ -92,7 +92,7 @@ async def test_lifespan_shutdown_save_failure_logged(caplog):
     mock_ingest.save_indexes.side_effect = RuntimeError("disk full")
 
     with (
-        patch("src.core.logging.configure_logging"),
+        patch("src.main.configure_logging"),
         patch("src.infrastructure.vectordb.bm25.BM25Index.load_or_create"),
         patch(
             "src.infrastructure.vectordb.feedback_store.build_vector_store_from_settings",
