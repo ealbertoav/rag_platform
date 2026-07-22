@@ -50,6 +50,30 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # Trace UI for otel-collector's traces pipeline (#109). Only the UI port is
+  # exposed to the host — Jaeger's own OTLP receiver stays internal to the
+  # Docker network (otel-collector reaches it at jaeger:4317) since 4317/4318
+  # are already mapped to otel-collector on the host.
+  jaeger:
+    # Jaeger v2 (OTel-native, all-in-one) — v1 (jaegertracing/all-in-one) is
+    # EOL upstream. v2 moved registries (cr.jaegertracing.io, not Docker Hub)
+    # and its health-check extension (healthcheckv2) uses a different
+    # port/path than v1's admin server — see the healthcheck below. Pinned
+    # (unlike this file's other :latest infra images) since this is a fast-
+    # moving new major version; 2.20.0 is what this was live-verified against.
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+    ports:
+      - "16686:16686"   # UI
+    healthcheck:
+      # Alpine/busybox — no bash (no /dev/tcp) or curl, but wget is present.
+      # healthcheckv2 extension serves on 13133, not v1's admin port 14269.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:13133/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     ports:
@@ -58,6 +82,9 @@ services:
     volumes:
       - ./configs/otel-collector.yaml:/etc/otel-collector-config.yaml:ro
     command: ["--config=/etc/otel-collector-config.yaml"]
+    depends_on:
+      jaeger:
+        condition: service_healthy
     restart: unless-stopped
 
   prometheus:
